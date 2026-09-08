@@ -1,0 +1,4 @@
+// Optional: copy to Local.xcconfig to override the shared development team.
+// Use the Team ID shown in Xcode or the certificate's subject OU.
+DEVELOPMENT_TEAM = YOUR_TEAM_ID
+CODE_SIGN_IDENTITY = Apple Development
