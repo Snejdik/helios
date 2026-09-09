@@ -295,7 +295,7 @@ private enum IPCChecks {
         let removal = Task { await service.uninstall() }
         await Task.yield()
         if service.busy { service.install() }
-        await removal.value
+        _ = await removal.value
         try require(driver.calls == ["unregister began", "unregister completed"], "Concurrent installation escaped the busy guard")
     }
 

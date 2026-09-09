@@ -3,6 +3,7 @@ import Foundation
 struct PersistedTelemetryPoint: Codable, Sendable, Equatable {
     let capturedAt: Date
     let cpuPercent: Double?
+    let memoryPercent: Double?
     let gpuPercent: Double?
     let maxSoCCelsius: Double?
     let systemPowerWatts: Double?
@@ -29,7 +30,7 @@ struct PersistedTelemetryPoint: Codable, Sendable, Equatable {
     let networkDownloadBytesPerSecond: Double?
     let networkUploadBytesPerSecond: Double?
 
-    init(capturedAt: Date, cpuPercent: Double?, gpuPercent: Double?, maxSoCCelsius: Double?, systemPowerWatts: Double?,
+    init(capturedAt: Date, cpuPercent: Double?, memoryPercent: Double? = nil, gpuPercent: Double?, maxSoCCelsius: Double?, systemPowerWatts: Double?,
          batteryPercent: Double?, batteryHealthPercent: Double? = nil, batteryPowerWatts: Double? = nil, batteryOnAC: Bool? = nil,
          batteryTemperatureCelsius: Double? = nil, batteryCycleCount: Int? = nil,
          storageTemperatureCelsius: Double?, storageDeviceBSDName: String? = nil, storageLifetimeReadBytes: Double? = nil, storageLifetimeWrittenBytes: Double? = nil,
@@ -39,6 +40,7 @@ struct PersistedTelemetryPoint: Codable, Sendable, Equatable {
          fanRPM: Double?, networkDownloadBytesPerSecond: Double?, networkUploadBytesPerSecond: Double?) {
         self.capturedAt = capturedAt
         self.cpuPercent = cpuPercent
+        self.memoryPercent = memoryPercent
         self.gpuPercent = gpuPercent
         self.maxSoCCelsius = maxSoCCelsius
         self.systemPowerWatts = systemPowerWatts
@@ -186,7 +188,7 @@ enum PersistentHistoryEngine {
     }
 
     static func csv(_ points: [PersistedTelemetryPoint]) -> String {
-        var lines = ["timestamp,cpu_percent,gpu_percent,max_soc_c,system_power_w,battery_percent,battery_health_percent,battery_power_w,on_ac,battery_temp_c,battery_cycles,ssd_temp_c,storage_device,lifetime_read_bytes,lifetime_write_bytes,device_read_Bps,device_write_Bps,process_read_Bps,process_write_Bps,helios_cpu_percent,helios_power_w,helios_memory_bytes,helios_wakeups_s,fan_rpm,network_down_Bps,network_up_Bps"]
+        var lines = ["timestamp,cpu_percent,memory_percent,gpu_percent,max_soc_c,system_power_w,battery_percent,battery_health_percent,battery_power_w,on_ac,battery_temp_c,battery_cycles,ssd_temp_c,storage_device,lifetime_read_bytes,lifetime_write_bytes,device_read_Bps,device_write_Bps,process_read_Bps,process_write_Bps,helios_cpu_percent,helios_power_w,helios_memory_bytes,helios_wakeups_s,fan_rpm,network_down_Bps,network_up_Bps"]
         let formatter = ISO8601DateFormatter()
         func field(_ value: Double?) -> String { value.map { String(format: "%.6f", $0) } ?? "" }
         func integer(_ value: Int?) -> String { value.map(String.init) ?? "" }
@@ -194,7 +196,7 @@ enum PersistentHistoryEngine {
         func quoted(_ value: String?) -> String { guard let value else { return "" }; return "\"" + value.replacingOccurrences(of: "\"", with: "\"\"") + "\"" }
         for point in points {
             lines.append([
-                formatter.string(from: point.capturedAt), field(point.cpuPercent), field(point.gpuPercent), field(point.maxSoCCelsius),
+                formatter.string(from: point.capturedAt), field(point.cpuPercent), field(point.memoryPercent), field(point.gpuPercent), field(point.maxSoCCelsius),
                 field(point.systemPowerWatts), field(point.batteryPercent), field(point.batteryHealthPercent), field(point.batteryPowerWatts),
                 point.batteryOnAC.map { $0 ? "1" : "0" } ?? "", field(point.batteryTemperatureCelsius), integer(point.batteryCycleCount),
                 field(point.storageTemperatureCelsius), quoted(point.storageDeviceBSDName), field(point.storageLifetimeReadBytes), field(point.storageLifetimeWrittenBytes),
@@ -326,6 +328,7 @@ actor PersistentHistoryStore {
         return PersistedTelemetryPoint(
             capturedAt: now,
             cpuPercent: value(TelemetryFormatting.fresh(snapshot.cpu, maxAge: 5, now: now).map(\.usagePercent)),
+            memoryPercent: value(TelemetryFormatting.fresh(snapshot.memory, maxAge: 5, now: now).map(\.usagePercent)),
             gpuPercent: value(TelemetryFormatting.fresh(snapshot.gpu, maxAge: 5, now: now).flatMap(\.deviceUtilizationPercent)),
             maxSoCCelsius: value(TelemetryFormatting.fresh(snapshot.thermals, maxAge: 6, now: now).flatMap(\.maximumSoCCelsius)),
             systemPowerWatts: value(TelemetryFormatting.fresh(snapshot.systemPower, maxAge: 5, now: now).flatMap(\.totalSystemWatts)),

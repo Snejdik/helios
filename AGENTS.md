@@ -6,7 +6,7 @@ You are building **Helios**, a lightweight, high-performance macOS Menu Bar syst
 ## Strict Engineering Constraints
 - **Language & Stack:** Pure Swift (Swift 5.9+ / Swift 6), AppKit / SwiftUI for UI, native system APIs.
 - **No External CLI Spawning:** Never use `Process()` or shell invocations (`top`, `sysctl`, `sudo`, `powermetrics`, `pmset`) for runtime metrics or fan control. All operations must use native C/Darwin APIs, Mach kernel calls, or IOKit.
-- **Privilege Separation:** 
+- **Privilege Separation:**
   - UI runs as an unprivileged Menu Bar app.
   - SMC fan write operations must be delegated to a privileged LaunchDaemon registered via `SMAppService` (macOS 13+).
   - Communication happens strictly via `NSXPCConnection`.
@@ -38,8 +38,8 @@ You are building **Helios**, a lightweight, high-performance macOS Menu Bar syst
    - Enforces a short control lease (initial target: 5 seconds) and independently restores System mode when fresh calculations stop arriving. A live XPC connection alone does not renew the lease.
 
 ## Current Implementation Scope
-- Phase 4: read-only fan telemetry, app-owned temperature policy, daemon-only SMC control engine, independent control lease, recovery journal, and native fan controls. Preserve existing telemetry and fixed-width presentation.
-- The menu-bar item is fixed at 80 points with two fixed 40-point columns, 8-point captions, and 11-point semibold monospaced digits. Never size it from its current text or use variable status-item length.
+- Phase 4: read-only fan telemetry, app-owned temperature policy, daemon-only SMC control engine, independent control lease, recovery journal, and native fan controls. Preserve the validated telemetry/control boundaries while the presentation layer evolves.
+- Next22 used a fixed 80-point CPU + Temperature status item. Next23 UI8 defaults to separate native `NSStatusItem` metric modules plus an optional Helios dashboard hub. Each module has configuration-deterministic geometry; live metric strings must never resize an existing item. Users may alternatively select one compact grouped readout. Fresh/onboarding presets favor separate CPU and Temperature modules; the combined Cooling metric remains optional.
 - Present thermals-first native cards with grouped sensor averages/maxima, muted CPU/memory breakdowns, and explicit battery power labels. Keep raw SMC keys and kernel error codes out of the main presentation; retain failure details in help/accessibility.
 - Debug and Release now use Apple Development signing with the verified Personal Team `3J76KPDS9C`, shared by both targets in `Config/Base.xcconfig`. Preserve empty base entitlements and disabled debug entitlement injection. Developer ID signing/notarization remain later distribution work.
 - Protocol v3 adds bounded calculation, fan-status, and typed System-release requests with only a graceful/immediate boolean. Never accept raw SMC keys/bytes, caller-supplied hardware bounds, or lease durations over XPC. Compile the SMC write transport only into HeliosDaemon.
@@ -114,7 +114,7 @@ repair; do not widen SMC capabilities or alter safety semantics as part of this 
 ## Next19 utility/history invariants
 - System/network/history are read-only app-side features. Do not route them through the privileged daemon.
 - Network traffic rates derive from AF_LINK counters with explicit 32-bit rollover and interface-handoff warm-up; never present volatile counters as lifetime traffic.
-- Battery remaining time comes from IOPowerSources semantics, not a watts/capacity guess.
+- Battery remaining time prefers authoritative `IOPowerSources` semantics whenever macOS exposes a valid estimate. UI8 may show an explicitly approximate `≈` read-only Helios fallback while macOS still reports Calculating, derived only from validated remaining capacity/voltage plus recent discharge power. Never present the fallback as authoritative and never add battery/charger writes.
 - Session energy is measured-coverage PSTR integration only. Never bridge sleep/stale/missing intervals or substitute battery/adapter power.
 - Keep the validated fan daemon, XPC control surface, Cooling Rules, recovery/lease logic and 95°C floor unchanged while this milestone is validated.
 
@@ -124,3 +124,50 @@ repair; do not widen SMC capabilities or alter safety semantics as part of this 
 - Session attribution must key processes by PID + process start absolute time, reject rollback/invalid intervals, and never use the root helper to access an otherwise inaccessible process.
 - The hardware capability matrix is read-only evidence. Fan discovery/profile match never authorizes writes; the existing pinned production daemon gate remains the only write authority.
 - `--io-preflight` must perform no fan writes, persistence writes, notification prompt, subprocess execution, or privileged telemetry.
+
+## Next23 UI boundary
+- Next22 is the functional backend freeze. Next23 is a presentation/settings architecture rewrite; do not broaden the privileged daemon, fan XPC protocol, battery policy, SMC write keys, or safety state machine as part of UI work.
+- `scripts/check-next23-ui-boundary.sh` pins the validated Next22 daemon/control/XPC/SMC and BatteryProvider hashes. Keep it in `check-all.sh`; a UI change that trips it must be treated as a boundary violation, not casually re-baselined.
+- UI8's recommended menu-bar architecture uses one native `NSStatusItem` per enabled metric plus an optional Helios dashboard hub. A compact grouped readout remains available. Every item has configuration-deterministic geometry: live values never resize it; changing an explicit custom label may recalculate width only when configuration changes.
+- Each native metric item owns its own transient popover. AppKit's selected pill is allowed only while that exact popover is open and must be cleared on close, rebuild, or activation of another item. Never force selected-menu text colors or suppress native button highlighting with custom button-cell hacks.
+- A menu-bar-only app must never become unreachable. If the last native metric is removed, the Helios dashboard hub must remain/reappear even when the user had previously hidden it.
+- The compact dashboard popover has a fixed outer size and scrolls internally. Expandable expert diagnostics belong in the resizable Full Monitor window so disclosures cannot enlarge/trap the menu-bar popover.
+- UI preferences live in `HeliosPreferences` and must remain independent from privileged control. Use semantic macOS materials/colors, system typography, native status-button behavior and restrained custom branding so future macOS visual changes can be adopted without a backend rewrite.
+
+### Next23 UI8 presentation/data invariants
+- Menu-bar identity is per metric: Label, Icon, or Value only. Custom short labels are configuration, not telemetry; they may update item width only during a menu-bar rebuild. Fresh/onboarding defaults are label-first for immediate legibility.
+- Shared charts expose Raw or monotone-Smooth geometry independently from event-driven live animation. Smooth mode must pass through the exact samples without bridging explicit gaps or inventing extrema. Live animation may interpolate the visible timeline/newest point only when a new sample arrives; never add a permanent display timer or increase telemetry polling just to animate charts.
+- Chart ranges are 1m/5m/15m/1h/6h/24h. Longer ranges merge the bounded live tail with the existing persistent 24-hour telemetry store, keep timestamps strictly ordered, avoid double-weighting overlap, and preserve explicit sleep/offline gaps.
+- The app owns one shared `OverviewViewModel`/history feed for menu popups, dashboard and Full Monitor so opening more surfaces must not duplicate history persistence.
+- Battery ETA remains read-only: a valid macOS estimate wins. While macOS reports Calculating, Helios may display an explicitly approximate `≈` estimate from validated capacity/voltage and recent discharge power; reject implausible/insufficient inputs and fall back to Calculating rather than fabricating precision.
+- Per-app Battery & Energy rankings are relative descriptive attribution from Helios' bounded local history and must use the selected graph window when shown alongside a range picker. Keep the caveat that inaccessible/system processes may be absent and do not call process energy billing-grade joules.
+- Thermals & Fans must keep normal-user actions ahead of raw sensor inventory. Unclassified SMC keys stay collapsed/expert-only and must never be promoted into Max SoC, Cooling Rules, alerts, or privileged writes without separate validation.
+
+## UI10 / future utility product invariants
+- UI10 is the modular presentation/final-polish pass over the frozen Next22 backend. Preserve chart/runtime fixes already physically validated on the target M4; do not trade a working low-overhead path for cosmetic rewrites.
+- Quick Dashboard summary metrics and dashboard modules are user-configurable and reorderable. Full Monitor sidebar modules are user-configurable and reorderable. Simple/Recommended/Detailed/Custom are starting presets only; they never lock later customization.
+- Detailed/Custom presets expose detailed Full Monitor content by default; Simple intentionally starts with essential content. The user can override the density preference later.
+- Custom colors are a shared semantic preference for every primary module/data series where color communicates identity (CPU, memory, GPU, temperature, fan, battery, power/energy, storage, network and memory composition). Safety/severity state colors remain semantic and are not recolored into misleading states.
+- Continuous chart motion must use the full plotting aperture and must not show a permanent newest-sample frontier dot. Hover inspection owns the exact-point marker. Discrete/non-animated mode may show the frontier dot.
+- Energy is a first-class discoverable module/route; the dedicated Energy Inspector complements rather than hides it.
+- Development references to other utilities are not product chrome unless source/license obligations require an acknowledgement. Never copy AGPL OpenMacBattery source into Helios.
+- Future explicit backlog: native Caffeine/Keep-Awake and a LinearMouse-style Pointer & Scrolling utility. Keep both app-side/user-controlled; never expand the fan helper for them. Additional utilities must be lightweight, modular and independently disableable.
+- WidgetKit is reserved for low-frequency snapshots/stateful controls (especially future Caffeine), not fake real-time CPU/GPU/network monitoring. Do not add a high-refresh widget timeline just to mirror the live menu bar.
+
+## Next23 UI10 RC1 finalization invariant
+- Keep the Next22 protected daemon/XPC/SMC/BatteryProvider/fan-control files byte-identical. UI10 RC1 must not use final-polish work as a reason to widen privileged capabilities.
+- Data collection and UI visibility are separate. A disabled telemetry module stops its provider loop until re-enabled; hiding a card alone does not. Trusted thermal-health sampling and core system identity stay available as the lightweight safety/core baseline.
+- Disabling Cooling must first return Helios fan policy to System in the Settings path, then hide fan telemetry/helper-facing cooling UI. Never hide controls while knowingly leaving an invisible Manual/Boost/Auto override active.
+- Custom fan control requires a first-use safety explanation. System is recommended; custom cooling remains an explicit user choice even though validated hardware bounds and the independent daemon safety guard remain enforced.
+- Quick Dashboard composition is edited in place (summary tiles plus wide cards). Do not conflate this with macOS menu-bar metric ordering.
+- Continuous mini charts do not show a permanent newest-point bead; exact-point markers belong to hover inspection or explicit discrete mode. Retain enough real predecessor history for the animated path to reach the left clip edge before rollover.
+- Expert is a diagnostic workspace, not a duplicate of normal CPU/Memory/Battery pages. Keep raw/advisory sensor meanings explicit and display-only unless separately validated.
+
+## Next23 UI10 RC8 diagnostics-polish invariant
+- Keep the Next22 backend freeze intact. RC8 is presentation-only and must not change telemetry providers, polling, fan control, SMC/XPC, BatteryProvider, or safety semantics.
+- Detailed mode must keep every backend-published field reachable, but it must not render permanent full-width text dumps. Group exhaustive telemetry into compact, expandable diagnostic panels with clear hierarchy.
+- Normal route summaries stay visually primary. Advanced diagnostics are secondary, collapsed by default, and use compact cards/grids so repeated fields do not overwhelm CPU/Memory/Storage/Energy/Thermals/Processes pages.
+- Repeated per-app energy identities must be grouped by display name while keeping each raw app key and all attribution fields reachable. Repeated process ranking surfaces stay individually expandable rather than permanently duplicating the same process rows.
+- Thermal/raw SMC inventories must use grouped compact sensor/value grids; unknown/unclassified readings remain diagnostic-only and must not enter cooling policy.
+- Storage devices must render as distinct device cards with BSD name/registry identity visible so logically separate disk nodes are not mistaken for duplicated rows. NVMe lifetime/raw counters remain available in their own expandable diagnostics.
+- Preserve the RC6 AnyView compile-stability boundaries around the Full Monitor route switch and exhaustive telemetry extension.

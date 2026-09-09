@@ -44,6 +44,7 @@
 		000000000000000000000215 /* AudioProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000115 /* AudioProvider.swift */; };
 		000000000000000000000216 /* MaintenanceProviders.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000116 /* MaintenanceProviders.swift */; };
 		000000000000000000000217 /* AppEnergyHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000117 /* AppEnergyHistory.swift */; };
+		000000000000000000000218 /* TelemetryCollectionPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000118 /* TelemetryCollectionPolicy.swift */; };
 		000000000000000000000302 /* IOKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 000000000000000000000301 /* IOKit.framework */; };
 		000000000000000000000304 /* SystemConfiguration.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 000000000000000000000303 /* SystemConfiguration.framework */; };
 		000000000000000000000306 /* CoreWLAN.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 000000000000000000000305 /* CoreWLAN.framework */; };
@@ -86,6 +87,13 @@
 		000000000000000000000631 /* FanOwnershipPreflight.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000060D /* FanOwnershipPreflight.swift */; };
 		000000000000000000000632 /* FanOwnershipPreflight.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000060D /* FanOwnershipPreflight.swift */; };
 		000000000000000000000633 /* FanOwnershipPreflightProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000060E /* FanOwnershipPreflightProvider.swift */; };
+		000000000000000000000710 /* HeliosPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000700 /* HeliosPreferences.swift */; };
+		000000000000000000000711 /* HeliosDashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000701 /* HeliosDashboardView.swift */; };
+		000000000000000000000712 /* HeliosWindows.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000702 /* HeliosWindows.swift */; };
+		000000000000000000000713 /* HeliosBrand.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000703 /* HeliosBrand.swift */; };
+		000000000000000000000714 /* HeliosGraphKit.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000704 /* HeliosGraphKit.swift */; };
+		000000000000000000000715 /* HeliosBatteryEstimate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000705 /* HeliosBatteryEstimate.swift */; };
+		000000000000000000000716 /* HeliosMetricPopovers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000706 /* HeliosMetricPopovers.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -167,6 +175,7 @@
 		000000000000000000000115 /* AudioProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioProvider.swift; sourceTree = "<group>"; };
 		000000000000000000000116 /* MaintenanceProviders.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MaintenanceProviders.swift; sourceTree = "<group>"; };
 		000000000000000000000117 /* AppEnergyHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppEnergyHistory.swift; sourceTree = "<group>"; };
+		000000000000000000000118 /* TelemetryCollectionPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelemetryCollectionPolicy.swift; sourceTree = "<group>"; };
 		000000000000000000000301 /* IOKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = IOKit.framework; path = System/Library/Frameworks/IOKit.framework; sourceTree = SDKROOT; };
 		000000000000000000000303 /* SystemConfiguration.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SystemConfiguration.framework; path = System/Library/Frameworks/SystemConfiguration.framework; sourceTree = SDKROOT; };
 		000000000000000000000305 /* CoreWLAN.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreWLAN.framework; path = System/Library/Frameworks/CoreWLAN.framework; sourceTree = SDKROOT; };
@@ -201,6 +210,13 @@
 		00000000000000000000060F /* FanOwnershipProductionRecovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FanOwnershipProductionRecovery.swift; sourceTree = "<group>"; };
 		00000000000000000000060D /* FanOwnershipPreflight.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FanOwnershipPreflight.swift; sourceTree = "<group>"; };
 		00000000000000000000060E /* FanOwnershipPreflightProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FanOwnershipPreflightProvider.swift; sourceTree = "<group>"; };
+		000000000000000000000700 /* HeliosPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeliosPreferences.swift; sourceTree = "<group>"; };
+		000000000000000000000701 /* HeliosDashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeliosDashboardView.swift; sourceTree = "<group>"; };
+		000000000000000000000702 /* HeliosWindows.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeliosWindows.swift; sourceTree = "<group>"; };
+		000000000000000000000703 /* HeliosBrand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeliosBrand.swift; sourceTree = "<group>"; };
+		000000000000000000000704 /* HeliosGraphKit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeliosGraphKit.swift; sourceTree = "<group>"; };
+		000000000000000000000705 /* HeliosBatteryEstimate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeliosBatteryEstimate.swift; sourceTree = "<group>"; };
+		000000000000000000000706 /* HeliosMetricPopovers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeliosMetricPopovers.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -297,6 +313,13 @@
 		000000000000000000000006 /* HeliosApp */ = {
 			isa = PBXGroup;
 			children = (
+				000000000000000000000700 /* HeliosPreferences.swift */,
+				000000000000000000000701 /* HeliosDashboardView.swift */,
+				000000000000000000000702 /* HeliosWindows.swift */,
+				000000000000000000000703 /* HeliosBrand.swift */,
+				000000000000000000000704 /* HeliosGraphKit.swift */,
+				000000000000000000000705 /* HeliosBatteryEstimate.swift */,
+				000000000000000000000706 /* HeliosMetricPopovers.swift */,
 				000000000000000000000610 /* CoolingRules.swift */,
 				000000000000000000000609 /* FanControlModel.swift */,
 				00000000000000000000060A /* FanControlView.swift */,
@@ -383,6 +406,7 @@
 				000000000000000000000117 /* AppEnergyHistory.swift */,
 				000000000000000000000104 /* TelemetryFormatting.swift */,
 				000000000000000000000105 /* TelemetryModels.swift */,
+				000000000000000000000118 /* TelemetryCollectionPolicy.swift */,
 				000000000000000000000106 /* TelemetryMonitor.swift */,
 				000000000000000000000107 /* ThermalProvider.swift */,
 				000000000000000000000108 /* StorageProvider.swift */,
@@ -483,6 +507,13 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				000000000000000000000710 /* HeliosPreferences.swift in Sources */,
+				000000000000000000000711 /* HeliosDashboardView.swift in Sources */,
+				000000000000000000000712 /* HeliosWindows.swift in Sources */,
+				000000000000000000000713 /* HeliosBrand.swift in Sources */,
+				000000000000000000000714 /* HeliosGraphKit.swift in Sources */,
+				000000000000000000000715 /* HeliosBatteryEstimate.swift in Sources */,
+				000000000000000000000716 /* HeliosMetricPopovers.swift in Sources */,
 				000000000000000000000620 /* MetricValue.swift in Sources */,
 				000000000000000000000622 /* FanModels.swift in Sources */,
 				000000000000000000000631 /* FanOwnershipPreflight.swift in Sources */,
@@ -508,6 +539,7 @@
 				000000000000000000000203 /* SMCClient.swift in Sources */,
 				000000000000000000000204 /* TelemetryFormatting.swift in Sources */,
 				000000000000000000000205 /* TelemetryModels.swift in Sources */,
+				000000000000000000000218 /* TelemetryCollectionPolicy.swift in Sources */,
 				000000000000000000000206 /* TelemetryMonitor.swift in Sources */,
 				000000000000000000000207 /* ThermalProvider.swift in Sources */,
 				000000000000000000000208 /* StorageProvider.swift in Sources */,

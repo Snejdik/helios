@@ -283,6 +283,18 @@ struct ThermalReading: Sendable {
 struct ThermalMetrics: Sendable {
     let readings: [ThermalReading]
     let failures: [String: TelemetryError]
+    /// Raw/unclassified SMC inventory is intentionally sampled less often than
+    /// the curated SoC keys used by Cooling Rules. This timestamp makes that
+    /// relaxed cadence explicit in expert UI instead of pretending every raw
+    /// value was captured with the fast safety sample.
+    let advisoryReadingsCapturedAt: Date?
+
+    init(readings: [ThermalReading], failures: [String: TelemetryError],
+         advisoryReadingsCapturedAt: Date? = nil) {
+        self.readings = readings
+        self.failures = failures
+        self.advisoryReadingsCapturedAt = advisoryReadingsCapturedAt
+    }
 
     var maximumSoCReading: MetricResult<ThermalReading> {
         guard let hottest = readings

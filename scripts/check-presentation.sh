@@ -8,7 +8,10 @@ xcrun swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors \
   -module-cache-path .build/Checks/ModuleCache -framework AppKit -framework SwiftUI -framework IOKit -framework Security -framework ServiceManagement -framework SystemConfiguration -framework CoreWLAN -framework CoreGraphics -framework IOBluetooth -framework CoreAudio -framework UserNotifications -lproc \
   Sources/Shared/*.swift Sources/HeliosApp/DaemonClient.swift Sources/HeliosApp/DaemonService.swift Sources/HeliosApp/DaemonServiceCard.swift \
   Sources/HeliosApp/CoolingRules.swift Sources/HeliosApp/FanControlModel.swift Sources/HeliosApp/FanControlView.swift \
-  Sources/HeliosApp/Telemetry/*.swift Sources/HeliosApp/MenuBarView.swift \
-  Sources/HeliosApp/PresentationValues.swift Sources/HeliosApp/OverviewViewController.swift \
+  Sources/HeliosApp/Telemetry/*.swift Sources/HeliosApp/HeliosPreferences.swift Sources/HeliosApp/MenuBarView.swift \
+  Sources/HeliosApp/HeliosBrand.swift Sources/HeliosApp/HeliosGraphKit.swift Sources/HeliosApp/HeliosBatteryEstimate.swift \
+  Sources/HeliosApp/HeliosMetricPopovers.swift Sources/HeliosApp/HeliosDashboardView.swift Sources/HeliosApp/HeliosWindows.swift \
+  Sources/HeliosApp/PresentationValues.swift Sources/HeliosApp/OverviewViewController.swift Sources/HeliosApp/StatusItemController.swift \
   Tests/PresentationChecks.swift -o .build/Checks/PresentationChecks
+printf '%s\n' "PASS Next23 UI compiler surface with Swift 6 strict concurrency and warnings-as-errors"
 exec .build/Checks/PresentationChecks

@@ -1,5 +1,10 @@
 # Helios - Functional Specification
 
+## Next23 presentation override
+
+The Next22 backend and privileged-control boundaries remain frozen, but the legacy fixed 80-point status item and 380×700 diagnostic popover described below are superseded for Next23 presentation work. Next23 uses user-selectable fixed-geometry menu-bar modules (default CPU + Cooling), a fixed 420×600 internally scrolling Simple / Advanced / All popover, a separate resizable Full Monitor with native sidebar navigation, and a separate Settings window. Live values must never participate in menu-bar sizing. Expert disclosures must not resize the popover. UI preferences must not change telemetry polling, battery policy, XPC fan authorization, SMC write keys, leases, recovery, or the 95°C emergency floor.
+
+
 ## Hardware & Validation Baseline
 - Primary target: M4 MacBook Pro, 16 GB RAM, 1 TB SSD, running macOS Tahoe 26.6.2 stable (25G83).
 - Local toolchain verified during Phase 1: Xcode 26.6 (17F113), Swift 6.3.3, macOS 26.5 SDK. Use the installed SDK; do not invent a matching 26.6.2 SDK identifier.

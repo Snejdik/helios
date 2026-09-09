@@ -2,7 +2,7 @@
 
 A native Swift macOS Menu Bar observability and fan-control utility. The pinned `Mac16,1` / macOS build `25G83` fan profile has passed authenticated production **Boost**, validated-range **Manual**, TG-style **Auto Cooling Rules**, crash/restart recovery, real sleep/wake restoration, ownership journaling, a hard 95°C emergency floor, and pre-emptible System release. The privileged helper is intentionally **fan-only**.
 
-The unprivileged app now combines the monitoring surface normally spread across several utilities: thermal/SMC telemetry, CPU and Memory as independent modules, GPU, battery/power diagnostics, network/Wi-Fi, processes, per-app energy history, NVMe SMART and physical/process I/O attribution, storage/volumes, displays, USB, Bluetooth, audio, sleep blockers, system/capability diagnostics, persistent health/history, clocks, installed-application inventory, and a read-only Cleanup Scout. Next22 is the broad functional-freeze candidate before the planned Simple / Advanced / All UI redesign.
+The unprivileged app now combines the monitoring surface normally spread across several utilities: thermal/SMC telemetry, CPU and Memory as independent modules, GPU, battery/power diagnostics, network/Wi-Fi, processes, per-app energy history, NVMe SMART and physical/process I/O attribution, storage/volumes, displays, USB, Bluetooth, audio, sleep blockers, system/capability diagnostics, persistent health/history, clocks, installed-application inventory, and a read-only Cleanup Scout. Next22 is the validated functional backend freeze. Next23 is the UI architecture rewrite: configurable menu-bar modules, a fixed-size module-driven Quick Dashboard, one-time Simple / Recommended / Detailed / Custom onboarding presets, a responsive sidebar-based Full Monitor with live graphs, first-class Battery and Energy views, native sidebar Settings, and an About surface.
 
 **Battery policy boundary:** Helios observes battery state but never changes charging behavior. macOS owns charging policy. Battery/charger values are read-only telemetry and the privileged helper exposes no battery-control path.
 
@@ -32,7 +32,7 @@ Signing verified on 2026-09-06: Debug and Release builds in `.build/DerivedData`
 
 | Location | Responsibility |
 | --- | --- |
-| `Sources/HeliosApp` | Fixed-width AppKit status widget and thermals-first native SwiftUI cards |
+| `Sources/HeliosApp` | Configurable fixed-geometry AppKit status modules, compact SwiftUI dashboard, Full Monitor, Settings, and fan-control presentation |
 | `Sources/HeliosApp/Telemetry` | Independent Mach, battery, and read-only AppleSMC providers; typed samples and polling |
 | `Sources/HeliosDaemon` | Authenticated XPC, SMC writer, independent control lease, ownership journal, and lifecycle recovery |
 | `Sources/Shared` | Read-only SMC transport, typed samples/fan models, host clock, XPC interfaces, and signing requirements |
@@ -41,9 +41,13 @@ Signing verified on 2026-09-06: Debug and Release builds in `.build/DerivedData`
 | `docs/SPEC.md` | Approved functional foundation and boundaries between phases |
 | `Tests`, `scripts` | Provider/presentation checks, native renders, registration fixtures, and isolated NSXPC/watchdog verification |
 
-Launch the built app to see the fixed 80-point CPU/temperature menu-bar widget. The current pre-redesign popover deliberately exposes the complete engineering surface: **CPU** and **Memory** are separate modules; CPU includes aggregate/per-core activity plus logical/physical/P/E topology, while Memory includes pressure, app/wired/compressed/cache/free accounting and swap counters. Additional cards cover P/E/GPU thermals plus trusted/raw sensor browsing, GPU activity/memory, battery and adapter/cell diagnostics, independent `PSTR` Total System Power, Network/CoreWLAN plus route/DNS/interface detail, native per-process CPU/energy/memory/I/O/wakeups, seven-day per-app energy attribution and trends, NVMe SMART/physical I/O, mounted volumes, displays, USB/Bluetooth/audio-output inventory, sleep blockers, system/capability detail, clocks, and persistent health/history. Heavy application/cache inventory is on-demand. Missing and stale readings remain explicit rather than guessed.
+Launch the built app to see the Next23 UI8 menu-bar architecture. The recommended layout uses **separate native macOS status items** for each enabled metric (CPU, Memory, GPU, Temperature, Cooling, Fan, Battery, System Power, and Network) plus an optional minimalist Helios solar hub. Each metric can independently use a short text label, an SF Symbol, or value-only identity, and custom labels only recalculate geometry when configuration changes; live values never jitter item width. Clicking a native metric opens its own focused popup (CPU → CPU, Memory → Memory, Battery → Battery, and so on) and uses AppKit's transient selected pill only while that popup is open. Users who prefer one compact readout can switch to **Compact Group**. Native items can be rearranged with macOS' ⌘-drag behavior.
 
-Battery charge percentage now prefers the same normalized system state-of-charge source macOS publishes, while raw mAh-derived SoC remains separately available as expert diagnostics. Signed battery power, cell/adapter telemetry and history are observational only; they never alter charging policy and are never substituted for independent board/system power.
+On first launch Helios offers three **starting presets** — Simple, Balanced, and Everything — and makes clear that they are only starting layouts. The optional Helios hub opens the fixed 420×600 **module-driven dashboard**; users independently add, remove, and reorder System Summary, Cooling, Performance, Network, Top Processes, and System Status. Cooling remains novice-safe: System is the recommended default, Manual reveals an RPM slider only when selected, and Automatic Rules deep-link into **Full Monitor → Thermals & Fans** rather than crowding the compact surface. If all native metric items are removed, Helios keeps/restores the solar hub so a menu-bar-only app cannot become unreachable.
+
+Full Monitor uses a native sidebar with Overview, CPU, Memory, GPU, Thermals & Fans, Battery & Power, Storage, Network, Processes, History, Health & Alerts, System, Devices, Maintenance, and Expert diagnostics. Overview stays pinned while other routes can be hidden, restored, and reordered. UI8 shares one history/presentation model across menu popups, dashboard, and Full Monitor, so opening several surfaces does not duplicate telemetry persistence. Graphs support **Raw or Smooth** line geometry, independently optional event-driven live animation, and 1m/5m/15m/1h/6h/24h ranges. Longer windows merge live samples with the bounded persistent 24-hour history and preserve sleep/offline gaps without adding another telemetry poller. Settings are organized around General, Modules (Menu Bar / Popups / Full Monitor), Graphs & History, Cooling, Battery & Energy, Privacy, Advanced, and About.
+
+Battery charge percentage prefers the same normalized system state-of-charge source macOS publishes, while raw mAh-derived SoC remains separately available as expert diagnostics. Signed battery power, cell/adapter telemetry and history are observational only. UI8 adds a read-only early **≈ Helios estimate** of remaining battery time only while macOS still reports Calculating; a valid macOS estimate automatically takes priority, and insufficient/implausible inputs remain Calculating rather than guessed. Battery & Energy also exposes range-matched relative per-app attribution from Helios' bounded local history. None of this changes charging policy or introduces a privileged battery path.
 
 All telemetry, including fan count/current/target/min/max RPM, runs unprivileged in the app. **Thermals & Cooling** presents **System / Boost / Manual / Auto**. Boost still resolves inside the root daemon to exactly 6550 RPM. Manual exposes a 50-RPM-step slider, while the privileged daemon independently clamps and quantizes every request to the validated 2317–6550 RPM range. Auto adds separate Power Adapter/Battery rule profiles, All Fans/per-fan targets, 0–100% relative MIN/MAX speed, TG-style Any Sensor/Always/Average CPU/Highest CPU sources, trusted group/individual sensors, rule copy/reorder/persistence, highest-speed-wins evaluation, hysteresis/debounce, and safe downshift transitions. A fresh trusted Max SoC >=95°C forces factory-max cooling in the privileged coordinator even if Manual/Auto asks for a lower target.
 
@@ -54,21 +58,23 @@ The typed helper protocol is v3 (introduced in Next14), so an older registered h
 ## Telemetry checks
 
 ```sh
-./scripts/check-all.sh                # Canonical full regression gate + Xcode Debug build
+./scripts/check-all.sh                # Canonical full gate; Next23 UI/native render + Xcode build fail first, long backend suites follow
+./scripts/check-ui-fast.sh            # Fast Next23 UI/UX + chart-history + native-render + full Xcode build gate
 ./scripts/check-runtime-policy.sh     # Reject subprocess/spawn APIs in runtime Swift sources
 ./scripts/check-battery-readonly.sh   # Enforce telemetry-only battery scope and fan-only helper
+./scripts/check-next23-ui-boundary.sh # Freeze guard for fan daemon/control/XPC/SMC and BatteryProvider during Next23 UI work
 ./scripts/check-telemetry.sh          # Deterministic fixtures; no hardware access
 ./scripts/check-telemetry.sh --live   # Also reads this Mac as the current user
 ./scripts/check-storage.sh            # Focused storage parser/rate fixtures
 ./scripts/check-storage.sh --live     # Read-only IOKit inventory/counters on this Mac
-./scripts/check-presentation.sh      # Fixed-width checks and light/dark fixture renders
+./scripts/check-presentation.sh       # Swift 6 warnings-as-errors UI compile + fixed-geometry/light-dark native renders
 ./scripts/check-ipc.sh               # Unprivileged anonymous XPC, trust rejection, lease and registration checks
 ./scripts/check-ownership.sh         # Fast ownership/recovery + Phase 4.6 Boost/Override-gate fixtures
 ./scripts/check-fans.sh              # Full simulated fan suite: rollback, recovery, leases, thermal policy
 ./scripts/check-fans.sh --live       # Also reads this Mac's fans; never writes physical hardware
 ```
 
-These development scripts compile standalone Swift check binaries; Helios never launches scripts or subprocesses. Because each broad script invokes `swiftc` independently, the full fan/telemetry/IPC/presentation set recompiles overlapping sources and is intentionally slower than an incremental Xcode build. During Phase 4.x iteration, run the focused `check-ownership.sh` plus an incremental `xcodebuild`; reserve the full four-script regression sweep for phase/milestone checkpoints or changes that touch those subsystems. Do not delete `.build/DerivedData` for normal incremental builds unless diagnosing a stale build. After a Debug build, `Helios.app/Contents/MacOS/Helios --fan-preflight` prints the current Mac16,1 ownership capability baseline without compiling another checker or writing SMC state.
+These development scripts compile standalone Swift check binaries; Helios never launches scripts or subprocesses. Because each broad script invokes `swiftc` independently, the full fan/telemetry/IPC/presentation set recompiles overlapping sources. In Next23, `check-all.sh` intentionally runs the presentation compiler/renders and a complete Xcode build first so UI warnings/type errors fail before the longer frozen-backend simulations. For rapid UI iteration use `check-ui-fast.sh`; every candidate intended for commit/release must still pass the canonical `check-all.sh`. Do not delete `.build/DerivedData` for normal incremental builds unless diagnosing a stale build. After a Debug build, `Helios.app/Contents/MacOS/Helios --fan-preflight` prints the current Mac16,1 ownership capability baseline without compiling another checker or writing SMC state.
 `Helios.app/Contents/MacOS/Helios --storage-preflight` prints the read-only physical-storage/controller baseline and now attempts one native NVMe SMART health-log read. When supported it includes health, wear, lifetime read/write, temperature and lifetime counters; failures stay typed and do not fall back to pretending since-boot counters are TBW. See [Phase 5](docs/PHASE5.md).
 `Helios.app/Contents/MacOS/Helios --performance-preflight` reads GPU PerformanceStatistics, Total System Power (`PSTR`), swap, and battery voltage/current/adapter fields as the normal user. It performs no fan writes and uses no subprocesses. See [Phase 6](docs/PHASE6.md).
 `Helios.app/Contents/MacOS/Helios --utility-preflight` validates the Next19 native SystemConfiguration/getifaddrs network layer, system/load/uptime fields and IOPowerSources battery time-remaining state. It is read-only, unprivileged and performs no fan writes or subprocesses. See [Phase 7](docs/PHASE7.md).
@@ -212,3 +218,28 @@ After a green `check-all.sh`, useful read-only live probes are:
 
 `--maintenance-preflight` intentionally performs filesystem metadata/content inspection for application/cache inventory and can create noticeable read I/O; it still performs no cleanup or deletion.
 
+
+
+
+### Next23 UI10: modular foundation and final polish
+
+UI10 keeps the validated UI9 runtime path but makes the presentation genuinely user-owned: Quick Dashboard summary metrics and cards can be shown, hidden and reordered; Full Monitor sidebar modules can be shown, hidden and reordered; Detailed/Custom onboarding starts with expert-density content while Simple stays focused; Energy is a first-class route as well as a dedicated inspector; primary module/data-series colors are persisted and customizable; and Full Monitor uses a bounded responsive desktop layout instead of the former narrow fixed content column. Continuous charts use the full plotting aperture and omit the newest-sample bead while moving; hover inspection remains the exact-point interaction. The Next22 helper/XPC/SMC/BatteryProvider freeze remains unchanged.
+
+Future utility work is tracked in `docs/ROADMAP.md`, including a native Caffeine/Keep-Awake module, a LinearMouse-style Pointer & Scrolling module, and low-frequency WidgetKit surfaces only where delayed refresh is appropriate.
+
+### Next23 UI8 fixed2: thermal diagnostics remain advisory
+
+Helios distinguishes the **trusted Max SoC** used by Cooling Rules/fan safety from the much larger raw AppleSMC temperature inventory. The latter is organized with conservative community-derived labels solely to make expert diagnostics readable. Apple does not document most Apple-Silicon SMC keys, so auxiliary/virtual/family labels never promote a raw key into control policy. In particular, `TCMz` is displayed as a community-mapped CPU-die maximum, `TVM*` values are treated as virtual/derived family data unless an exact case-sensitive mapping is known, and repeated implausibly-low `Ta0*` clusters are marked placeholder-like rather than presented as ambient temperature.
+
+Menu-bar popup opening is also kept presentation-only. UI8 fixed2 avoids an explicit service refresh on click, avoids a duplicate live-history publish for the same 1 Hz snapshot, does not subscribe metric popups to the unrelated service-registration monitor, and bounds the tiny dashboard sparklines to a short live tail instead of re-splining the full in-memory history. Curated SoC keys used by Max SoC/Cooling Rules retain the fast thermal cadence, while the much larger raw/unclassified expert inventory is refreshed on a relaxed ~15-second cadence and exposes its capture age in the UI. The frozen fan safety/XPC/SMC-write path is unchanged.
+
+### Next23 UI10 RC1: collection, safety and final interaction pass
+
+RC1 separates **what Helios measures** from **where Helios shows it**. Settings → Modules → Data Collection can stop optional CPU/memory/GPU/power/network/Wi-Fi/process/battery/storage/device samplers independently; disabling a sampler also removes its primary surfaces so stale data is not left pretending to be live. Trusted thermal health and lightweight system identity remain the always-available core. Cooling can be disabled as a product surface; Settings first returns Helios to System fan control, then hides fan telemetry/helper-facing cooling UI without silently uninstalling the helper.
+
+The Quick Dashboard can now be edited directly: summary tiles and wide cards are shown/hidden/reordered from the dashboard itself, active Health & Alerts gain a visible header affordance, and the redundant thermal-state subtitle is removed from the compact header. Menu-bar metric spacing is independently adjustable from compact to roomy while keeping fixed, non-jittering status-item geometry.
+
+Custom cooling now carries a first-use safety guide and persistent concise warning: System remains the recommended mode; Boost, Manual and Automatic Rules are explicit user choices bounded by the validated hardware path and independent safety guard. Expert is reorganized into Sensors / Telemetry / Services / Logs rather than repeating normal module pages. Continuous charts retain extra real predecessor context at rollover so the line reaches the left clip edge naturally, and dashboard mini charts no longer force a permanent frontier dot while moving.
+
+### RC8 diagnostics polish
+The Full Monitor's Detailed/Expert surfaces retain complete backend-published telemetry coverage while presenting it through compact expandable diagnostic panels instead of permanent full-width key/value dumps. Storage devices, thermal sensors, process rankings, energy identities and raw SMC data are grouped into clearer cards/grids without removing raw fields or changing the frozen backend.
