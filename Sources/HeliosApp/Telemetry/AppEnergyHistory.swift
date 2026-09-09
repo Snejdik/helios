@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 struct AppEnergyEntry: Codable, Sendable, Equatable, Identifiable {
@@ -238,6 +239,9 @@ actor AppEnergyHistoryStore {
     private var pending: [String: MutableAppEnergy] = [:]
     private var pendingOnBattery: Bool?
     private var pendingBatteryPercent: Double?
+    private var cachedSummary: AppEnergySummary?
+    private var appendHandle: FileHandle?
+    private var knownFileSize: Int?
 
     init(url: URL = AppEnergyHistoryStore.defaultURL()) {
         self.url = url
@@ -253,7 +257,11 @@ actor AppEnergyHistoryStore {
     }
 
     func current(now: Date = Date()) -> AppEnergySummary {
-        AppEnergyHistoryEngine.summary(loadIfNeeded(now: now))
+        let loaded = loadIfNeeded(now: now)
+        if let cachedSummary { return cachedSummary }
+        let summary = AppEnergyHistoryEngine.summary(loaded)
+        cachedSummary = summary
+        return summary
     }
 
     /// Consumes the 5-second native process deltas in memory and writes one small
@@ -262,21 +270,21 @@ actor AppEnergyHistoryStore {
     func consume(snapshot: TelemetrySnapshot, now: Date = Date()) -> AppEnergySummary {
         var loaded = loadIfNeeded(now: now)
         let sample = snapshot.processes
-        guard lastProcessTicks != sample.capturedTicks else { return AppEnergyHistoryEngine.summary(loaded) }
+        guard lastProcessTicks != sample.capturedTicks else { return summary(for: loaded) }
         lastProcessTicks = sample.capturedTicks
         guard case .success(let processes) = sample.result else {
             previousSampleAt = nil
-            return AppEnergyHistoryEngine.summary(loaded)
+            return summary(for: loaded)
         }
         guard let previousSampleAt else {
             self.previousSampleAt = sample.capturedAt
-            return AppEnergyHistoryEngine.summary(loaded)
+            return summary(for: loaded)
         }
         let elapsed = sample.capturedAt.timeIntervalSince(previousSampleAt)
         self.previousSampleAt = sample.capturedAt
         guard elapsed.isFinite, elapsed > 0, elapsed <= 15 else {
             pending.removeAll(keepingCapacity: true); pendingDuration = 0
-            return AppEnergyHistoryEngine.summary(loaded)
+            return summary(for: loaded)
         }
 
         let battery = TelemetryFormatting.fresh(snapshot.battery, maxAge: 20, now: now)
@@ -291,7 +299,7 @@ actor AppEnergyHistoryStore {
             pending[identity.key] = value
         }
         pendingDuration += elapsed
-        if pendingDuration < AppEnergyHistoryEngine.flushInterval { return AppEnergyHistoryEngine.summary(loaded) }
+        if pendingDuration < AppEnergyHistoryEngine.flushInterval { return summary(for: loaded) }
 
         let entries = pending.map { $0.value.frozen(key: $0.key) }
             .sorted { $0.energyWattHours > $1.energyWattHours }
@@ -304,7 +312,16 @@ actor AppEnergyHistoryStore {
         if loaded.count >= AppEnergyHistoryEngine.maximumBuckets || fileSize() > 24_000_000 { rewrite(loaded) }
         pending.removeAll(keepingCapacity: true); pendingDuration = 0
         pendingOnBattery = nil; pendingBatteryPercent = nil
-        return AppEnergyHistoryEngine.summary(loaded)
+        let result = AppEnergyHistoryEngine.summary(loaded)
+        cachedSummary = result
+        return result
+    }
+
+    private func summary(for loaded: [AppEnergyBucket]) -> AppEnergySummary {
+        if let cachedSummary { return cachedSummary }
+        let result = AppEnergyHistoryEngine.summary(loaded)
+        cachedSummary = result
+        return result
     }
 
     private static func appIdentity(_ process: ProcessActivity) -> (key: String, name: String) {
@@ -323,8 +340,9 @@ actor AppEnergyHistoryStore {
         let decoded = AppEnergyHistoryEngine.decodeLines(data, decoder: decoder)
         let clean = AppEnergyHistoryEngine.sanitized(decoded, now: now)
         buckets = clean
+        knownFileSize = data.count
         let records = data.split(separator: 0x0A).filter { !$0.isEmpty }.count
-        if clean.count != decoded.count || decoded.count != records { rewrite(clean) }
+        if clean.count != decoded.count || decoded.count != records || (!data.isEmpty && data.last != 0x0A) { rewrite(clean) }
         return clean
     }
 
@@ -332,24 +350,68 @@ actor AppEnergyHistoryStore {
         do {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             var data = try encoder.encode(bucket); data.append(0x0A)
-            if !FileManager.default.fileExists(atPath: url.path) { try data.write(to: url, options: .atomic); return }
-            let handle = try FileHandle(forWritingTo: url); defer { try? handle.close() }
-            try handle.seekToEnd(); try handle.write(contentsOf: data)
-        } catch { }
+            if !FileManager.default.fileExists(atPath: url.path) {
+                try? appendHandle?.close()
+                appendHandle = nil
+                try data.write(to: url, options: .atomic)
+                knownFileSize = data.count
+                appendHandle = nil
+                return
+            }
+            // A persistent descriptor can outlive atomic replacement or in-place
+            // truncation. Validate only at the existing slow append cadence.
+            if let appendHandle {
+                var descriptor = stat()
+                var path = stat()
+                guard fstat(appendHandle.fileDescriptor, &descriptor) == 0,
+                      stat(url.path, &path) == 0 else { throw CocoaError(.fileReadUnknown) }
+                if descriptor.st_dev != path.st_dev || descriptor.st_ino != path.st_ino
+                    || knownFileSize != Int(path.st_size) {
+                    try appendHandle.close()
+                    self.appendHandle = nil
+                    knownFileSize = nil
+                }
+            }
+            let handle: FileHandle
+            if let appendHandle {
+                handle = appendHandle
+            } else {
+                let opened = try FileHandle(forWritingTo: url)
+                knownFileSize = Int(try opened.seekToEnd())
+                appendHandle = opened
+                handle = opened
+            }
+            let baseSize = knownFileSize ?? fileSizeFromDisk()
+            try handle.write(contentsOf: data)
+            knownFileSize = baseSize + data.count
+        } catch {
+            try? appendHandle?.close()
+            appendHandle = nil
+            knownFileSize = nil
+        }
     }
 
     private func rewrite(_ values: [AppEnergyBucket]) {
         do {
+            try? appendHandle?.close()
+            appendHandle = nil
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             var data = Data()
             for value in values { data.append(try encoder.encode(value)); data.append(0x0A) }
             try data.write(to: url, options: .atomic)
-        } catch { }
+            knownFileSize = data.count
+        } catch {
+            knownFileSize = nil
+        }
     }
 
-    private func fileSize() -> Int {
+    private func fileSize() -> Int { knownFileSize ?? fileSizeFromDisk() }
+
+    private func fileSizeFromDisk() -> Int {
         let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
-        return (attributes?[.size] as? NSNumber)?.intValue ?? 0
+        let size = (attributes?[.size] as? NSNumber)?.intValue ?? 0
+        knownFileSize = size
+        return size
     }
 }
 

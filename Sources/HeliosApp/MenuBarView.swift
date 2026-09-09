@@ -196,7 +196,8 @@ final class MenuBarView: NSView {
     configure(metrics: metrics, identityStyle: showsSymbols ? .symbol : .label)
   }
 
-  func update(_ snapshot: TelemetrySnapshot, now: Date = Date()) {
+  @discardableResult
+  func update(_ snapshot: TelemetrySnapshot, now: Date = Date()) -> Bool {
     let cpu = display(
       TelemetryFormatting.fresh(snapshot.cpu, maxAge: 5, now: now).map(\.usagePercent)
     ) { String(format: "%.0f%%", $0) }
@@ -260,9 +261,14 @@ final class MenuBarView: NSView {
     // Retain the Next22 public test surface while the visual display uses a shorter degree suffix.
     temperatureText = temp == "—" ? "—" : temp.replacingOccurrences(of: "°", with: "°C")
     coolingFanText = coolingFan
-    guard next != values else { return }
+    // Each native item displays only its configured metrics. Changes to another
+    // module must not redraw this item (or the static dashboard hub).
+    let visibleValueChanged = metrics.contains { metric in
+      content(for: metric).showValue && next[metric] != values[metric]
+    }
     values = next
-    needsDisplay = true
+    if visibleValueChanged { needsDisplay = true }
+    return visibleValueChanged
   }
 
   override func hitTest(_ point: NSPoint) -> NSView? { nil }

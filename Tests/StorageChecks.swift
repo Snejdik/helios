@@ -53,6 +53,14 @@ private struct StorageChecks {
         try require(StorageParser.smartCapability(nvme: true, ata: false) == .nvmeAdvertised, "NVMe capability classification")
         try require(StorageParser.smartCapability(nvme: false, ata: false) == .notAdvertised, "Unadvertised SMART capability")
 
+        let refresh = StorageInventoryRefreshPolicy.production
+        try require(refresh.topologySeconds == 5 && refresh.metadataSeconds == 300, "Storage slow/static refresh cadence")
+        try require(!refresh.shouldRefresh(ageSeconds: 4.999, intervalSeconds: refresh.topologySeconds), "Storage topology cache retained before deadline")
+        try require(refresh.shouldRefresh(ageSeconds: 5, intervalSeconds: refresh.topologySeconds), "Storage topology cache refresh at deadline")
+        try require(!refresh.shouldRefresh(ageSeconds: 299, intervalSeconds: refresh.metadataSeconds), "Storage metadata cache retained before fallback")
+        try require(refresh.shouldRefresh(ageSeconds: 300, intervalSeconds: refresh.metadataSeconds), "Storage metadata slow fallback refresh")
+        try require(refresh.shouldRefresh(ageSeconds: .infinity, intervalSeconds: refresh.metadataSeconds), "Storage invalid cache age refresh")
+
         var rate = StorageRateCalculator()
         try expectTelemetryFailure { try rate.consume(counters, elapsedSeconds: 2).get() }
         let next = StorageIOCounters(bytesRead: 1_004_000, bytesWritten: 2_008_000, readOperations: 12, writeOperations: 24, readErrors: 0, writeErrors: 1)

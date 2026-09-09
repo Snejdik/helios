@@ -27,6 +27,10 @@ printf '%s\n' "PASS Next23 full Xcode build before long regression suites"
 ./scripts/check-ownership.sh
 ./scripts/check-ipc.sh
 ./scripts/check-fans.sh
+./scripts/check-storage-p1.sh
+./scripts/check-performance-core.sh
+./scripts/check-ui-memory-lifecycle.sh
+./scripts/check-apple-silicon-release.sh
 ./scripts/check-storage.sh
 ./scripts/check-telemetry.sh
 

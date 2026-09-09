@@ -175,9 +175,13 @@ enum NetworkDynamicStoreReader {
     }
 }
 
+struct NetworkLinkInventory: Sendable {
+    let linksByName: [String: NetworkLinkSnapshot]
+    let activeInterfaces: [String]
+}
+
 enum NetworkInterfaceReader {
-    static func read() throws -> NetworkRawSnapshot {
-        let route = NetworkDynamicStoreReader.primaryInterfaceAndAddresses()
+    static func readLinks() throws -> NetworkLinkInventory {
         var first: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&first) == 0, let first else {
             throw TelemetryError.kernel("Enumerate network interfaces", errno)
@@ -192,9 +196,6 @@ enum NetworkInterfaceReader {
             defer { cursor = item.ifa_next }
             guard let address = item.ifa_addr, Int32(address.pointee.sa_family) == AF_LINK,
                   let rawData = item.ifa_data else { continue }
-            // getifaddrs() guarantees ifa_name as a NUL-terminated C string.
-            // Decode the exact payload explicitly instead of deprecated
-            // the deprecated C-string initializer so warnings-as-errors stays clean.
             let nameLength = strlen(item.ifa_name)
             let nameBytes = UnsafeRawBufferPointer(start: item.ifa_name, count: nameLength)
             let name = String(decoding: nameBytes, as: UTF8.self)
@@ -224,14 +225,22 @@ enum NetworkInterfaceReader {
                 )
             )
         }
+        return NetworkLinkInventory(linksByName: linkByName, activeInterfaces: activeNames.sorted())
+    }
 
+    /// Compatibility helper used by deterministic tests/preflights. The live
+    /// provider below keeps dynamic route/DNS metadata on a slower cache while
+    /// preserving 1 Hz interface counters.
+    static func read() throws -> NetworkRawSnapshot {
+        let route = NetworkDynamicStoreReader.primaryInterfaceAndAddresses()
+        let links = try readLinks()
         return NetworkRawSnapshot(
             primaryInterface: route.name,
             ipv4Address: route.ipv4,
             ipv6Address: route.ipv6,
-            link: route.name.flatMap { linkByName[$0] },
-            activeInterfaceCount: activeNames.count,
-            activeInterfaces: activeNames.sorted(),
+            link: route.name.flatMap { links.linksByName[$0] },
+            activeInterfaceCount: links.activeInterfaces.count,
+            activeInterfaces: links.activeInterfaces,
             gatewayIPv4: route.gateway,
             dnsServers: route.dns,
             searchDomains: route.search
@@ -240,7 +249,12 @@ enum NetworkInterfaceReader {
 }
 
 actor NetworkProvider {
+    private typealias RouteMetadata = (name: String?, ipv4: String?, ipv6: String?, gateway: String?, dns: [String], search: [String])
+    private static let routeRefreshInterval: Duration = .seconds(5)
+
     private var tracker = NetworkThroughputTracker()
+    private var cachedRoute: RouteMetadata?
+    private var nextRouteRefresh: ContinuousClock.Instant?
     private var sessionName: String?
     private var sessionPrevious: NetworkLinkCounters?
     private var sessionDownloadedBytes: UInt64 = 0
@@ -248,7 +262,20 @@ actor NetworkProvider {
 
     /// Reset only short-term rate calculation. Session transfer accounting is
     /// intentionally kept across sleep/wake for the lifetime of the app.
-    func reset() { tracker.reset(); sessionName = nil; sessionPrevious = nil }
+    func reset() {
+        tracker.reset()
+        cachedRoute = nil
+        nextRouteRefresh = nil
+        sessionName = nil
+        sessionPrevious = nil
+    }
+
+    private func refreshRoute(now: ContinuousClock.Instant) -> RouteMetadata {
+        let value = NetworkDynamicStoreReader.primaryInterfaceAndAddresses()
+        cachedRoute = value
+        nextRouteRefresh = now.advanced(by: Self.routeRefreshInterval)
+        return value
+    }
 
     private func updateSession(name: String, counters: NetworkLinkCounters) -> (UInt64, UInt64) {
         defer { sessionName = name; sessionPrevious = counters }
@@ -276,7 +303,29 @@ actor NetworkProvider {
     }
 
     private func read() throws -> NetworkMetrics {
-        let raw = try NetworkInterfaceReader.read()
+        let links = try NetworkInterfaceReader.readLinks()
+        let now = ContinuousClock.now
+        var route = cachedRoute
+        if route == nil || nextRouteRefresh.map({ now >= $0 }) ?? true {
+            route = refreshRoute(now: now)
+        }
+        // A route handoff should not wait for the fallback metadata cadence. If
+        // the cached primary disappeared, re-read SystemConfiguration now.
+        if let name = route?.name, links.linksByName[name] == nil, !links.activeInterfaces.isEmpty {
+            route = refreshRoute(now: now)
+        }
+        let resolved = route ?? (nil, nil, nil, nil, [], [])
+        let raw = NetworkRawSnapshot(
+            primaryInterface: resolved.name,
+            ipv4Address: resolved.ipv4,
+            ipv6Address: resolved.ipv6,
+            link: resolved.name.flatMap { links.linksByName[$0] },
+            activeInterfaceCount: links.activeInterfaces.count,
+            activeInterfaces: links.activeInterfaces,
+            gatewayIPv4: resolved.gateway,
+            dnsServers: resolved.dns,
+            searchDomains: resolved.search
+        )
         let primary: MetricResult<String> = raw.primaryInterface.map { MetricResult<String>.success($0) } ?? .failure(.unavailable("No primary network interface"))
         let ipv4: MetricResult<String> = raw.ipv4Address.map { MetricResult<String>.success($0) } ?? .failure(.unavailable("Primary IPv4 address unavailable"))
         let ipv6: MetricResult<String> = raw.ipv6Address.map { MetricResult<String>.success($0) } ?? .failure(.unavailable("Primary IPv6 address unavailable"))

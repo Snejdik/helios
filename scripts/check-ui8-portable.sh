@@ -178,7 +178,8 @@ SWIFT
 run_swift "$graph" "$tmpdir/GraphProbe"
 
 legacy="$tmpdir/LegacyHistoryProbe.swift"
-sed -n '1,69p' Sources/HeliosApp/Telemetry/PersistentHistory.swift > "$legacy"
+printf 'import Foundation\n' > "$legacy"
+sed -n '/^struct PersistedTelemetryPoint:/,/^}/p' Sources/HeliosApp/Telemetry/PersistentHistory.swift >> "$legacy"
 cat >> "$legacy" <<'SWIFT'
 
 @main

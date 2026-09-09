@@ -3,7 +3,7 @@ import Combine
 import SwiftUI
 
 @MainActor
-final class HeliosWindowCoordinator {
+final class HeliosWindowCoordinator: NSObject, NSWindowDelegate {
   private let service: DaemonService
   private let preferences: HeliosPreferences
   private let model: OverviewViewModel
@@ -11,11 +11,14 @@ final class HeliosWindowCoordinator {
   private var energyInspectorController: NSWindowController?
   private var settingsController: NSWindowController?
   private var onboardingController: NSWindowController?
+  private var lastMonitorRoute: HeliosMonitorRoute = .overview
+  private let energyInspectorState = HeliosEnergyInspectorState()
 
   init(service: DaemonService, preferences: HeliosPreferences, model: OverviewViewModel) {
     self.service = service
     self.preferences = preferences
     self.model = model
+    super.init()
   }
 
   /// The shared UI8 model is fed once by StatusItemController. Windows observe it
@@ -23,14 +26,20 @@ final class HeliosWindowCoordinator {
   func update(_ snapshot: TelemetrySnapshot) {}
 
   func showMonitor(snapshot: TelemetrySnapshot, route: HeliosMonitorRoute? = nil) {
+    let isNew = monitorController == nil
     let controller =
       monitorController
       ?? HeliosMonitorWindowController(
         model: model, service: service, preferences: preferences,
         openEnergyInspector: { [weak self] in self?.showEnergyInspector() })
     monitorController = controller
+    controller.window?.delegate = self
     controller.update(snapshot)
-    if let route { controller.select(route) }
+    if let route {
+      controller.select(route)
+    } else if isNew {
+      controller.select(lastMonitorRoute)
+    }
     show(controller.window)
   }
 
@@ -39,7 +48,8 @@ final class HeliosWindowCoordinator {
     if let energyInspectorController {
       controller = energyInspectorController
     } else {
-      let content = HeliosEnergyInspectorView(model: model, preferences: preferences)
+      let content = HeliosEnergyInspectorView(
+        model: model, preferences: preferences, state: energyInspectorState)
       let hosting = NSHostingController(rootView: content)
       let window = NSWindow(contentViewController: hosting)
       window.title = "Helios Energy Inspector"
@@ -51,6 +61,7 @@ final class HeliosWindowCoordinator {
       window.isReleasedWhenClosed = false
       window.center()
       controller = NSWindowController(window: window)
+      window.delegate = self
       energyInspectorController = controller
     }
     show(controller.window)
@@ -70,6 +81,7 @@ final class HeliosWindowCoordinator {
       window.isReleasedWhenClosed = false
       window.center()
       controller = NSWindowController(window: window)
+      window.delegate = self
       settingsController = controller
     }
     show(controller.window)
@@ -95,8 +107,57 @@ final class HeliosWindowCoordinator {
     window.isReleasedWhenClosed = false
     window.center()
     let controller = NSWindowController(window: window)
+    window.delegate = self
     onboardingController = controller
     show(window)
+  }
+
+  func windowWillClose(_ notification: Notification) {
+    guard let window = notification.object as? NSWindow else { return }
+
+    // A closed NSWindow can outlive the coordinator's strong reference inside
+    // AppKit. Merely nil-ing our NSWindowController therefore does not prove
+    // that a large NSHostingController/AttributeGraph tree is gone. Tear the
+    // presentation hierarchy off the window explicitly before releasing our
+    // controller. The shared telemetry model/preferences/service stay alive;
+    // only reconstructible UI state is discarded.
+    if window === monitorController?.window {
+      let controller = monitorController
+      lastMonitorRoute = controller?.selectedRoute ?? lastMonitorRoute
+      monitorController = nil
+      detachPresentationTree(from: window)
+      controller?.window = nil
+    } else if window === energyInspectorController?.window {
+      let controller = energyInspectorController
+      energyInspectorController = nil
+      energyInspectorState.clearDerivedCache()
+      detachPresentationTree(from: window)
+      controller?.window = nil
+    } else if window === settingsController?.window {
+      let controller = settingsController
+      settingsController = nil
+      detachPresentationTree(from: window)
+      controller?.window = nil
+    } else if window === onboardingController?.window {
+      let controller = onboardingController
+      onboardingController = nil
+      detachPresentationTree(from: window)
+      controller?.window = nil
+    }
+
+    // Application icons are reconstructible presentation data. Never keep a
+    // workspace-icon cache alive merely because a heavy window was visited.
+    HeliosAppIconCache.shared.purge()
+  }
+
+  private func detachPresentationTree(from window: NSWindow) {
+    // Break responder/view/controller ownership in a deterministic order. This
+    // is intentionally UI-only: no telemetry collector, helper, lease, fan or
+    // persistence state is touched. A fresh hosting tree is built on reopen.
+    window.makeFirstResponder(nil)
+    window.delegate = nil
+    window.contentViewController = nil
+    window.contentView = NSView(frame: .zero)
   }
 
   private func show(_ window: NSWindow?) {
@@ -136,33 +197,83 @@ final class HeliosMonitorWindowController: NSWindowController {
   required init?(coder: NSCoder) { nil }
   func update(_ snapshot: TelemetrySnapshot) {}
   func select(_ route: HeliosMonitorRoute) { navigation.selection = route }
+  var selectedRoute: HeliosMonitorRoute { navigation.selection ?? .overview }
+}
+
+@MainActor
+final class HeliosEnergyInspectorState: ObservableObject {
+  struct Aggregation {
+    let visibleBuckets: [AppEnergyBucket]
+    let summary: AppEnergySummary
+    let batteryBuckets: [AppEnergyBucket]
+  }
+
+  @Published var range: HeliosGraphRange = .sixHours
+  @Published var selectedAppKey: String?
+
+  private var cachedRange: HeliosGraphRange?
+  private var cachedBucketCount = -1
+  private var cachedFirstCapture: Date?
+  private var cachedLastCapture: Date?
+  private var cachedAggregation: Aggregation?
+
+  func clearDerivedCache() {
+    cachedRange = nil
+    cachedBucketCount = -1
+    cachedFirstCapture = nil
+    cachedLastCapture = nil
+    cachedAggregation = nil
+  }
+
+  func aggregation(for source: AppEnergySummary) -> Aggregation {
+    let first = source.buckets.first?.capturedAt
+    let last = source.buckets.last?.capturedAt
+    if cachedRange == range, cachedBucketCount == source.buckets.count,
+      cachedFirstCapture == first, cachedLastCapture == last, let cachedAggregation
+    {
+      return cachedAggregation
+    }
+
+    let visible: [AppEnergyBucket]
+    if let anchor = last {
+      let cutoff = anchor.addingTimeInterval(-range.seconds)
+      visible = source.buckets.filter { $0.capturedAt >= cutoff && $0.capturedAt <= anchor }
+    } else {
+      visible = []
+    }
+    let summary = AppEnergyHistoryEngine.summary(visible)
+    let result = Aggregation(
+      visibleBuckets: visible,
+      summary: summary,
+      batteryBuckets: visible.filter { $0.onBattery == true })
+    cachedRange = range
+    cachedBucketCount = source.buckets.count
+    cachedFirstCapture = first
+    cachedLastCapture = last
+    cachedAggregation = result
+    return result
+  }
 }
 
 @MainActor
 struct HeliosEnergyInspectorView: View {
   @ObservedObject var model: OverviewViewModel
   @ObservedObject var preferences: HeliosPreferences
-  @State private var range: HeliosGraphRange = .sixHours
-  @State private var selectedAppKey: String?
+  @ObservedObject var state: HeliosEnergyInspectorState = HeliosEnergyInspectorState()
+
+  private var range: HeliosGraphRange { state.range }
+  private var selectedAppKey: String? { state.selectedAppKey }
 
   private static let supportedRanges: [HeliosGraphRange] = [.oneHour, .sixHours, .twentyFourHours]
   private var p: OverviewPresentation { OverviewPresentation(model.snapshot) }
 
-  private var visibleBuckets: [AppEnergyBucket] {
-    guard let anchor = model.appEnergy.buckets.last?.capturedAt else { return [] }
-    let cutoff = anchor.addingTimeInterval(-range.seconds)
-    return model.appEnergy.buckets.filter {
-      $0.capturedAt >= cutoff && $0.capturedAt <= anchor
-    }
+  private var aggregation: HeliosEnergyInspectorState.Aggregation {
+    state.aggregation(for: model.appEnergy)
   }
 
-  private var summary: AppEnergySummary {
-    AppEnergyHistoryEngine.summary(visibleBuckets)
-  }
-
-  private var batteryBuckets: [AppEnergyBucket] {
-    visibleBuckets.filter { $0.onBattery == true }
-  }
+  private var visibleBuckets: [AppEnergyBucket] { aggregation.visibleBuckets }
+  private var summary: AppEnergySummary { aggregation.summary }
+  private var batteryBuckets: [AppEnergyBucket] { aggregation.batteryBuckets }
 
   private var trackedEnergyWattHours: Double {
     summary.topOnBattery.reduce(0) { $0 + $1.energyWattHours }
@@ -229,7 +340,7 @@ struct HeliosEnergyInspectorView: View {
           .foregroundStyle(.secondary)
       }
       Spacer()
-      Picker("History range", selection: $range) {
+      Picker("History range", selection: $state.range) {
         ForEach(Self.supportedRanges) { item in
           Text(item.label).tag(item)
         }
@@ -323,7 +434,7 @@ struct HeliosEnergyInspectorView: View {
           ForEach(Array(summary.topOnBattery.prefix(12).enumerated()), id: \.element.id) {
             index, entry in
             Button {
-              selectedAppKey = entry.appKey
+              state.selectedAppKey = entry.appKey
             } label: {
               energyLeaderRow(rank: index + 1, entry: entry)
             }
@@ -684,18 +795,18 @@ private struct HeliosDiagnosticDisclosurePanel<Content: View>: View {
   let subtitle: String?
   let summary: String?
   @State private var isExpanded: Bool
-  private let content: Content
+  private let content: () -> Content
 
   init(
     title: String, symbol: String, subtitle: String? = nil, summary: String? = nil,
-    defaultExpanded: Bool = false, @ViewBuilder content: () -> Content
+    defaultExpanded: Bool = false, @ViewBuilder content: @escaping () -> Content
   ) {
     self.title = title
     self.symbol = symbol
     self.subtitle = subtitle
     self.summary = summary
     _isExpanded = State(initialValue: defaultExpanded)
-    self.content = content()
+    self.content = content
   }
 
   var body: some View {
@@ -747,7 +858,7 @@ private struct HeliosDiagnosticDisclosurePanel<Content: View>: View {
       if isExpanded {
         Divider().opacity(0.45)
         VStack(alignment: .leading, spacing: 6) {
-          content
+          content()
         }
         .padding(10)
         .transition(.opacity.combined(with: .move(edge: .top)))
@@ -3135,18 +3246,18 @@ private struct HeliosModuleDetail: View {
   }
 
   private func energyEntryList(_ title: String, entries: [AppEnergyEntry]) -> some View {
-    let grouped = Dictionary(grouping: entries, by: \.displayName)
-    let orderedNames = grouped.keys.sorted { lhs, rhs in
-      let left = grouped[lhs, default: []].reduce(0) { $0 + $1.energyWattHours }
-      let right = grouped[rhs, default: []].reduce(0) { $0 + $1.energyWattHours }
-      return left == right
-        ? lhs.localizedCaseInsensitiveCompare(rhs) == .orderedAscending : left > right
-    }
-    return diagnosticSection(
+    diagnosticSection(
       title, "bolt.horizontal",
       subtitle: "Grouped by display name; raw app identities remain visible",
       summary: "\(entries.count) entries"
     ) {
+      let grouped = Dictionary(grouping: entries, by: \.displayName)
+      let orderedNames = grouped.keys.sorted { lhs, rhs in
+        let left = grouped[lhs, default: []].reduce(0) { $0 + $1.energyWattHours }
+        let right = grouped[rhs, default: []].reduce(0) { $0 + $1.energyWattHours }
+        return left == right
+          ? lhs.localizedCaseInsensitiveCompare(rhs) == .orderedAscending : left > right
+      }
       if entries.isEmpty {
         Text("No entries yet.").foregroundStyle(.secondary)
       } else {
@@ -3756,7 +3867,7 @@ private struct HeliosModuleDetail: View {
 
   private func diagnosticSection<Content: View>(
     _ title: String, _ symbol: String, subtitle: String? = nil, summary: String? = nil,
-    defaultExpanded: Bool = false, @ViewBuilder content: () -> Content
+    defaultExpanded: Bool = false, @ViewBuilder content: @escaping () -> Content
   ) -> AnyView {
     AnyView(
       HeliosDiagnosticDisclosurePanel(

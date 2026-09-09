@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// A sparse, append-friendly audit sample that helps explain physical storage
@@ -119,6 +120,8 @@ actor IOActivityAuditStore {
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
     private var records: [IOActivityRecord]?
+    private var appendHandle: FileHandle?
+    private var knownFileSize: Int?
 
     init(url: URL = IOActivityAuditStore.defaultURL()) {
         self.url = url
@@ -162,11 +165,12 @@ actor IOActivityAuditStore {
     private func loadIfNeeded(now: Date) -> [IOActivityRecord] {
         if let records { return records }
         let data = (try? Data(contentsOf: url)) ?? Data()
+        knownFileSize = data.count
         let decoded = IOActivityAuditEngine.decodeLines(data, decoder: decoder)
         let clean = IOActivityAuditEngine.sanitized(decoded, now: now)
         records = clean
         let rawCount = data.split(separator: 0x0A).reduce(into: 0) { count, line in if !line.isEmpty { count += 1 } }
-        if clean.count != decoded.count || decoded.count != rawCount { rewrite(clean) }
+        if clean.count != decoded.count || decoded.count != rawCount || (!data.isEmpty && data.last != 0x0A) { rewrite(clean) }
         return clean
     }
 
@@ -174,29 +178,70 @@ actor IOActivityAuditStore {
         do {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             var data = try encoder.encode(record); data.append(0x0A)
-            if !FileManager.default.fileExists(atPath: url.path) { try data.write(to: url, options: .atomic); return }
-            let handle = try FileHandle(forWritingTo: url)
-            defer { try? handle.close() }
-            try handle.seekToEnd(); try handle.write(contentsOf: data)
+            if !FileManager.default.fileExists(atPath: url.path) {
+                try? appendHandle?.close()
+                appendHandle = nil
+                try data.write(to: url, options: .atomic)
+                knownFileSize = data.count
+                appendHandle = nil
+                return
+            }
+            // A persistent descriptor can outlive atomic replacement or in-place
+            // truncation. Validate only at the existing slow append cadence.
+            if let appendHandle {
+                var descriptor = stat()
+                var path = stat()
+                guard fstat(appendHandle.fileDescriptor, &descriptor) == 0,
+                      stat(url.path, &path) == 0 else { throw CocoaError(.fileReadUnknown) }
+                if descriptor.st_dev != path.st_dev || descriptor.st_ino != path.st_ino
+                    || knownFileSize != Int(path.st_size) {
+                    try appendHandle.close()
+                    self.appendHandle = nil
+                    knownFileSize = nil
+                }
+            }
+            let handle: FileHandle
+            if let appendHandle {
+                handle = appendHandle
+            } else {
+                let opened = try FileHandle(forWritingTo: url)
+                knownFileSize = Int(try opened.seekToEnd())
+                appendHandle = opened
+                handle = opened
+            }
+            let baseSize = knownFileSize ?? fileSizeFromDisk()
+            try handle.write(contentsOf: data)
+            knownFileSize = baseSize + data.count
         } catch {
+            try? appendHandle?.close()
+            appendHandle = nil
+            knownFileSize = nil
             // Audit persistence is best-effort observability only.
         }
     }
 
     private func rewrite(_ records: [IOActivityRecord]) {
         do {
+            try? appendHandle?.close()
+            appendHandle = nil
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             var data = Data()
             for record in records { data.append(try encoder.encode(record)); data.append(0x0A) }
             try data.write(to: url, options: .atomic)
+            knownFileSize = data.count
         } catch {
+            knownFileSize = nil
             // Live telemetry remains authoritative even if the audit file is unavailable.
         }
     }
 
-    private func fileSize() -> Int {
+    private func fileSize() -> Int { knownFileSize ?? fileSizeFromDisk() }
+
+    private func fileSizeFromDisk() -> Int {
         let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
-        return (attributes?[.size] as? NSNumber)?.intValue ?? 0
+        let size = (attributes?[.size] as? NSNumber)?.intValue ?? 0
+        knownFileSize = size
+        return size
     }
 
     private static func record(_ snapshot: TelemetrySnapshot, now: Date) -> IOActivityRecord {

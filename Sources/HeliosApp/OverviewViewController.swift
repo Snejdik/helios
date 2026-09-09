@@ -56,7 +56,8 @@ final class OverviewViewModel: ObservableObject {
       lastAppEnergyProcessTicks = snapshot.processes.capturedTicks
       Task { @MainActor [weak self, appEnergyStore] in
         let summary = await appEnergyStore.consume(snapshot: snapshot, now: now)
-        self?.appEnergy = summary
+        guard let self, self.appEnergy != summary else { return }
+        self.appEnergy = summary
       }
     }
     guard let historyStore, let ioAuditStore else { return }

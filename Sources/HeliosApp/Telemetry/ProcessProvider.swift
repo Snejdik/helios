@@ -112,6 +112,7 @@ struct ProcessMetrics: Sendable {
 struct ProcessCounterSnapshot: Sendable, Equatable {
     let pid: Int32
     let startAbsoluteTime: UInt64
+    // proc_pid_rusage CPU durations are Mach absolute-time ticks, not nanoseconds.
     let userTime: UInt64
     let systemTime: UInt64
     let energyNanojoules: UInt64
@@ -157,6 +158,8 @@ private struct ProcessCandidate: Sendable {
 }
 
 enum ProcessRateCalculator {
+    private static let cpuSecondsPerTick = HostClock.seconds(from: 0, to: 1)
+
     static func calculate(previous: ProcessCounterSnapshot, current: ProcessCounterSnapshot, elapsedSeconds: Double, logicalCPUCount: Int) -> ProcessRateSnapshot? {
         guard previous.pid == current.pid,
               previous.startAbsoluteTime == current.startAbsoluteTime,
@@ -173,8 +176,10 @@ enum ProcessRateCalculator {
               current.instructions >= previous.instructions,
               current.cycles >= previous.cycles else { return nil }
 
-        let cpuNanoseconds = Double((current.userTime - previous.userTime) + (current.systemTime - previous.systemTime))
-        let rawCPU = cpuNanoseconds / 1_000_000_000.0 / elapsedSeconds * 100.0
+        // Convert the two deltas separately to avoid overflowing an integer sum.
+        // Energy counters below are already nanojoules and must not use this scale.
+        let cpuTicks = Double(current.userTime - previous.userTime) + Double(current.systemTime - previous.systemTime)
+        let rawCPU = cpuTicks * cpuSecondsPerTick / elapsedSeconds * 100.0
         let cpuCeiling = Double(logicalCPUCount) * 100.0
         guard rawCPU.isFinite, rawCPU >= 0, rawCPU <= cpuCeiling * 1.25 else { return nil }
 
@@ -211,9 +216,12 @@ enum ProcessRateCalculator {
 
 actor ProcessProvider {
     private var previous: [Int32: ProcessCounterSnapshot] = [:]
+    private var currentScratch: [Int32: ProcessCounterSnapshot] = [:]
     private var previousTicks: UInt64?
     private var session: [ProcessKey: ProcessSessionEntry] = [:]
     private var identityCache: [ProcessKey: (name: String, path: String?)] = [:]
+    private var sessionAccountedReadBytes: UInt64 = 0
+    private var sessionAccountedWriteBytes: UInt64 = 0
     private let logicalCPUCount = max(1, ProcessInfo.processInfo.processorCount)
     private let ownPID = getpid()
 
@@ -221,6 +229,7 @@ actor ProcessProvider {
     /// sleep/wake so "since Helios started" remains useful for the whole app run.
     func reset() {
         previous.removeAll(keepingCapacity: true)
+        currentScratch.removeAll(keepingCapacity: true)
         previousTicks = nil
     }
 
@@ -228,6 +237,8 @@ actor ProcessProvider {
         reset()
         session.removeAll(keepingCapacity: true)
         identityCache.removeAll(keepingCapacity: true)
+        sessionAccountedReadBytes = 0
+        sessionAccountedWriteBytes = 0
     }
 
     func sample() -> MetricSample<ProcessMetrics> {
@@ -239,8 +250,8 @@ actor ProcessProvider {
 
     private func read(elapsedSeconds: Double?) throws -> ProcessMetrics {
         let pids = try Self.listPIDs()
-        var current: [Int32: ProcessCounterSnapshot] = [:]
-        current.reserveCapacity(pids.count)
+        currentScratch.removeAll(keepingCapacity: true)
+        currentScratch.reserveCapacity(pids.count)
         var candidates: [ProcessCandidate] = []
         candidates.reserveCapacity(min(pids.count, 256))
 
@@ -249,7 +260,7 @@ actor ProcessProvider {
         // process sampler cheap even when hundreds of sandboxed processes exist.
         for pid in pids.prefix(1_024) where pid > 0 {
             guard let counters = Self.rusage(pid: pid) else { continue }
-            current[pid] = counters
+            currentScratch[pid] = counters
             let key = ProcessKey(pid: pid, startAbsoluteTime: counters.startAbsoluteTime)
             let rate: ProcessRateSnapshot?
             if let elapsedSeconds, let old = previous[pid] {
@@ -258,14 +269,18 @@ actor ProcessProvider {
                 rate = nil
             }
             if let rate {
-                var total = session[key] ?? ProcessSessionEntry()
-                total.readBytes = Self.saturatingAdd(total.readBytes, rate.diskReadBytesDelta)
-                total.writeBytes = Self.saturatingAdd(total.writeBytes, rate.diskWriteBytesDelta)
-                session[key] = total
+                sessionAccountedReadBytes = Self.saturatingAdd(sessionAccountedReadBytes, rate.diskReadBytesDelta)
+                sessionAccountedWriteBytes = Self.saturatingAdd(sessionAccountedWriteBytes, rate.diskWriteBytesDelta)
+                if rate.diskReadBytesDelta > 0 || rate.diskWriteBytesDelta > 0 || session[key] != nil {
+                    var total = session[key] ?? ProcessSessionEntry()
+                    total.readBytes = Self.saturatingAdd(total.readBytes, rate.diskReadBytesDelta)
+                    total.writeBytes = Self.saturatingAdd(total.writeBytes, rate.diskWriteBytesDelta)
+                    session[key] = total
+                }
             }
             candidates.append(ProcessCandidate(key: key, counters: counters, rate: rate))
         }
-        previous = current
+        swap(&previous, &currentScratch)
         guard !candidates.isEmpty else { throw TelemetryError.unavailable("No process resource usage accessible") }
 
         // Bound stale ledger growth during long sessions while preserving exited
@@ -278,18 +293,18 @@ actor ProcessProvider {
             identityCache = identityCache.filter { session[$0.key] != nil }
         }
 
-        func top(_ sorted: [ProcessCandidate]) -> [ProcessCandidate] { Array(sorted.prefix(6)) }
-        let topCPU = top(candidates.sorted { ($0.rate?.cpuPercent ?? -1) > ($1.rate?.cpuPercent ?? -1) })
-        let energySorted = candidates.sorted { ($0.rate?.powerWatts ?? -1) > ($1.rate?.powerWatts ?? -1) }
-        let topEnergy = top(energySorted)
-        let historyEnergy = Array(energySorted.prefix(24))
-        let topMemory = top(candidates.sorted { $0.counters.physicalFootprintBytes > $1.counters.physicalFootprintBytes })
-        let topRead = top(candidates.sorted { ($0.rate?.diskReadBytesPerSecond ?? -1) > ($1.rate?.diskReadBytesPerSecond ?? -1) })
-        let topWrite = top(candidates.sorted { ($0.rate?.diskWriteBytesPerSecond ?? -1) > ($1.rate?.diskWriteBytesPerSecond ?? -1) })
+        // Only a tiny leader set is presented. Avoid repeatedly sorting the complete
+        // process population for every ranking; bounded insertion is O(n*k) with
+        // k <= 24 and substantially reduces transient arrays/allocations.
+        let topCPU = Self.topCandidates(candidates, limit: 6) { $0.rate?.cpuPercent ?? -1 }
+        let historyEnergy = Self.topCandidates(candidates, limit: 24) { $0.rate?.powerWatts ?? -1 }
+        let topEnergy = Array(historyEnergy.prefix(6))
+        let topMemory = Self.topCandidates(candidates, limit: 6) { Double($0.counters.physicalFootprintBytes) }
+        let topRead = Self.topCandidates(candidates, limit: 6) { $0.rate?.diskReadBytesPerSecond ?? -1 }
+        let topWrite = Self.topCandidates(candidates, limit: 6) { $0.rate?.diskWriteBytesPerSecond ?? -1 }
 
-        let candidateByKey = Dictionary(uniqueKeysWithValues: candidates.map { ($0.key, $0) })
-        let sessionReadKeys = session.sorted { $0.value.readBytes > $1.value.readBytes }.prefix(6).map(\.key)
-        let sessionWriteKeys = session.sorted { $0.value.writeBytes > $1.value.writeBytes }.prefix(6).map(\.key)
+        let sessionReadKeys = Self.topSessionKeys(session, limit: 6, value: { $0.readBytes })
+        let sessionWriteKeys = Self.topSessionKeys(session, limit: 6, value: { $0.writeBytes })
 
         func identity(for key: ProcessKey) -> (name: String, path: String?) {
             if let cached = identityCache[key] { return cached }
@@ -322,7 +337,10 @@ actor ProcessProvider {
         }
 
         func sessionActivity(_ key: ProcessKey) -> ProcessActivity {
-            if let candidate = candidateByKey[key] { return activity(candidate) }
+            // At most twelve session leaders are materialized. A tiny bounded
+            // linear lookup avoids allocating a full ProcessKey -> Candidate
+            // dictionary for every five-second sample.
+            if let candidate = candidates.first(where: { $0.key == key }) { return activity(candidate) }
             let identity = identityCache[key] ?? ("PID \(key.pid) (exited)", nil)
             let totals = session[key] ?? ProcessSessionEntry()
             return ProcessActivity(
@@ -347,8 +365,8 @@ actor ProcessProvider {
 
         let accountedReadRate = candidates.compactMap { $0.rate?.diskReadBytesPerSecond }.reduce(0, +)
         let accountedWriteRate = candidates.compactMap { $0.rate?.diskWriteBytesPerSecond }.reduce(0, +)
-        let sessionRead = session.values.reduce(UInt64(0)) { Self.saturatingAdd($0, $1.readBytes) }
-        let sessionWrite = session.values.reduce(UInt64(0)) { Self.saturatingAdd($0, $1.writeBytes) }
+        let sessionRead = sessionAccountedReadBytes
+        let sessionWrite = sessionAccountedWriteBytes
         let ownActivity = candidates.first(where: { $0.key.pid == ownPID }).map(activity)
 
         return ProcessMetrics(
@@ -367,6 +385,40 @@ actor ProcessProvider {
             sessionAccountedWriteBytes: sessionWrite,
             heliosActivity: ownActivity
         )
+    }
+
+    private static func topCandidates(
+        _ candidates: [ProcessCandidate], limit: Int, score: (ProcessCandidate) -> Double
+    ) -> [ProcessCandidate] {
+        guard limit > 0 else { return [] }
+        var leaders: [(candidate: ProcessCandidate, score: Double)] = []
+        leaders.reserveCapacity(limit)
+        for candidate in candidates {
+            let candidateScore = score(candidate)
+            guard candidateScore.isFinite else { continue }
+            if leaders.count == limit, let last = leaders.last, candidateScore <= last.score { continue }
+            let insertion = leaders.firstIndex(where: { candidateScore > $0.score }) ?? leaders.endIndex
+            leaders.insert((candidate, candidateScore), at: insertion)
+            if leaders.count > limit { leaders.removeLast() }
+        }
+        return leaders.map(\.candidate)
+    }
+
+    private static func topSessionKeys(
+        _ session: [ProcessKey: ProcessSessionEntry], limit: Int, value: (ProcessSessionEntry) -> UInt64
+    ) -> [ProcessKey] {
+        guard limit > 0 else { return [] }
+        var leaders: [(key: ProcessKey, value: UInt64)] = []
+        leaders.reserveCapacity(limit)
+        for (key, entry) in session {
+            let candidateValue = value(entry)
+            guard candidateValue > 0 else { continue }
+            if leaders.count == limit, let last = leaders.last, candidateValue <= last.value { continue }
+            let insertion = leaders.firstIndex(where: { candidateValue > $0.value }) ?? leaders.endIndex
+            leaders.insert((key, candidateValue), at: insertion)
+            if leaders.count > limit { leaders.removeLast() }
+        }
+        return leaders.map(\.key)
     }
 
     private static func saturatingAdd(_ lhs: UInt64, _ rhs: UInt64) -> UInt64 {

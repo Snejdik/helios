@@ -82,9 +82,13 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
   func showOnboardingIfNeeded() { windows.showOnboardingIfNeeded() }
 
   func popoverDidClose(_ notification: Notification) {
-    guard let popover = notification.object as? NSPopover, highlightedPopover === popover else {
-      return
-    }
+    guard let popover = notification.object as? NSPopover else { return }
+    // Popovers are cheap to rebuild and their SwiftUI trees can retain charts,
+    // diagnostic arrays and observation state. Drop the tree as soon as the
+    // transient surface closes instead of keeping hidden presentation memory.
+    popover.contentViewController = nil
+    HeliosAppIconCache.shared.purge()
+    guard highlightedPopover === popover else { return }
     clearHighlight()
     stopDismissMonitoring()
   }

@@ -12,7 +12,7 @@ The Next22 backend and privileged-control boundaries remain frozen, but the lega
 
 ## Distribution
 - Personal use for now; no Mac App Store, ever. May share via direct/notarized download later.
-- Local Debug and Release builds use Apple Development signing with Personal Team `3J76KPDS9C`, confirmed from both Xcode settings and the installed certificate's subject OU. Both targets inherit the same identity and Team ID from `Config/Base.xcconfig`. Earlier verification records retain their historical ad-hoc results.
+- Local Debug and Release builds require Apple Development signing with the same Team identity for both targets. Developer-specific Team IDs belong in ignored `Config/Local.xcconfig`; the public base configuration stays developer-neutral. Earlier verification records retain only sanitized historical signing references.
 - Upgrade to paid Developer ID for notarization/direct distribution. Local compilation and signature validity do not establish that SMAppService will permit registration or launch.
 - The installed SDK's `SMAppService.h` documents signing requirements and notarization for apps containing LaunchDaemons. Phase 3 verifies registration separately; local ad-hoc testing reached Requires Approval but does not prove permission to launch a root daemon. No phase bypasses OS approval.
 

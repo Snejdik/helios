@@ -104,6 +104,81 @@ struct RootVolumeMetrics: Sendable, Equatable {
     var usedBytes: UInt64 { totalBytes >= freeBytes ? totalBytes - freeBytes : 0 }
 }
 
+/// Refresh cadences for data that does not need to be rediscovered at the
+/// two-second live I/O sampling rate. Live device counters remain on the
+/// existing TelemetryMonitor cadence; only slow/static discovery work is
+/// decoupled from it.
+struct StorageInventoryRefreshPolicy: Sendable, Equatable {
+    let topologySeconds: Double
+    let metadataSeconds: Double
+
+    static let production = StorageInventoryRefreshPolicy(
+        topologySeconds: 5,
+        metadataSeconds: 300
+    )
+
+    func shouldRefresh(lastTicks: UInt64?, nowTicks: UInt64, intervalSeconds: Double) -> Bool {
+        guard let lastTicks else { return true }
+        return shouldRefresh(ageSeconds: HostClock.seconds(from: lastTicks, to: nowTicks), intervalSeconds: intervalSeconds)
+    }
+
+    func shouldRefresh(ageSeconds: Double, intervalSeconds: Double) -> Bool {
+        guard intervalSeconds.isFinite, intervalSeconds > 0 else { return true }
+        return !ageSeconds.isFinite || ageSeconds < 0 || ageSeconds >= intervalSeconds
+    }
+}
+
+fileprivate struct StorageTopologyIdentity: Sendable, Equatable, Comparable {
+    let registryID: UInt64
+    let bsdName: String
+    let capacityBytes: UInt64
+    let isRemovable: Bool
+
+    static func < (lhs: Self, rhs: Self) -> Bool {
+        if lhs.bsdName != rhs.bsdName {
+            return lhs.bsdName.localizedStandardCompare(rhs.bsdName) == .orderedAscending
+        }
+        return lhs.registryID < rhs.registryID
+    }
+}
+
+fileprivate struct CachedStorageDevice: Sendable, Equatable {
+    let registryID: UInt64
+    let bsdName: String
+    let model: String
+    let capacityBytes: UInt64
+    let isInternal: Bool
+    let isRemovable: Bool
+    let transport: String
+    let controllerClass: String
+    let smartCapability: StorageSMARTCapability
+    let counterSourceRegistryID: UInt64?
+
+    var topologyIdentity: StorageTopologyIdentity {
+        StorageTopologyIdentity(
+            registryID: registryID,
+            bsdName: bsdName,
+            capacityBytes: capacityBytes,
+            isRemovable: isRemovable
+        )
+    }
+
+    func metrics(counters: MetricResult<StorageIOCounters>) -> StorageDeviceMetrics {
+        StorageDeviceMetrics(
+            registryID: registryID,
+            bsdName: bsdName,
+            model: model,
+            capacityBytes: capacityBytes,
+            isInternal: isInternal,
+            isRemovable: isRemovable,
+            transport: transport,
+            controllerClass: controllerClass,
+            smartCapability: smartCapability,
+            counters: counters
+        )
+    }
+}
+
 struct StorageMetrics: Sendable {
     let rootVolume: MetricResult<RootVolumeMetrics>
     let devices: [StorageDeviceMetrics]
@@ -290,12 +365,53 @@ private enum IORegistryStorage {
         return nil
     }
 
-    static func statistics(in entries: [io_registry_entry_t]) -> [String: Any]? {
+    static func registryID(_ entry: io_registry_entry_t) -> UInt64? {
+        var value: UInt64 = 0
+        guard IORegistryEntryGetRegistryEntryID(entry, &value) == KERN_SUCCESS, value != 0 else { return nil }
+        return value
+    }
+
+    static func statisticsSource(in entries: [io_registry_entry_t]) -> (entry: io_registry_entry_t, registryID: UInt64)? {
         for entry in entries {
-            if let stats = dictionary(entry, "Statistics"), stats["Bytes (Read)"] != nil || stats["Bytes (Write)"] != nil { return stats }
+            guard let stats = dictionary(entry, "Statistics"),
+                  stats["Bytes (Read)"] != nil || stats["Bytes (Write)"] != nil,
+                  let registryID = registryID(entry) else { continue }
+            return (entry, registryID)
         }
         return nil
     }
+}
+
+/// Process-lifetime retained handle to the exact IORegistry node that publishes
+/// live storage counters. Keeping the service object avoids rebuilding an
+/// IORegistry matching dictionary and performing a service lookup for every
+/// device on every two-second sample. If the underlying service disappears,
+/// the property read fails and StorageProvider performs a bounded rediscovery.
+fileprivate final class StorageCounterSource {
+    let registryID: UInt64
+    private let entry: io_registry_entry_t
+
+    init?(retaining entry: io_registry_entry_t, registryID: UInt64) {
+        guard IOObjectRetain(entry) == KERN_SUCCESS else { return nil }
+        self.entry = entry
+        self.registryID = registryID
+    }
+
+    deinit {
+        IOObjectRelease(entry)
+    }
+
+    func readCounters() throws -> StorageIOCounters {
+        guard let statistics = IORegistryStorage.dictionary(entry, "Statistics") else {
+            throw TelemetryError.unavailable("Storage statistics source unavailable")
+        }
+        return try StorageParser.counters(statistics)
+    }
+}
+
+fileprivate struct StorageInventoryDiscovery {
+    let devices: [CachedStorageDevice]
+    let counterSources: [UInt64: StorageCounterSource]
 }
 
 
@@ -469,9 +585,18 @@ struct NVMeSMARTNativeReader {
 
 struct IOKitStorageReader {
     func read() throws -> StorageMetrics {
-        let devices = try discoverDevices()
-        guard !devices.isEmpty else { throw TelemetryError.unavailable("No whole storage devices discovered") }
-        let rootVolume = captureMetric { try StorageParser.rootVolume(FileManager.default.attributesOfFileSystem(forPath: "/")) }
+        let discovery = try discoverInventory()
+        guard !discovery.devices.isEmpty else { throw TelemetryError.unavailable("No whole storage devices discovered") }
+        let devices = discovery.devices.map { device in
+            device.metrics(counters: captureMetric {
+                guard let sourceID = device.counterSourceRegistryID,
+                      let source = discovery.counterSources[sourceID] else {
+                    throw TelemetryError.unavailable("IOBlockStorage statistics unavailable")
+                }
+                return try source.readCounters()
+            })
+        }
+        let rootVolume = readRootVolume()
         let primary = devices.first(where: { $0.isInternal && !$0.isRemovable }) ?? devices.first(where: { $0.isInternal }) ?? devices.first
         return StorageMetrics(rootVolume: rootVolume, devices: devices, primaryDeviceBSDName: primary?.bsdName, throughput: .failure(.warmingUp), smartHealth: .failure(.warmingUp), smartHealthCapturedTicks: nil)
     }
@@ -494,21 +619,60 @@ struct IOKitStorageReader {
         )
     }
 
-    func discoverDevices() throws -> [StorageDeviceMetrics] {
+    func readRootVolume() -> MetricResult<RootVolumeMetrics> {
+        captureMetric { try StorageParser.rootVolume(FileManager.default.attributesOfFileSystem(forPath: "/")) }
+    }
+
+    /// Lightweight topology probe. It intentionally reads only properties on
+    /// whole IOMedia nodes and never walks ancestors, resolves controller
+    /// classes, or probes SMART capability. Full metadata discovery is only
+    /// repeated when this identity set changes or the slow fallback expires.
+    fileprivate func topologySnapshot() throws -> [StorageTopologyIdentity] {
         guard let matching = IOServiceMatching("IOMedia") else { throw TelemetryError.unavailable("IOMedia matching unavailable") }
         var iterator: io_iterator_t = 0
         let status = IOServiceGetMatchingServices(kIOMainPortDefault, matching, &iterator)
-        guard status == KERN_SUCCESS else { throw TelemetryError.ioKit("Enumerate storage media", status) }
+        guard status == KERN_SUCCESS else { throw TelemetryError.ioKit("Enumerate storage topology", status) }
         defer { IOObjectRelease(iterator) }
 
-        var devices: [StorageDeviceMetrics] = []
+        var identities: [StorageTopologyIdentity] = []
         while true {
             let media = IOIteratorNext(iterator)
             guard media != 0 else { break }
             defer { IOObjectRelease(media) }
             guard IORegistryStorage.bool(media, "Whole") == true,
                   let bsdName = IORegistryStorage.string(media, "BSD Name"),
-                  let size = IORegistryStorage.uint64(media, "Size"), size > 0 else { continue }
+                  let size = IORegistryStorage.uint64(media, "Size"), size > 0,
+                  let registryID = IORegistryStorage.registryID(media) else { continue }
+            identities.append(StorageTopologyIdentity(
+                registryID: registryID,
+                bsdName: bsdName,
+                capacityBytes: size,
+                isRemovable: IORegistryStorage.bool(media, "Removable") ?? false
+            ))
+        }
+        return identities.sorted()
+    }
+
+    /// Full storage discovery. This is intentionally slow-cadence: it walks
+    /// the registry lineage once to cache immutable/slow metadata and the exact
+    /// registry entry that publishes live I/O Statistics.
+    fileprivate func discoverInventory() throws -> StorageInventoryDiscovery {
+        guard let matching = IOServiceMatching("IOMedia") else { throw TelemetryError.unavailable("IOMedia matching unavailable") }
+        var iterator: io_iterator_t = 0
+        let status = IOServiceGetMatchingServices(kIOMainPortDefault, matching, &iterator)
+        guard status == KERN_SUCCESS else { throw TelemetryError.ioKit("Enumerate storage media", status) }
+        defer { IOObjectRelease(iterator) }
+
+        var devices: [CachedStorageDevice] = []
+        var counterSources: [UInt64: StorageCounterSource] = [:]
+        while true {
+            let media = IOIteratorNext(iterator)
+            guard media != 0 else { break }
+            defer { IOObjectRelease(media) }
+            guard IORegistryStorage.bool(media, "Whole") == true,
+                  let bsdName = IORegistryStorage.string(media, "BSD Name"),
+                  let size = IORegistryStorage.uint64(media, "Size"), size > 0,
+                  let registryID = IORegistryStorage.registryID(media) else { continue }
 
             let ancestors = IORegistryStorage.ancestors(from: media)
             defer { ancestors.forEach { IOObjectRelease($0) } }
@@ -530,15 +694,13 @@ struct IOKitStorageReader {
             }) ?? IORegistryStorage.className(media)
             let nvmeSMART = lineage.contains { IORegistryStorage.bool($0, "NVMe SMART Capable") == true }
             let ataSMART = lineage.contains { IORegistryStorage.bool($0, "SMART Capable") == true }
-            let counters: MetricResult<StorageIOCounters> = captureMetric {
-                guard let statistics = IORegistryStorage.statistics(in: lineage) else {
-                    throw TelemetryError.unavailable("IOBlockStorage statistics unavailable")
-                }
-                return try StorageParser.counters(statistics)
+            let counterSourceInfo = IORegistryStorage.statisticsSource(in: lineage)
+            let counterSourceRegistryID = counterSourceInfo?.registryID
+            if let info = counterSourceInfo, counterSources[info.registryID] == nil,
+               let retained = StorageCounterSource(retaining: info.entry, registryID: info.registryID) {
+                counterSources[info.registryID] = retained
             }
-            var registryID: UInt64 = 0
-            if IORegistryEntryGetRegistryEntryID(media, &registryID) != KERN_SUCCESS { registryID = 0 }
-            devices.append(StorageDeviceMetrics(
+            devices.append(CachedStorageDevice(
                 registryID: registryID,
                 bsdName: bsdName,
                 model: model,
@@ -548,13 +710,14 @@ struct IOKitStorageReader {
                 transport: transport,
                 controllerClass: controllerClass,
                 smartCapability: StorageParser.smartCapability(nvme: nvmeSMART, ata: ataSMART),
-                counters: counters
+                counterSourceRegistryID: counterSourceRegistryID
             ))
         }
-        return devices.sorted {
+        let sortedDevices = devices.sorted {
             if $0.isInternal != $1.isInternal { return $0.isInternal && !$1.isInternal }
             return $0.bsdName.localizedStandardCompare($1.bsdName) == .orderedAscending
         }
+        return StorageInventoryDiscovery(devices: sortedDevices, counterSources: counterSources)
     }
 }
 
@@ -567,8 +730,25 @@ actor StorageProvider {
     private var smartSampleTicks: UInt64?
     private let smartRefreshSeconds = 30.0
 
+    private let refreshPolicy = StorageInventoryRefreshPolicy.production
+    private var cachedDevices: [CachedStorageDevice] = []
+    private var counterSources: [UInt64: StorageCounterSource] = [:]
+    private var cachedTopology: [StorageTopologyIdentity] = []
+    private var topologyProbeTicks: UInt64?
+    private var metadataRefreshTicks: UInt64?
+    private var counterFailureRediscoveryTicks: UInt64?
+
     func reset() {
         tracker.reset()
+        // A disabled collector or sleep/wake may hide a topology change. Force
+        // one fresh discovery when sampling resumes, while preserving the
+        // process-lifetime physical-I/O baseline below.
+        cachedDevices.removeAll(keepingCapacity: true)
+        counterSources.removeAll(keepingCapacity: true)
+        cachedTopology.removeAll(keepingCapacity: true)
+        topologyProbeTicks = nil
+        metadataRefreshTicks = nil
+        counterFailureRediscoveryTicks = nil
         // Keep the physical-device baseline across sleep/wake so the UI can
         // answer "how much I/O happened while this Helios process has existed".
         // A device change or counter rollback resets it independently below.
@@ -581,9 +761,47 @@ actor StorageProvider {
         let date = Date()
         let ticks = HostClock.now
         let result = captureMetric {
-            var metrics = try IOKitStorageReader().read()
+            let reader = IOKitStorageReader()
+            try refreshInventoryIfNeeded(reader: reader, ticks: ticks)
+            guard !cachedDevices.isEmpty else { throw TelemetryError.unavailable("No whole storage devices discovered") }
+
+            var counterFailureNeedsRediscovery = false
+            var devices = cachedDevices.map { device -> StorageDeviceMetrics in
+                let counters: MetricResult<StorageIOCounters>
+                if device.counterSourceRegistryID == nil {
+                    counters = .failure(.unavailable("IOBlockStorage statistics unavailable"))
+                } else {
+                    do { counters = .success(try readCounters(for: device)) }
+                    catch {
+                        counters = .failure((error as? TelemetryError) ?? .unavailable(error.localizedDescription))
+                        counterFailureNeedsRediscovery = true
+                    }
+                }
+                return device.metrics(counters: counters)
+            }
+
+            // A cached statistics publisher disappearing is stronger evidence
+            // of topology/driver churn than the slow probe. Rediscover once
+            // immediately so removal/reprobe does not stay stale until the next topology probe.
+            if counterFailureNeedsRediscovery && refreshPolicy.shouldRefresh(
+                lastTicks: counterFailureRediscoveryTicks,
+                nowTicks: ticks,
+                intervalSeconds: refreshPolicy.topologySeconds
+            ) {
+                counterFailureRediscoveryTicks = ticks
+                if let refreshed = try? reader.discoverInventory(), !refreshed.devices.isEmpty {
+                    installInventory(refreshed, ticks: ticks)
+                    devices = cachedDevices.map { device in
+                        device.metrics(counters: captureMetric { try readCounters(for: device) })
+                    }
+                }
+            }
+
+            let rootVolume = reader.readRootVolume()
+            let primary = devices.first(where: { $0.isInternal && !$0.isRemovable }) ?? devices.first(where: { $0.isInternal }) ?? devices.first
+            let primaryBSDName = primary?.bsdName
             let throughput: MetricResult<StorageThroughput>
-            if let primary = metrics.primaryDevice {
+            if let primary {
                 switch primary.counters {
                 case .success(let counters): throughput = tracker.update(counters: counters, ticks: ticks)
                 case .failure(let error): throughput = .failure(error)
@@ -591,8 +809,9 @@ actor StorageProvider {
             } else {
                 throughput = .failure(.unavailable("Primary internal storage unavailable"))
             }
+
             let monitoring: (MetricResult<UInt64>, MetricResult<UInt64>)
-            if let primary = metrics.primaryDevice, case .success(let counters) = primary.counters {
+            if let primary, case .success(let counters) = primary.counters {
                 if monitoringDeviceBSDName != primary.bsdName || monitoringBaseline == nil {
                     monitoringDeviceBSDName = primary.bsdName
                     monitoringBaseline = counters
@@ -614,7 +833,7 @@ actor StorageProvider {
                 monitoring = (.failure(.unavailable("Primary storage counters unavailable")), .failure(.unavailable("Primary storage counters unavailable")))
             }
 
-            if let primary = metrics.primaryDevice, primary.smartCapability == .nvmeAdvertised {
+            if let primary, primary.smartCapability == .nvmeAdvertised {
                 let changedDevice = smartDeviceBSDName != primary.bsdName
                 let age = smartSampleTicks.map { HostClock.seconds(from: $0, to: ticks) } ?? .infinity
                 if changedDevice || !age.isFinite || age >= smartRefreshSeconds {
@@ -624,24 +843,79 @@ actor StorageProvider {
                 }
             } else {
                 smartHealth = .failure(.unavailable("Primary storage does not advertise native NVMe SMART"))
-                smartDeviceBSDName = metrics.primaryDevice?.bsdName
+                smartDeviceBSDName = primaryBSDName
                 smartSampleTicks = ticks
             }
-            metrics = StorageMetrics(
-                rootVolume: metrics.rootVolume,
-                devices: metrics.devices,
-                primaryDeviceBSDName: metrics.primaryDeviceBSDName,
+
+            return StorageMetrics(
+                rootVolume: rootVolume,
+                devices: devices,
+                primaryDeviceBSDName: primaryBSDName,
                 throughput: throughput,
                 smartHealth: smartHealth,
                 smartHealthCapturedTicks: smartSampleTicks,
                 monitoringReadBytes: monitoring.0,
                 monitoringWrittenBytes: monitoring.1
             )
-            return metrics
         }
         if case .failure = result { tracker.reset() }
         return MetricSample(result, capturedAt: date, capturedTicks: ticks)
     }
+
+    private func refreshInventoryIfNeeded(reader: IOKitStorageReader, ticks: UInt64) throws {
+        if cachedDevices.isEmpty {
+            let discovered = try reader.discoverInventory()
+            guard !discovered.devices.isEmpty else { throw TelemetryError.unavailable("No whole storage devices discovered") }
+            installInventory(discovered, ticks: ticks)
+            return
+        }
+
+        let metadataExpired = refreshPolicy.shouldRefresh(
+            lastTicks: metadataRefreshTicks,
+            nowTicks: ticks,
+            intervalSeconds: refreshPolicy.metadataSeconds
+        )
+        if metadataExpired {
+            if let discovered = try? reader.discoverInventory(), !discovered.devices.isEmpty {
+                installInventory(discovered, ticks: ticks)
+            } else {
+                // Avoid retrying an expensive full discovery every two seconds
+                // during a transient IOKit failure; the topology probe and live
+                // counter failure path still provide earlier recovery signals.
+                metadataRefreshTicks = ticks
+            }
+            return
+        }
+
+        guard refreshPolicy.shouldRefresh(
+            lastTicks: topologyProbeTicks,
+            nowTicks: ticks,
+            intervalSeconds: refreshPolicy.topologySeconds
+        ) else { return }
+        topologyProbeTicks = ticks
+        guard let topology = try? reader.topologySnapshot() else { return }
+        guard topology != cachedTopology else { return }
+        if let discovered = try? reader.discoverInventory(), !discovered.devices.isEmpty {
+            installInventory(discovered, ticks: ticks)
+        }
+    }
+
+    private func installInventory(_ discovery: StorageInventoryDiscovery, ticks: UInt64) {
+        cachedDevices = discovery.devices
+        counterSources = discovery.counterSources
+        cachedTopology = discovery.devices.map(\.topologyIdentity).sorted()
+        topologyProbeTicks = ticks
+        metadataRefreshTicks = ticks
+    }
+
+    private func readCounters(for device: CachedStorageDevice) throws -> StorageIOCounters {
+        guard let sourceID = device.counterSourceRegistryID,
+              let source = counterSources[sourceID] else {
+            throw TelemetryError.unavailable("IOBlockStorage statistics unavailable")
+        }
+        return try source.readCounters()
+    }
+
 }
 
 extension StorageMetrics {

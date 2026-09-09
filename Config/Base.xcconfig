@@ -14,15 +14,15 @@ SWIFT_TREAT_WARNINGS_AS_ERRORS = YES
 ENABLE_USER_SCRIPT_SANDBOXING = YES
 
 CODE_SIGN_STYLE = Automatic
-// Both configurations and targets share the installed Personal Team identity.
+// Both targets must use the same Apple Development identity.
 CODE_SIGN_IDENTITY = Apple Development
 CODE_SIGN_ENTITLEMENTS = Config/Helios.entitlements
 // Trusted XPC peers must not be attachable/injectable by another local process.
 CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO
 ENABLE_HARDENED_RUNTIME = YES
 ENABLE_APP_SANDBOX = NO
-// Confirmed from Xcode settings and the Apple Development certificate's subject OU.
-DEVELOPMENT_TEAM = 3J76KPDS9C
+// Set a machine-specific Team ID in ignored Config/Local.xcconfig.
+DEVELOPMENT_TEAM =
 
 CURRENT_PROJECT_VERSION = 1
 MARKETING_VERSION = 0.1.0
@@ -30,5 +30,5 @@ VERSIONING_SYSTEM = apple-generic
 GENERATE_INFOPLIST_FILE = NO
 COPY_PHASE_STRIP = NO
 
-// Optional overrides for another local development team.
+// Optional machine-local signing overrides.
 #include? "Local.xcconfig"

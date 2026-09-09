@@ -163,6 +163,22 @@ private struct PresentationChecks {
     try require(
       widget.cpuText == "—" && widget.temperatureText == "—", "Stale status values must clear")
 
+    // A native metric item must not redraw for unrelated telemetry changes.
+    // The static hub has no live values at all. This guards the AppKit replicant
+    // work seen in the near-final CPU profile without changing visible content.
+    let temperatureItem = MenuBarView(
+      frame: NSRect(x: 0, y: 0, width: 50, height: 24), metrics: [.temperature])
+    temperatureItem.update(normal, now: now)
+    let unrelatedInvalidation = temperatureItem.update(
+      fixture(cpu: 80, temperature: 56, now: now), now: now)
+    try require(!unrelatedInvalidation, "CPU changes requested a temperature-only redraw")
+    let staleInvalidation = temperatureItem.update(normal, now: now.addingTimeInterval(16))
+    try require(staleInvalidation && temperatureItem.temperatureText == "—",
+                "Stale visible temperature must request redraw and clear its text")
+    let hub = MenuBarView(frame: NSRect(x: 0, y: 0, width: 24, height: 24), metrics: [])
+    try require(!hub.update(normal, now: now), "Static dashboard hub requested a live redraw")
+    print("PASS native metric redraw isolation, static hub stability, and stale-value redraw")
+
     let preferencesSuite = "Helios.PresentationChecks.\(UUID().uuidString)"
     guard let preferencesDefaults = UserDefaults(suiteName: preferencesSuite) else {
       throw PresentationCheckFailure(message: "Unable to create isolated preferences suite")

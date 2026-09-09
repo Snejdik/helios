@@ -92,6 +92,13 @@ private struct TelemetryChecks {
   }
 
   @MainActor private static func run() async throws {
+    if CommandLine.arguments.contains("--persistence-only") {
+      try await persistentHistoryChecks()
+      try await ioAuditChecks()
+      try await persistenceLifecycleChecks()
+      print("PASS focused persistence checks")
+      return
+    }
     if CommandLine.arguments.contains("--ui-history-only") {
       try historyChecks()
       try await persistentHistoryChecks()
@@ -137,6 +144,7 @@ private struct TelemetryChecks {
     print(
       "PASS 24-hour physical/process I/O audit, gap-safe device accounting, CSV export and malformed-tail recovery"
     )
+    try await persistenceLifecycleChecks()
     try capabilityChecks()
     print(
       "PASS capability report states keep read-only discovery separate from fan write authorization"
@@ -376,9 +384,15 @@ private struct TelemetryChecks {
   }
 
   private static func processChecks() throws {
+    var timebase = mach_timebase_info_data_t()
+    try require(mach_timebase_info(&timebase) == KERN_SUCCESS && timebase.numer > 0,
+                "CPU fixture requires the native Mach timebase")
+    func cpuTicks(_ nanoseconds: UInt64) -> UInt64 {
+      nanoseconds * UInt64(timebase.denom) / UInt64(timebase.numer)
+    }
     let previous = ProcessCounterSnapshot(
       pid: 42, startAbsoluteTime: 100,
-      userTime: 1_000_000_000, systemTime: 500_000_000,
+      userTime: cpuTicks(1_000_000_000), systemTime: cpuTicks(500_000_000),
       energyNanojoules: 2_000_000_000, performanceEnergyNanojoules: 400_000_000,
       diskReadBytes: 10_000, diskWriteBytes: 20_000,
       packageIdleWakeups: 10, interruptWakeups: 20,
@@ -387,7 +401,7 @@ private struct TelemetryChecks {
     )
     let current = ProcessCounterSnapshot(
       pid: 42, startAbsoluteTime: 100,
-      userTime: 2_500_000_000, systemTime: 1_000_000_000,
+      userTime: cpuTicks(2_500_000_000), systemTime: cpuTicks(1_000_000_000),
       energyNanojoules: 6_000_000_000, performanceEnergyNanojoules: 1_400_000_000,
       diskReadBytes: 50_000, diskWriteBytes: 80_000,
       packageIdleWakeups: 18, interruptWakeups: 32,
@@ -400,7 +414,7 @@ private struct TelemetryChecks {
     else {
       throw CheckFailure(description: "Valid process deltas were rejected")
     }
-    try require(close(rate.cpuPercent, 100), "Process CPU accounting")
+    try require(close(rate.cpuPercent, 100), "Process CPU must convert Mach ticks through the native timebase (100% of one core)")
     try require(
       close(rate.powerWatts, 2) && close(rate.performanceCorePowerWatts, 0.5),
       "Direct process energy conversion")
@@ -976,6 +990,17 @@ private struct TelemetryChecks {
     _ = await store.append(
       snapshot: historySnapshot(now: start.addingTimeInterval(30), power: 14, cpu: 30),
       now: start.addingTimeInterval(30))
+    // A cached descriptor must follow atomic path replacement, not append to
+    // an unlinked inode while reporting successful in-memory history.
+    let saved = try Data(contentsOf: temp)
+    try saved.write(to: temp, options: .atomic)
+    _ = await store.append(
+      snapshot: historySnapshot(now: start.addingTimeInterval(60), power: 18, cpu: 40),
+      now: start.addingTimeInterval(60))
+    let replaced = await PersistentHistoryStore(url: temp).current(now: start.addingTimeInterval(60))
+    try require(replaced.points.count == 3, "Cached history handle lost append after atomic replacement")
+    // Restore this fixture's original two-record state for existing assertions.
+    try saved.write(to: temp, options: .atomic)
     let fromDisk = PersistentHistoryStore(url: temp)
     let reloaded = await fromDisk.current(now: start.addingTimeInterval(30))
     try require(reloaded.points.count == 2, "Persistent history must reload append-only NDJSON")
@@ -999,6 +1024,77 @@ private struct TelemetryChecks {
     try require(
       recoveredSummary.points.count == 3,
       "Malformed tail recovery must preserve the next valid append")
+  }
+
+  private static func persistenceLifecycleChecks() async throws {
+    // Every store uses disposable paths. Exercise the production cached-handle
+    // paths, then inspect disk bytes independently of their in-memory summaries.
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("Helios-AppendLifecycle-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    for kind in ["history", "io", "energy"] {
+      let url = directory.appendingPathComponent(kind + ".ndjson")
+      let history = PersistentHistoryStore(url: url)
+      let audit = IOActivityAuditStore(url: url)
+      let energy = AppEnergyHistoryStore(url: url)
+      let start = Date(timeIntervalSince1970: 60_000)
+      func append(_ index: Int) async {
+        if kind == "energy" {
+          // Seed once and then provide real five-second sample intervals, so
+          // each call flushes one complete minute through the production store.
+          let lower = index == 0 ? 0 : index * 12 + 1
+          for tick in lower...((index + 1) * 12) {
+            let now = start.addingTimeInterval(Double(tick) * 5)
+            var snapshot = TelemetrySnapshot()
+            snapshot.processes = MetricSample(.success(ProcessMetrics(
+              accessibleProcessCount: 0, topByCPU: [], topByEnergy: [], topByMemory: [])),
+              capturedAt: now, capturedTicks: UInt64(tick + 1))
+            _ = await energy.consume(snapshot: snapshot, now: now)
+          }
+        } else {
+          let now = start.addingTimeInterval(Double(index) * 60)
+          if kind == "history" { _ = await history.append(snapshot: TelemetrySnapshot(), now: now) }
+          else { _ = await audit.append(snapshot: TelemetrySnapshot(), now: now) }
+        }
+      }
+      func diskCount() throws -> Int {
+        let data = try Data(contentsOf: url)
+        try require(!data.contains(0), "\(kind): append left a sparse NUL hole")
+        let lines = data.split(separator: 0x0A)
+        for line in lines { _ = try JSONSerialization.jsonObject(with: Data(line)) }
+        return lines.count
+      }
+      await append(0)
+      await append(1) // Hold a cached descriptor.
+      let original = try Data(contentsOf: url)
+      try original.write(to: url, options: .atomic)
+      await append(2)
+      let replacedCount = try diskCount()
+      try require(replacedCount == 3, "\(kind): atomic replacement lost append")
+      let truncating = try FileHandle(forWritingTo: url)
+      try truncating.truncate(atOffset: 0)
+      try truncating.close()
+      await append(3)
+      let truncatedCount = try diskCount()
+      try require(truncatedCount == 1, "\(kind): truncated file did not resume at its new end")
+      try FileManager.default.removeItem(at: url)
+      await append(4)
+      let recreatedCount = try diskCount()
+      try require(recreatedCount == 1, "\(kind): missing path was not recreated")
+      // A crash may leave valid JSON with only its final newline missing.
+      var unterminated = try Data(contentsOf: url)
+      unterminated.removeLast()
+      try unterminated.write(to: url, options: .atomic)
+      let now = start.addingTimeInterval(600)
+      if kind == "history" { _ = await PersistentHistoryStore(url: url).current(now: now) }
+      else if kind == "io" { _ = await IOActivityAuditStore(url: url).current(now: now) }
+      else { _ = await AppEnergyHistoryStore(url: url).current(now: now) }
+      let repaired = try Data(contentsOf: url)
+      try require(repaired.last == 0x0A,
+                  "\(kind): complete JSON tail needs a delimiter before another append")
+    }
+    print("PASS all three history stores: atomic replacement, truncation, recreation and unterminated JSON recovery")
   }
 
   private static func ioAuditChecks() async throws {

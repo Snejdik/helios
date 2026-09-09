@@ -26,7 +26,7 @@ The `flt ` values are little-endian Float32. TG Pro and Stats were temporarily q
 
 ## Physical trial and exact result
 
-The staged build retained Apple Development signing, Team `3J76KPDS9C`, both Foundation signing requirements, protocol v2, the original five-second calculation lease, fresh thermal timestamps, clamping, the root-owned journal, rollback and readback. Its write sink was additionally restricted to this fan's 3000 RPM target and automatic restoration. The staged app exposed only the explicit diagnostic invocation and registration operations, with no normal fan-control UI.
+The staged build retained Apple Development signing, Team `<LOCAL_TEAM_ID>`, both Foundation signing requirements, protocol v2, the original five-second calculation lease, fresh thermal timestamps, clamping, the root-owned journal, rollback and readback. Its write sink was additionally restricted to this fan's 3000 RPM target and automatic restoration. The staged app exposed only the explicit diagnostic invocation and registration operations, with no normal fan-control UI.
 
 App PID `21376` authenticated installed root daemon PID `21356`. A fresh complete SoC sample measured **68.640625°C**. At **20:04:24.482 CEST**, the daemon issued these writes, in order:
 

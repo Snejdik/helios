@@ -69,14 +69,14 @@ Run `scripts/check-ipc.sh` from an ordinary user terminal. The tool sandbox bloc
 
 ## Live production repair — 2026-09-06
 
-Verified on the M4 MacBook Pro, macOS Tahoe 26.6.2 (25G83), using Apple Development signing and Personal Team `3J76KPDS9C`. The user had already approved the background item. All operations used the real system Mach service and SMAppService registration; System Settings approval was preserved.
+Verified on the M4 MacBook Pro, macOS Tahoe 26.6.2 (25G83), using Apple Development signing and Personal Team `<LOCAL_TEAM_ID>`. The user had already approved the background item. All operations used the real system Mach service and SMAppService registration; System Settings approval was preserved.
 
 ### Root cause and evidence
 
 There were two stale-installation failures and a reproducible replacement race:
 
 1. **An old ad-hoc daemon remained alive after the on-disk binaries were signed.** PID `17959` started at 19:14:26 and logged `Secure IPC unavailable: Apple Development signing with a Team ID is required for secure helper communication.`, then installed the exact listener requirement **`never`**. The newly signed app subsequently reached this old process, which dropped its check-in messages with Security status `-67050`. This was the mismatching requirement; the new Team/identifier/entitlement expressions themselves were correct. Re-signing an executable does not update a running daemon's initialized listener policy.
-2. **The replacement job had stale launch metadata.** At diagnosis, launchd referenced BTM UUID `179CBD10-D26E-4FAD-9A7B-7DA1835BB733`, while `sfltool dumpbtm` identified the currently signed helper as `5DB1B5C4-3CE7-41B0-9511-E74983947A03`. The signed helper's 19:35:55 crash report recorded UID 0, Team `3J76KPDS9C`, and `CODESIGNING / Launch Constraint Violation`; it was killed before Swift startup. Subsequent attempts reported `EX_CONFIG` (78), `spawn failed`, and `Could not find and/or execute program ... No such process`. There was no running listener. This is an OS launch-constraint rejection, distinct from an NSXPC requirement rejection. The OS did not expose its failing internal constraint expression; the stale UUID is directly observed, and its causal role is supported by the successful removal/re-registration repair.
+2. **The replacement job had stale launch metadata.** At diagnosis, launchd referenced BTM UUID `179CBD10-D26E-4FAD-9A7B-7DA1835BB733`, while `sfltool dumpbtm` identified the currently signed helper as `5DB1B5C4-3CE7-41B0-9511-E74983947A03`. The signed helper's 19:35:55 crash report recorded UID 0, Team `<LOCAL_TEAM_ID>`, and `CODESIGNING / Launch Constraint Violation`; it was killed before Swift startup. Subsequent attempts reported `EX_CONFIG` (78), `spawn failed`, and `Could not find and/or execute program ... No such process`. There was no running listener. This is an OS launch-constraint rejection, distinct from an NSXPC requirement rejection. The OS did not expose its failing internal constraint expression; the stale UUID is directly observed, and its causal role is supported by the successful removal/re-registration repair.
 3. **Immediate re-registration raced Background Task Management.** The first live single-step replacement test reproduced this at 19:48:05: asynchronous unregister returned error 0 at `.901`, app status became Missing, but BTM still reported `[enabled, allowed, notified]` at `.912`. Registration then returned `SMAppServiceErrorDomain (1)` and left the service Missing. Merely awaiting unregister and checking Missing once was insufficient on this host.
 
 Apple's installed `SMAppService.h` specifies the asynchronous completion as the point after process termination at which re-registration is safe. The additional disposition race above was observed locally despite that completion. [Apple's SMAppService walkthrough](https://developer.apple.com/forums/thread/802443) explains bundle-relative service registration and approval; [Apple's launch-constraint documentation](https://developer.apple.com/documentation/security/applying-launch-environment-and-library-constraints) distinguishes launchd spawn constraints from embedded constraints. No constraints were removed or overridden to repair this installation.
@@ -93,13 +93,13 @@ The actual stale service was unregistered, absence was confirmed in launchd, and
 
 | Item | Verified value |
 | --- | --- |
-| Registered app | `/Users/snejda/Documents/Codes/Helios/.build/DerivedData/Build/Products/Debug/Helios.app` |
+| Registered app | `<repo>/.build/DerivedData/Build/Products/Debug/Helios.app` |
 | App signing identifier | `com.snejda.Helios` |
 | Helper signing identifier / Mach service / launchd label | `com.snejda.Helios.Daemon` |
 | Plist | `Contents/Library/LaunchDaemons/com.snejda.Helios.Daemon.plist` |
 | BundleProgram | `Contents/Library/HelperTools/HeliosDaemon` |
-| Both Team identifiers | `3J76KPDS9C` |
-| Signing authority | `Apple Development: jakub.snejda@icloud.com (9249C7D2K3)` |
+| Both Team identifiers | `<LOCAL_TEAM_ID>` |
+| Signing authority | `Apple Development: <local signing identity>` |
 | Final daemon | PID `20739`, PPID `1`, UID `0` |
 | Active daemon CDHash | `91928438255bbc886b1a645583319984b1486634` |
 | BTM UUID | `5DB1B5C4-3CE7-41B0-9511-E74983947A03` |

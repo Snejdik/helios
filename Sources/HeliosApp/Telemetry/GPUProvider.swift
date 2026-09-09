@@ -110,12 +110,16 @@ enum GPURegistryParser {
 
 actor GPUProvider {
     private var service: io_service_t = 0
+    private var cachedIdentity: (model: MetricResult<String>, coreCount: MetricResult<Int>)?
+    private var cachedNoStatisticsMetrics: GPUMetrics?
 
     deinit { if service != 0 { IOObjectRelease(service) } }
 
     func reset() {
         if service != 0 { IOObjectRelease(service) }
         service = 0
+        cachedIdentity = nil
+        cachedNoStatisticsMetrics = nil
     }
 
     func sample() -> MetricSample<GPUMetrics> {
@@ -133,12 +137,46 @@ actor GPUProvider {
         }
         guard service != 0 else { throw TelemetryError.unavailable("Apple GPU accelerator unavailable") }
 
-        var properties: Unmanaged<CFMutableDictionary>?
-        let status = IORegistryEntryCreateCFProperties(service, &properties, kCFAllocatorDefault, 0)
-        guard status == KERN_SUCCESS else { throw TelemetryError.ioKit("Read GPU accelerator", status) }
-        guard let dictionary = properties?.takeRetainedValue() as? [String: Any] else {
-            throw TelemetryError.invalidData("Invalid GPU accelerator dictionary")
+        // Model/core identity is effectively immutable for the lifetime of the
+        // accelerator service. Read the broad registry dictionary once, then keep
+        // the 1 Hz path to the single PerformanceStatistics property.
+        if cachedIdentity == nil {
+            var properties: Unmanaged<CFMutableDictionary>?
+            let status = IORegistryEntryCreateCFProperties(service, &properties, kCFAllocatorDefault, 0)
+            guard status == KERN_SUCCESS else { throw TelemetryError.ioKit("Read GPU accelerator", status) }
+            guard let dictionary = properties?.takeRetainedValue() as? [String: Any] else {
+                throw TelemetryError.invalidData("Invalid GPU accelerator dictionary")
+            }
+            let initial = try GPURegistryParser.parse(dictionary)
+            cachedIdentity = (initial.model, initial.coreCount)
+            if dictionary["PerformanceStatistics"] == nil {
+                // Some Apple-Silicon/macOS combinations expose accelerator identity
+                // without live utilization statistics. Keep that a stable partial
+                // success instead of falling into a 1 Hz rediscovery/failure loop.
+                cachedNoStatisticsMetrics = initial
+            }
+            return initial
         }
-        return try GPURegistryParser.parse(dictionary)
+
+        if let cachedNoStatisticsMetrics { return cachedNoStatisticsMetrics }
+
+        guard let rawStats = IORegistryEntryCreateCFProperty(
+            service, "PerformanceStatistics" as CFString, kCFAllocatorDefault, 0
+        )?.takeRetainedValue() else {
+            throw TelemetryError.unavailable("GPU PerformanceStatistics unavailable")
+        }
+        guard let stats = rawStats as? [String: Any], let identity = cachedIdentity else {
+            throw TelemetryError.invalidData("Invalid GPU PerformanceStatistics dictionary")
+        }
+        let live = try GPURegistryParser.parse(["PerformanceStatistics": stats])
+        return GPUMetrics(
+            model: identity.model,
+            coreCount: identity.coreCount,
+            deviceUtilizationPercent: live.deviceUtilizationPercent,
+            rendererUtilizationPercent: live.rendererUtilizationPercent,
+            tilerUtilizationPercent: live.tilerUtilizationPercent,
+            allocatedSystemMemoryBytes: live.allocatedSystemMemoryBytes,
+            inUseSystemMemoryBytes: live.inUseSystemMemoryBytes
+        )
     }
 }
