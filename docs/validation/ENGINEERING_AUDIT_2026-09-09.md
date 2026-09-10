@@ -56,7 +56,7 @@ Because this directory has no `.git`, comparison uses a pre-edit copy of the ori
 | `docs/RELEASE_READINESS.md` | Link the current audit and unresolved memory acceptance. |
 | This report | Consolidate the required release verdict and evidence. |
 
-Temporary profiling/sampling/preset helpers and original preference backup live under ignored `.build/EngineeringAudit`. They are not linked into the app. No global package, plugin, MCP, or agent was installed.
+Temporary profiling/sampling/preset helpers and the original preference backup live under ignored `.build/EngineeringAudit`. They are not linked into the app.
 
 ## 5. Frozen backend status
 

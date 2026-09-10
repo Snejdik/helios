@@ -4,13 +4,13 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 base="Config/Base.xcconfig"
-agents="AGENTS.md"
+compatibility_contract="docs/APPLE_SILICON_COMPATIBILITY.md"
 
 for needle in 'ARCHS = arm64' 'MACOSX_DEPLOYMENT_TARGET = 13.0' 'SUPPORTED_PLATFORMS = macosx'; do
   grep -Fq "$needle" "$base" || { echo "FAIL Apple-Silicon release config missing: $needle" >&2; exit 1; }
 done
 
-grep -Fq 'Production fan writes remain pinned to the exact validated Mac16,1/25G83 profile' "$agents" || {
+grep -Fq 'Production fan writes remain pinned to the exact validated Mac16,1/25G83 profile' "$compatibility_contract" || {
   echo 'FAIL compatibility contract no longer keeps unvalidated Macs read-only' >&2; exit 1;
 }
 

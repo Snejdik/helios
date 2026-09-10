@@ -12,7 +12,9 @@ Apple does not document most Apple-Silicon SMC thermal keys. Helios therefore ke
 
 ## Fan control
 
-Public compatibility does **not** mean guessing writable SMC behavior on every Mac. Production Boost/Manual/Auto writes remain pinned to the physically validated `Mac16,1` / macOS `25G83` profile. Every other Apple Silicon Mac remains System/read-only until a separate profile is physically validated.
+Public compatibility does **not** mean guessing writable SMC behavior on every Mac. Production fan writes remain pinned to the exact validated Mac16,1/25G83 profile. That profile requires one fan (`fan 0`), permits integral targets only from 2317 through 6550 RPM, and fixes Boost at 6550 RPM. Every other Apple Silicon Mac, macOS build and fan topology remains System/read-only until a separate profile is physically validated.
+
+The privileged helper's independent 95°C emergency guard remains authoritative for every accepted fresh control calculation. Compatibility work must not weaken the helper authentication, leases, ownership/recovery journal, SMC write allowlist or System-restoration behavior.
 
 This boundary is deliberate: launching and observing safely across Apple Silicon is a release requirement; broadening fan writes without hardware validation is not.
 
