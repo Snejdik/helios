@@ -238,10 +238,85 @@ private func frozenPayloadChecks() throws {
   try require(approval.approve(at: firstDate.addingTimeInterval(902)) == nil, "stale payload was approved")
 }
 
+@MainActor
+private final class MockDiagnosticsTransport: DiagnosticsTransporting {
+  var received: [Data] = []
+  var result = DiagnosticsTransportResult.accepted
+  func send(_ payload: FrozenDiagnosticsPayload) async -> DiagnosticsTransportResult {
+    received.append(payload.data)
+    return result
+  }
+  func cancel() {}
+}
+
+@MainActor
+private func transportChecks() async throws {
+  let now = Date()
+  let frozen = try DiagnosticsPayloadEncoder.freeze(
+    health(type: .manualHealth, reason: .userInitiated),
+    reportType: .manualHealth, now: now)
+  let request = try DiagnosticsURLSessionTransport.makeRequest(frozen)
+  try require(request.url == DiagnosticsURLSessionTransport.endpoint, "endpoint drift")
+  try require(request.url?.scheme == "https", "diagnostics endpoint is not HTTPS")
+  try require(request.httpMethod == "POST", "diagnostics method drift")
+  try require(request.timeoutInterval == 8, "diagnostics timeout drift")
+  try require(request.httpShouldHandleCookies == false, "cookies were enabled")
+  try require(
+    request.value(forHTTPHeaderField: "Content-Type") == "application/json; charset=utf-8",
+    "content type drift")
+  try require(
+    request.value(forHTTPHeaderField: "Accept") == "application/json", "accept header drift")
+  try require(request.httpBody == frozen.data, "HTTP body differs from preview buffer")
+  try require(Data(frozen.preview.utf8) == request.httpBody, "preview bytes differ from request body")
+  try require(DiagnosticsURLSessionTransport.retryAfter("999999") == 21_600, "Retry-After was not bounded")
+
+  let success = Date(timeIntervalSince1970: 100_000)
+  let failedChain = success.addingTimeInterval(10_000)
+  let decision = DiagnosticsSchedulePolicy.decision(
+    DiagnosticsScheduleInput(
+      now: failedChain, launchStartedAt: success, lastSuccessfulSend: success,
+      lastChainStartedAt: failedChain, persistedNextEligible: nil,
+      lastVersion: "1.0.0", lastBuild: "1", lastMacOSBuild: "25G83",
+      currentVersion: "2.0.0", currentBuild: "2", currentMacOSBuild: "26A1"))
+  try require(decision.reason == .heliosVersionChanged, "version reason drift")
+  try require(
+    decision.eligibleAt == failedChain.addingTimeInterval(86_400),
+    "version change bypassed failed-chain cooldown")
+  try require(DiagnosticsSchedulePolicy.retryDelays == [900, 7_200], "retry chain drift")
+  try require(
+    DiagnosticsSchedulePolicy.retryDelay(index: 2, jitter: 1, retryAfter: nil) == nil,
+    "third invisible retry was allowed")
+
+  let suiteName = "DiagnosticsTransportChecks.\(ProcessInfo.processInfo.processIdentifier)"
+  guard let defaults = UserDefaults(suiteName: suiteName) else {
+    throw CheckFailure(description: "could not create isolated transport defaults")
+  }
+  defaults.removePersistentDomain(forName: suiteName)
+  defer { defaults.removePersistentDomain(forName: suiteName) }
+  let preferences = DiagnosticsPreferences(defaults: defaults)
+  let mock = MockDiagnosticsTransport()
+  var factoryCount = 0
+  let controller = DiagnosticsController(preferences: preferences) {
+    factoryCount += 1
+    return mock
+  }
+  controller.start()
+  await Task.yield()
+  try require(factoryCount == 0, "transport was created before automatic consent")
+
+  preferences.setConsent(.disabled)
+  let manual = try controller.makeHealthPayload(type: .manualHealth, reason: .userInitiated)
+  let result = await controller.sendManual(manual)
+  try require(result == .accepted, "manual report failed while automatic diagnostics was OFF")
+  try require(factoryCount == 1, "manual send did not lazily create transport")
+  try require(mock.received == [manual.data], "manual transport did not receive frozen bytes")
+  controller.shutdown()
+}
+
 @main
 @MainActor
 struct DiagnosticsChecks {
-  static func main() throws {
+  static func main() async throws {
     try schemaChecks()
     print("PASS diagnostics v1 closed DTOs, model grammar, omission, enums and strict validation")
     try preferencesChecks()
@@ -250,5 +325,7 @@ struct DiagnosticsChecks {
     print("PASS diagnostics allowlist builder is preference-blind and launch-scoped")
     try frozenPayloadChecks()
     print("PASS diagnostics preview is one frozen buffer with expiring generation-bound approval")
+    try await transportChecks()
+    print("PASS diagnostics transport endpoint, body, consent gate, retry and cooldown contract")
   }
 }

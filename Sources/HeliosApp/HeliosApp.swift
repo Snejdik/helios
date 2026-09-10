@@ -615,19 +615,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private var statusItemController: StatusItemController?
   private var telemetry: TelemetryMonitor?
   private var service: DaemonService?
+  private var diagnostics: DiagnosticsController?
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     NSApplication.shared.setActivationPolicy(.accessory)
     let preferences = HeliosPreferences()
     let service = DaemonService()
+    let diagnosticsPreferences = DiagnosticsPreferences()
+    let diagnostics = DiagnosticsController(preferences: diagnosticsPreferences)
+    self.diagnostics = diagnostics
     self.service = service
     service.start()
     let controller = StatusItemController(service: service, preferences: preferences)
     let monitor = TelemetryMonitor { [preferences] module in
       preferences.isTelemetryEnabled(module)
     }
-    monitor.onChange = { [weak controller, weak service] snapshot in
+    monitor.onChange = { [weak controller, weak service, weak diagnostics] snapshot in
       service?.fanControl.refresh(snapshot)
+      if let service {
+        diagnostics?.accept(snapshot, helper: Self.diagnosticsHelperObservation(service))
+      }
       controller?.update(snapshot)
     }
     monitor.onThermalSample = { [weak service, weak monitor] sample in
@@ -637,11 +644,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     statusItemController = controller
     telemetry = monitor
     monitor.start()
+    diagnostics.start()
     controller.showOnboardingIfNeeded()
   }
 
   func applicationWillTerminate(_ notification: Notification) {
     telemetry?.shutdown()
+    diagnostics?.shutdown()
     service?.shutdown()
+  }
+
+  private static func diagnosticsHelperObservation(_ service: DaemonService)
+    -> DiagnosticsHelperObservation
+  {
+    let installation: DiagnosticsHelperInstallationState = switch service.state {
+    case .missing: .missing
+    case .requiresApproval: .requiresApproval
+    case .installed: .installed
+    case .unavailable: .unavailable
+    }
+    let connection: DiagnosticsHelperConnectionState = switch service.client.state {
+    case .disconnected: .disconnected
+    case .connecting: .connecting
+    case .connected: .connected
+    case .signingRequired: .signingRequired
+    case .versionMismatch: .versionMismatch
+    case .failed: .failed
+    }
+    let compatibility: DiagnosticsProtocolCompatibility = switch service.client.state {
+    case .connected: .compatible
+    case .versionMismatch: .mismatch
+    default: .notChecked
+    }
+    return DiagnosticsHelperObservation(
+      installationState: installation, connectionState: connection,
+      protocolCompatibility: compatibility, failureCategory: nil)
   }
 }
