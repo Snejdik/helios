@@ -1,0 +1,44 @@
+# macOS
+.DS_Store
+
+# Xcode / local user state
+xcuserdata/
+*.xcuserstate
+*.xccheckout
+*.xcscmblueprint
+DerivedData/
+build/
+*.xcresult
+
+# Machine-local signing
+Config/Local.xcconfig
+
+# Swift / local build output
+.build/
+
+# Python tooling cache
+__pycache__/
+*.pyc
+
+# Local validation and performance artifacts
+perf-baseline/
+*.trace
+*.heap
+
+# Local packaged binaries / archives
+*.app
+*.dmg
+*.pkg
+*.zip
+*.dSYM
+*.dSYM.zip
+*.ipa
+
+# Carthage (not currently used)
+Carthage/Build/
+
+# fastlane local output (not currently used)
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots/**/*.png
+fastlane/test_output/

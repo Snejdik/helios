@@ -1,0 +1,85 @@
+name: Bug report
+description: Report a reproducible Helios problem or hardware-compatibility issue.
+title: "[Bug] "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing Helios. Please remove personal information from logs before attaching them.
+        Do not use a public issue for security-sensitive reports.
+
+  - type: input
+    id: mac-model
+    attributes:
+      label: Mac model
+      description: Example: 14-inch MacBook Pro M4 / Mac16,1
+      placeholder: Mac model and model identifier if known
+    validations:
+      required: true
+
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: 26.6.2 (25G83)
+    validations:
+      required: true
+
+  - type: input
+    id: helios-version
+    attributes:
+      label: Helios version / commit
+      description: Version, branch, tag, or commit SHA if known.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Launch / helper connection
+        - Menu bar / popovers
+        - Dashboard / Full Monitor
+        - CPU / Memory
+        - GPU / Thermals
+        - Battery / Power
+        - Storage / NVMe
+        - Network / Wi-Fi
+        - Processes / Energy
+        - Fan control / Cooling Rules
+        - History / persistence
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: behavior
+    attributes:
+      label: What happened?
+      description: Include the exact steps needed to reproduce the issue.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Relevant diagnostics
+      description: Paste only the minimum useful logs/output. Remove usernames, local paths, addresses, serial numbers, tokens, and unrelated process information.
+      render: shell
+
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety confirmation
+      options:
+        - label: If this involves fan control, I included the exact Mac model, macOS build, selected cooling mode, and whether Helios had confirmed helper ownership.
+        - label: I have not broadened or bypassed Helios fan-write compatibility checks to reproduce this issue.

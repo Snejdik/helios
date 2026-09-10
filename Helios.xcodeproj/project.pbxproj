@@ -1,0 +1,703 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		00000000000000000000001C /* HeliosApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000009 /* HeliosApp.swift */; };
+		00000000000000000000001D /* StatusItemController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000000A /* StatusItemController.swift */; };
+		00000000000000000000001E /* OverviewViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000000B /* OverviewViewController.swift */; };
+		00000000000000000000001F /* DaemonService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000000C /* DaemonService.swift */; };
+		000000000000000000000020 /* HeliosServiceIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000000E /* HeliosServiceIdentity.swift */; };
+		000000000000000000000021 /* HeliosDaemon.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000000D /* HeliosDaemon.swift */; };
+		000000000000000000000022 /* HeliosServiceIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000000E /* HeliosServiceIdentity.swift */; };
+		000000000000000000000023 /* AppKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 000000000000000000000017 /* AppKit.framework */; };
+		000000000000000000000024 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 000000000000000000000018 /* Foundation.framework */; };
+		000000000000000000000025 /* ServiceManagement.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 000000000000000000000019 /* ServiceManagement.framework */; };
+		000000000000000000000026 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 000000000000000000000018 /* Foundation.framework */; };
+		000000000000000000000027 /* HeliosDaemon in Embed Signed Daemon */ = {isa = PBXBuildFile; fileRef = 00000000000000000000001B /* HeliosDaemon */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
+		000000000000000000000028 /* com.snejda.Helios.Daemon.plist in Embed LaunchDaemon Plist */ = {isa = PBXBuildFile; fileRef = 000000000000000000000016 /* com.snejda.Helios.Daemon.plist */; };
+		000000000000000000000200 /* BatteryProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000100 /* BatteryProvider.swift */; };
+		000000000000000000000201 /* CPUProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000101 /* CPUProvider.swift */; };
+		000000000000000000000202 /* MemoryProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000102 /* MemoryProvider.swift */; };
+		000000000000000000000203 /* SMCClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000103 /* SMCClient.swift */; };
+		000000000000000000000204 /* TelemetryFormatting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000104 /* TelemetryFormatting.swift */; };
+		000000000000000000000205 /* TelemetryModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000105 /* TelemetryModels.swift */; };
+		000000000000000000000206 /* TelemetryMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000106 /* TelemetryMonitor.swift */; };
+		000000000000000000000207 /* ThermalProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000107 /* ThermalProvider.swift */; };
+		000000000000000000000208 /* StorageProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000108 /* StorageProvider.swift */; };
+		000000000000000000000209 /* GPUProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000109 /* GPUProvider.swift */; };
+		00000000000000000000020A /* SystemPowerProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000010A /* SystemPowerProvider.swift */; };
+		00000000000000000000020B /* NetworkProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000010B /* NetworkProvider.swift */; };
+		00000000000000000000020C /* SystemProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000010C /* SystemProvider.swift */; };
+		00000000000000000000020D /* TelemetryHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000010D /* TelemetryHistory.swift */; };
+		00000000000000000000020E /* WiFiProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000010E /* WiFiProvider.swift */; };
+		00000000000000000000020F /* ProcessProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000010F /* ProcessProvider.swift */; };
+		000000000000000000000210 /* PersistentHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000110 /* PersistentHistory.swift */; };
+		000000000000000000000211 /* HealthAlerts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000111 /* HealthAlerts.swift */; };
+		000000000000000000000212 /* IOActivityAudit.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000112 /* IOActivityAudit.swift */; };
+		000000000000000000000213 /* CapabilityReport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000113 /* CapabilityReport.swift */; };
+		000000000000000000000214 /* UtilityProviders.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000114 /* UtilityProviders.swift */; };
+		000000000000000000000215 /* AudioProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000115 /* AudioProvider.swift */; };
+		000000000000000000000216 /* MaintenanceProviders.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000116 /* MaintenanceProviders.swift */; };
+		000000000000000000000217 /* AppEnergyHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000117 /* AppEnergyHistory.swift */; };
+		000000000000000000000218 /* TelemetryCollectionPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000118 /* TelemetryCollectionPolicy.swift */; };
+		000000000000000000000302 /* IOKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 000000000000000000000301 /* IOKit.framework */; };
+		000000000000000000000304 /* SystemConfiguration.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 000000000000000000000303 /* SystemConfiguration.framework */; };
+		000000000000000000000306 /* CoreWLAN.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 000000000000000000000305 /* CoreWLAN.framework */; };
+		000000000000000000000308 /* UserNotifications.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 000000000000000000000307 /* UserNotifications.framework */; };
+		00000000000000000000030A /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 000000000000000000000309 /* CoreGraphics.framework */; };
+		00000000000000000000030C /* IOBluetooth.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 00000000000000000000030B /* IOBluetooth.framework */; };
+		00000000000000000000030E /* CoreAudio.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 00000000000000000000030D /* CoreAudio.framework */; };
+		000000000000000000000410 /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000400 /* MenuBarView.swift */; };
+		000000000000000000000411 /* PresentationValues.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000401 /* PresentationValues.swift */; };
+		000000000000000000000510 /* HeliosXPCProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000500 /* HeliosXPCProtocol.swift */; };
+		000000000000000000000511 /* HeliosXPCProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000500 /* HeliosXPCProtocol.swift */; };
+		000000000000000000000512 /* XPCTrustRequirement.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000501 /* XPCTrustRequirement.swift */; };
+		000000000000000000000513 /* XPCTrustRequirement.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000501 /* XPCTrustRequirement.swift */; };
+		000000000000000000000514 /* DiagnosticLease.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000502 /* DiagnosticLease.swift */; };
+		000000000000000000000515 /* DaemonSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000503 /* DaemonSession.swift */; };
+		000000000000000000000516 /* DaemonListenerDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000504 /* DaemonListenerDelegate.swift */; };
+		000000000000000000000517 /* DaemonClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000505 /* DaemonClient.swift */; };
+		000000000000000000000518 /* DaemonServiceCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000506 /* DaemonServiceCard.swift */; };
+		000000000000000000000519 /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 000000000000000000000507 /* Security.framework */; };
+		00000000000000000000051A /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 000000000000000000000507 /* Security.framework */; };
+		000000000000000000000620 /* MetricValue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000600 /* MetricValue.swift */; };
+		000000000000000000000621 /* MetricValue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000600 /* MetricValue.swift */; };
+		000000000000000000000622 /* FanModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000601 /* FanModels.swift */; };
+		000000000000000000000623 /* FanModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000601 /* FanModels.swift */; };
+		000000000000000000000624 /* FanHardware.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000602 /* FanHardware.swift */; };
+		000000000000000000000625 /* FanOwnershipJournal.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000603 /* FanOwnershipJournal.swift */; };
+		000000000000000000000626 /* FanControlEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000604 /* FanControlEngine.swift */; };
+		000000000000000000000627 /* ControlLease.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000605 /* ControlLease.swift */; };
+		000000000000000000000628 /* FanControlCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000606 /* FanControlCoordinator.swift */; };
+		000000000000000000000629 /* DaemonLifecycle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000607 /* DaemonLifecycle.swift */; };
+		00000000000000000000062A /* FanProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000608 /* FanProvider.swift */; };
+		00000000000000000000062B /* FanControlModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000609 /* FanControlModel.swift */; };
+		000000000000000000000635 /* CoolingRules.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000610 /* CoolingRules.swift */; };
+		00000000000000000000062C /* FanControlView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000060A /* FanControlView.swift */; };
+		00000000000000000000062D /* SMCClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000103 /* SMCClient.swift */; };
+		00000000000000000000062E /* IOKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 000000000000000000000301 /* IOKit.framework */; };
+		00000000000000000000062F /* FanOwnershipTransition.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000060B /* FanOwnershipTransition.swift */; };
+		000000000000000000000630 /* FanOwnershipRecovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000060C /* FanOwnershipRecovery.swift */; };
+		000000000000000000000634 /* FanOwnershipProductionRecovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000060F /* FanOwnershipProductionRecovery.swift */; };
+		000000000000000000000631 /* FanOwnershipPreflight.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000060D /* FanOwnershipPreflight.swift */; };
+		000000000000000000000632 /* FanOwnershipPreflight.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000060D /* FanOwnershipPreflight.swift */; };
+		000000000000000000000633 /* FanOwnershipPreflightProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000060E /* FanOwnershipPreflightProvider.swift */; };
+		000000000000000000000710 /* HeliosPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000700 /* HeliosPreferences.swift */; };
+		000000000000000000000711 /* HeliosDashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000701 /* HeliosDashboardView.swift */; };
+		000000000000000000000712 /* HeliosWindows.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000702 /* HeliosWindows.swift */; };
+		000000000000000000000713 /* HeliosBrand.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000703 /* HeliosBrand.swift */; };
+		000000000000000000000714 /* HeliosGraphKit.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000704 /* HeliosGraphKit.swift */; };
+		000000000000000000000715 /* HeliosBatteryEstimate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000705 /* HeliosBatteryEstimate.swift */; };
+		000000000000000000000716 /* HeliosMetricPopovers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000706 /* HeliosMetricPopovers.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		00000000000000000000002B /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 000000000000000000000029 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 00000000000000000000002A;
+			remoteInfo = HeliosDaemon;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		000000000000000000000036 /* Embed Signed Daemon */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = Contents/Library/HelperTools;
+			dstSubfolderSpec = 1;
+			files = (
+				000000000000000000000027 /* HeliosDaemon in Embed Signed Daemon */,
+			);
+			name = "Embed Signed Daemon";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		000000000000000000000037 /* Embed LaunchDaemon Plist */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = Contents/Library/LaunchDaemons;
+			dstSubfolderSpec = 1;
+			files = (
+				000000000000000000000028 /* com.snejda.Helios.Daemon.plist in Embed LaunchDaemon Plist */,
+			);
+			name = "Embed LaunchDaemon Plist";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		000000000000000000000009 /* HeliosApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeliosApp.swift; sourceTree = "<group>"; };
+		00000000000000000000000A /* StatusItemController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusItemController.swift; sourceTree = "<group>"; };
+		00000000000000000000000B /* OverviewViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverviewViewController.swift; sourceTree = "<group>"; };
+		00000000000000000000000C /* DaemonService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonService.swift; sourceTree = "<group>"; };
+		00000000000000000000000D /* HeliosDaemon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeliosDaemon.swift; sourceTree = "<group>"; };
+		00000000000000000000000E /* HeliosServiceIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeliosServiceIdentity.swift; sourceTree = "<group>"; };
+		00000000000000000000000F /* Base.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Base.xcconfig; sourceTree = "<group>"; };
+		000000000000000000000010 /* Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Debug.xcconfig; sourceTree = "<group>"; };
+		000000000000000000000011 /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Release.xcconfig; sourceTree = "<group>"; };
+		000000000000000000000012 /* Helios.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Helios.entitlements; sourceTree = "<group>"; };
+		000000000000000000000013 /* Local.xcconfig.example */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Local.xcconfig.example; sourceTree = "<group>"; };
+		000000000000000000000014 /* HeliosApp-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "HeliosApp-Info.plist"; sourceTree = "<group>"; };
+		000000000000000000000015 /* HeliosDaemon-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "HeliosDaemon-Info.plist"; sourceTree = "<group>"; };
+		000000000000000000000016 /* com.snejda.Helios.Daemon.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = com.snejda.Helios.Daemon.plist; sourceTree = "<group>"; };
+		000000000000000000000017 /* AppKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AppKit.framework; path = System/Library/Frameworks/AppKit.framework; sourceTree = SDKROOT; };
+		000000000000000000000018 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = System/Library/Frameworks/Foundation.framework; sourceTree = SDKROOT; };
+		000000000000000000000019 /* ServiceManagement.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = ServiceManagement.framework; path = System/Library/Frameworks/ServiceManagement.framework; sourceTree = SDKROOT; };
+		00000000000000000000001A /* Helios.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Helios.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		00000000000000000000001B /* HeliosDaemon */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = HeliosDaemon; sourceTree = BUILT_PRODUCTS_DIR; };
+		000000000000000000000100 /* BatteryProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BatteryProvider.swift; sourceTree = "<group>"; };
+		000000000000000000000101 /* CPUProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CPUProvider.swift; sourceTree = "<group>"; };
+		000000000000000000000102 /* MemoryProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryProvider.swift; sourceTree = "<group>"; };
+		000000000000000000000103 /* SMCClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SMCClient.swift; sourceTree = "<group>"; };
+		000000000000000000000104 /* TelemetryFormatting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelemetryFormatting.swift; sourceTree = "<group>"; };
+		000000000000000000000105 /* TelemetryModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelemetryModels.swift; sourceTree = "<group>"; };
+		000000000000000000000106 /* TelemetryMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelemetryMonitor.swift; sourceTree = "<group>"; };
+		000000000000000000000107 /* ThermalProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThermalProvider.swift; sourceTree = "<group>"; };
+		000000000000000000000108 /* StorageProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StorageProvider.swift; sourceTree = "<group>"; };
+		000000000000000000000109 /* GPUProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GPUProvider.swift; sourceTree = "<group>"; };
+		00000000000000000000010A /* SystemPowerProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemPowerProvider.swift; sourceTree = "<group>"; };
+		00000000000000000000010B /* NetworkProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkProvider.swift; sourceTree = "<group>"; };
+		00000000000000000000010C /* SystemProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemProvider.swift; sourceTree = "<group>"; };
+		00000000000000000000010D /* TelemetryHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelemetryHistory.swift; sourceTree = "<group>"; };
+		00000000000000000000010E /* WiFiProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WiFiProvider.swift; sourceTree = "<group>"; };
+		00000000000000000000010F /* ProcessProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessProvider.swift; sourceTree = "<group>"; };
+		000000000000000000000110 /* PersistentHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersistentHistory.swift; sourceTree = "<group>"; };
+		000000000000000000000111 /* HealthAlerts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthAlerts.swift; sourceTree = "<group>"; };
+		000000000000000000000112 /* IOActivityAudit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOActivityAudit.swift; sourceTree = "<group>"; };
+		000000000000000000000113 /* CapabilityReport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CapabilityReport.swift; sourceTree = "<group>"; };
+		000000000000000000000114 /* UtilityProviders.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UtilityProviders.swift; sourceTree = "<group>"; };
+		000000000000000000000115 /* AudioProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioProvider.swift; sourceTree = "<group>"; };
+		000000000000000000000116 /* MaintenanceProviders.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MaintenanceProviders.swift; sourceTree = "<group>"; };
+		000000000000000000000117 /* AppEnergyHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppEnergyHistory.swift; sourceTree = "<group>"; };
+		000000000000000000000118 /* TelemetryCollectionPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelemetryCollectionPolicy.swift; sourceTree = "<group>"; };
+		000000000000000000000301 /* IOKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = IOKit.framework; path = System/Library/Frameworks/IOKit.framework; sourceTree = SDKROOT; };
+		000000000000000000000303 /* SystemConfiguration.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SystemConfiguration.framework; path = System/Library/Frameworks/SystemConfiguration.framework; sourceTree = SDKROOT; };
+		000000000000000000000305 /* CoreWLAN.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreWLAN.framework; path = System/Library/Frameworks/CoreWLAN.framework; sourceTree = SDKROOT; };
+		000000000000000000000307 /* UserNotifications.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UserNotifications.framework; path = System/Library/Frameworks/UserNotifications.framework; sourceTree = SDKROOT; };
+		000000000000000000000309 /* CoreGraphics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreGraphics.framework; path = System/Library/Frameworks/CoreGraphics.framework; sourceTree = SDKROOT; };
+		00000000000000000000030B /* IOBluetooth.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = IOBluetooth.framework; path = System/Library/Frameworks/IOBluetooth.framework; sourceTree = SDKROOT; };
+		00000000000000000000030D /* CoreAudio.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreAudio.framework; path = System/Library/Frameworks/CoreAudio.framework; sourceTree = SDKROOT; };
+		000000000000000000000400 /* MenuBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarView.swift; sourceTree = "<group>"; };
+		000000000000000000000401 /* PresentationValues.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PresentationValues.swift; sourceTree = "<group>"; };
+		000000000000000000000500 /* HeliosXPCProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeliosXPCProtocol.swift; sourceTree = "<group>"; };
+		000000000000000000000501 /* XPCTrustRequirement.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = XPCTrustRequirement.swift; sourceTree = "<group>"; };
+		000000000000000000000502 /* DiagnosticLease.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticLease.swift; sourceTree = "<group>"; };
+		000000000000000000000503 /* DaemonSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonSession.swift; sourceTree = "<group>"; };
+		000000000000000000000504 /* DaemonListenerDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonListenerDelegate.swift; sourceTree = "<group>"; };
+		000000000000000000000505 /* DaemonClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonClient.swift; sourceTree = "<group>"; };
+		000000000000000000000506 /* DaemonServiceCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonServiceCard.swift; sourceTree = "<group>"; };
+		000000000000000000000507 /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
+		000000000000000000000600 /* MetricValue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetricValue.swift; sourceTree = "<group>"; };
+		000000000000000000000601 /* FanModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FanModels.swift; sourceTree = "<group>"; };
+		000000000000000000000602 /* FanHardware.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FanHardware.swift; sourceTree = "<group>"; };
+		000000000000000000000603 /* FanOwnershipJournal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FanOwnershipJournal.swift; sourceTree = "<group>"; };
+		000000000000000000000604 /* FanControlEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FanControlEngine.swift; sourceTree = "<group>"; };
+		000000000000000000000605 /* ControlLease.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ControlLease.swift; sourceTree = "<group>"; };
+		000000000000000000000606 /* FanControlCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FanControlCoordinator.swift; sourceTree = "<group>"; };
+		000000000000000000000607 /* DaemonLifecycle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonLifecycle.swift; sourceTree = "<group>"; };
+		000000000000000000000608 /* FanProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FanProvider.swift; sourceTree = "<group>"; };
+		000000000000000000000609 /* FanControlModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FanControlModel.swift; sourceTree = "<group>"; };
+		000000000000000000000610 /* CoolingRules.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoolingRules.swift; sourceTree = "<group>"; };
+		00000000000000000000060A /* FanControlView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FanControlView.swift; sourceTree = "<group>"; };
+		00000000000000000000060B /* FanOwnershipTransition.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FanOwnershipTransition.swift; sourceTree = "<group>"; };
+		00000000000000000000060C /* FanOwnershipRecovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FanOwnershipRecovery.swift; sourceTree = "<group>"; };
+		00000000000000000000060F /* FanOwnershipProductionRecovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FanOwnershipProductionRecovery.swift; sourceTree = "<group>"; };
+		00000000000000000000060D /* FanOwnershipPreflight.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FanOwnershipPreflight.swift; sourceTree = "<group>"; };
+		00000000000000000000060E /* FanOwnershipPreflightProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FanOwnershipPreflightProvider.swift; sourceTree = "<group>"; };
+		000000000000000000000700 /* HeliosPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeliosPreferences.swift; sourceTree = "<group>"; };
+		000000000000000000000701 /* HeliosDashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeliosDashboardView.swift; sourceTree = "<group>"; };
+		000000000000000000000702 /* HeliosWindows.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeliosWindows.swift; sourceTree = "<group>"; };
+		000000000000000000000703 /* HeliosBrand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeliosBrand.swift; sourceTree = "<group>"; };
+		000000000000000000000704 /* HeliosGraphKit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeliosGraphKit.swift; sourceTree = "<group>"; };
+		000000000000000000000705 /* HeliosBatteryEstimate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeliosBatteryEstimate.swift; sourceTree = "<group>"; };
+		000000000000000000000706 /* HeliosMetricPopovers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeliosMetricPopovers.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		000000000000000000000034 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				000000000000000000000519 /* Security.framework in Frameworks */,
+				000000000000000000000023 /* AppKit.framework in Frameworks */,
+				000000000000000000000024 /* Foundation.framework in Frameworks */,
+				000000000000000000000025 /* ServiceManagement.framework in Frameworks */,
+				000000000000000000000302 /* IOKit.framework in Frameworks */,
+				000000000000000000000304 /* SystemConfiguration.framework in Frameworks */,
+				000000000000000000000306 /* CoreWLAN.framework in Frameworks */,
+				00000000000000000000030A /* CoreGraphics.framework in Frameworks */,
+				00000000000000000000030C /* IOBluetooth.framework in Frameworks */,
+				00000000000000000000030E /* CoreAudio.framework in Frameworks */,
+				000000000000000000000308 /* UserNotifications.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		00000000000000000000003B /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				00000000000000000000062E /* IOKit.framework in Frameworks */,
+				00000000000000000000051A /* Security.framework in Frameworks */,
+				000000000000000000000026 /* Foundation.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		000000000000000000000001 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				000000000000000000000006 /* HeliosApp */,
+				000000000000000000000007 /* HeliosDaemon */,
+				000000000000000000000008 /* Shared */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		000000000000000000000002 /* Config */ = {
+			isa = PBXGroup;
+			children = (
+				00000000000000000000000F /* Base.xcconfig */,
+				000000000000000000000010 /* Debug.xcconfig */,
+				000000000000000000000011 /* Release.xcconfig */,
+				000000000000000000000012 /* Helios.entitlements */,
+				000000000000000000000013 /* Local.xcconfig.example */,
+			);
+			path = Config;
+			sourceTree = "<group>";
+		};
+		000000000000000000000003 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				000000000000000000000014 /* HeliosApp-Info.plist */,
+				000000000000000000000015 /* HeliosDaemon-Info.plist */,
+				000000000000000000000016 /* com.snejda.Helios.Daemon.plist */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		000000000000000000000004 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				000000000000000000000507 /* Security.framework */,
+				000000000000000000000017 /* AppKit.framework */,
+				000000000000000000000018 /* Foundation.framework */,
+				000000000000000000000019 /* ServiceManagement.framework */,
+				000000000000000000000301 /* IOKit.framework */,
+				000000000000000000000303 /* SystemConfiguration.framework */,
+				000000000000000000000305 /* CoreWLAN.framework */,
+				000000000000000000000309 /* CoreGraphics.framework */,
+				00000000000000000000030B /* IOBluetooth.framework */,
+				00000000000000000000030D /* CoreAudio.framework */,
+				000000000000000000000307 /* UserNotifications.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		000000000000000000000005 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				00000000000000000000001A /* Helios.app */,
+				00000000000000000000001B /* HeliosDaemon */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		000000000000000000000006 /* HeliosApp */ = {
+			isa = PBXGroup;
+			children = (
+				000000000000000000000700 /* HeliosPreferences.swift */,
+				000000000000000000000701 /* HeliosDashboardView.swift */,
+				000000000000000000000702 /* HeliosWindows.swift */,
+				000000000000000000000703 /* HeliosBrand.swift */,
+				000000000000000000000704 /* HeliosGraphKit.swift */,
+				000000000000000000000705 /* HeliosBatteryEstimate.swift */,
+				000000000000000000000706 /* HeliosMetricPopovers.swift */,
+				000000000000000000000610 /* CoolingRules.swift */,
+				000000000000000000000609 /* FanControlModel.swift */,
+				00000000000000000000060A /* FanControlView.swift */,
+				000000000000000000000505 /* DaemonClient.swift */,
+				000000000000000000000506 /* DaemonServiceCard.swift */,
+				000000000000000000000401 /* PresentationValues.swift */,
+				000000000000000000000400 /* MenuBarView.swift */,
+				000000000000000000000009 /* HeliosApp.swift */,
+				00000000000000000000000A /* StatusItemController.swift */,
+				00000000000000000000000B /* OverviewViewController.swift */,
+				00000000000000000000000C /* DaemonService.swift */,
+				000000000000000000000300 /* Telemetry */,
+			);
+			path = HeliosApp;
+			sourceTree = "<group>";
+		};
+		000000000000000000000007 /* HeliosDaemon */ = {
+			isa = PBXGroup;
+			children = (
+				000000000000000000000602 /* FanHardware.swift */,
+				000000000000000000000603 /* FanOwnershipJournal.swift */,
+				00000000000000000000060B /* FanOwnershipTransition.swift */,
+				00000000000000000000060C /* FanOwnershipRecovery.swift */,
+				00000000000000000000060F /* FanOwnershipProductionRecovery.swift */,
+				000000000000000000000604 /* FanControlEngine.swift */,
+				000000000000000000000605 /* ControlLease.swift */,
+				000000000000000000000606 /* FanControlCoordinator.swift */,
+				000000000000000000000607 /* DaemonLifecycle.swift */,
+				000000000000000000000502 /* DiagnosticLease.swift */,
+				000000000000000000000503 /* DaemonSession.swift */,
+				000000000000000000000504 /* DaemonListenerDelegate.swift */,
+				00000000000000000000000D /* HeliosDaemon.swift */,
+			);
+			path = HeliosDaemon;
+			sourceTree = "<group>";
+		};
+		000000000000000000000008 /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				000000000000000000000600 /* MetricValue.swift */,
+				000000000000000000000601 /* FanModels.swift */,
+				00000000000000000000060D /* FanOwnershipPreflight.swift */,
+				000000000000000000000103 /* SMCClient.swift */,
+				000000000000000000000500 /* HeliosXPCProtocol.swift */,
+				000000000000000000000501 /* XPCTrustRequirement.swift */,
+				00000000000000000000000E /* HeliosServiceIdentity.swift */,
+			);
+			path = Shared;
+			sourceTree = "<group>";
+		};
+		00000000000000000000003E = {
+			isa = PBXGroup;
+			children = (
+				000000000000000000000001 /* Sources */,
+				000000000000000000000002 /* Config */,
+				000000000000000000000003 /* Resources */,
+				000000000000000000000004 /* Frameworks */,
+				000000000000000000000005 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		000000000000000000000300 /* Telemetry */ = {
+			isa = PBXGroup;
+			children = (
+				000000000000000000000608 /* FanProvider.swift */,
+				00000000000000000000060E /* FanOwnershipPreflightProvider.swift */,
+				000000000000000000000100 /* BatteryProvider.swift */,
+				000000000000000000000101 /* CPUProvider.swift */,
+				000000000000000000000102 /* MemoryProvider.swift */,
+				000000000000000000000109 /* GPUProvider.swift */,
+				00000000000000000000010A /* SystemPowerProvider.swift */,
+				00000000000000000000010B /* NetworkProvider.swift */,
+				00000000000000000000010C /* SystemProvider.swift */,
+				00000000000000000000010D /* TelemetryHistory.swift */,
+				00000000000000000000010E /* WiFiProvider.swift */,
+				00000000000000000000010F /* ProcessProvider.swift */,
+				000000000000000000000110 /* PersistentHistory.swift */,
+				000000000000000000000111 /* HealthAlerts.swift */,
+				000000000000000000000112 /* IOActivityAudit.swift */,
+				000000000000000000000113 /* CapabilityReport.swift */,
+				000000000000000000000114 /* UtilityProviders.swift */,
+				000000000000000000000115 /* AudioProvider.swift */,
+				000000000000000000000116 /* MaintenanceProviders.swift */,
+				000000000000000000000117 /* AppEnergyHistory.swift */,
+				000000000000000000000104 /* TelemetryFormatting.swift */,
+				000000000000000000000105 /* TelemetryModels.swift */,
+				000000000000000000000118 /* TelemetryCollectionPolicy.swift */,
+				000000000000000000000106 /* TelemetryMonitor.swift */,
+				000000000000000000000107 /* ThermalProvider.swift */,
+				000000000000000000000108 /* StorageProvider.swift */,
+			);
+			path = Telemetry;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		00000000000000000000002A /* HeliosDaemon */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 000000000000000000000039 /* Build configuration list for PBXNativeTarget "HeliosDaemon" */;
+			buildPhases = (
+				00000000000000000000003A /* Sources */,
+				00000000000000000000003B /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = HeliosDaemon;
+			productName = HeliosDaemon;
+			productReference = 00000000000000000000001B /* HeliosDaemon */;
+			productType = "com.apple.product-type.tool";
+		};
+		00000000000000000000003C /* HeliosApp */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 000000000000000000000032 /* Build configuration list for PBXNativeTarget "HeliosApp" */;
+			buildPhases = (
+				000000000000000000000033 /* Sources */,
+				000000000000000000000034 /* Frameworks */,
+				000000000000000000000035 /* Resources */,
+				000000000000000000000036 /* Embed Signed Daemon */,
+				000000000000000000000037 /* Embed LaunchDaemon Plist */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				000000000000000000000038 /* PBXTargetDependency */,
+			);
+			name = HeliosApp;
+			productName = Helios;
+			productReference = 00000000000000000000001A /* Helios.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		000000000000000000000029 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastSwiftUpdateCheck = 2660;
+				LastUpgradeCheck = 2660;
+				TargetAttributes = {
+					00000000000000000000002A = {
+						CreatedOnToolsVersion = 26.6;
+						ProvisioningStyle = Automatic;
+					};
+					00000000000000000000003C = {
+						CreatedOnToolsVersion = 26.6;
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 00000000000000000000003D /* Build configuration list for PBXProject "Helios" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 00000000000000000000003E;
+			productRefGroup = 000000000000000000000005 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				00000000000000000000003C /* HeliosApp */,
+				00000000000000000000002A /* HeliosDaemon */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		000000000000000000000035 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		000000000000000000000033 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				000000000000000000000710 /* HeliosPreferences.swift in Sources */,
+				000000000000000000000711 /* HeliosDashboardView.swift in Sources */,
+				000000000000000000000712 /* HeliosWindows.swift in Sources */,
+				000000000000000000000713 /* HeliosBrand.swift in Sources */,
+				000000000000000000000714 /* HeliosGraphKit.swift in Sources */,
+				000000000000000000000715 /* HeliosBatteryEstimate.swift in Sources */,
+				000000000000000000000716 /* HeliosMetricPopovers.swift in Sources */,
+				000000000000000000000620 /* MetricValue.swift in Sources */,
+				000000000000000000000622 /* FanModels.swift in Sources */,
+				000000000000000000000631 /* FanOwnershipPreflight.swift in Sources */,
+				00000000000000000000062A /* FanProvider.swift in Sources */,
+				000000000000000000000633 /* FanOwnershipPreflightProvider.swift in Sources */,
+				000000000000000000000635 /* CoolingRules.swift in Sources */,
+				00000000000000000000062B /* FanControlModel.swift in Sources */,
+				00000000000000000000062C /* FanControlView.swift in Sources */,
+				000000000000000000000510 /* HeliosXPCProtocol.swift in Sources */,
+				000000000000000000000512 /* XPCTrustRequirement.swift in Sources */,
+				000000000000000000000517 /* DaemonClient.swift in Sources */,
+				000000000000000000000518 /* DaemonServiceCard.swift in Sources */,
+				000000000000000000000411 /* PresentationValues.swift in Sources */,
+				000000000000000000000410 /* MenuBarView.swift in Sources */,
+				00000000000000000000001C /* HeliosApp.swift in Sources */,
+				00000000000000000000001D /* StatusItemController.swift in Sources */,
+				00000000000000000000001E /* OverviewViewController.swift in Sources */,
+				00000000000000000000001F /* DaemonService.swift in Sources */,
+				000000000000000000000020 /* HeliosServiceIdentity.swift in Sources */,
+				000000000000000000000200 /* BatteryProvider.swift in Sources */,
+				000000000000000000000201 /* CPUProvider.swift in Sources */,
+				000000000000000000000202 /* MemoryProvider.swift in Sources */,
+				000000000000000000000203 /* SMCClient.swift in Sources */,
+				000000000000000000000204 /* TelemetryFormatting.swift in Sources */,
+				000000000000000000000205 /* TelemetryModels.swift in Sources */,
+				000000000000000000000218 /* TelemetryCollectionPolicy.swift in Sources */,
+				000000000000000000000206 /* TelemetryMonitor.swift in Sources */,
+				000000000000000000000207 /* ThermalProvider.swift in Sources */,
+				000000000000000000000208 /* StorageProvider.swift in Sources */,
+				000000000000000000000209 /* GPUProvider.swift in Sources */,
+				00000000000000000000020A /* SystemPowerProvider.swift in Sources */,
+				00000000000000000000020B /* NetworkProvider.swift in Sources */,
+				00000000000000000000020C /* SystemProvider.swift in Sources */,
+				00000000000000000000020D /* TelemetryHistory.swift in Sources */,
+				00000000000000000000020E /* WiFiProvider.swift in Sources */,
+				00000000000000000000020F /* ProcessProvider.swift in Sources */,
+				000000000000000000000210 /* PersistentHistory.swift in Sources */,
+				000000000000000000000211 /* HealthAlerts.swift in Sources */,
+				000000000000000000000212 /* IOActivityAudit.swift in Sources */,
+				000000000000000000000213 /* CapabilityReport.swift in Sources */,
+				000000000000000000000214 /* UtilityProviders.swift in Sources */,
+				000000000000000000000215 /* AudioProvider.swift in Sources */,
+				000000000000000000000216 /* MaintenanceProviders.swift in Sources */,
+				000000000000000000000217 /* AppEnergyHistory.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		00000000000000000000003A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				000000000000000000000621 /* MetricValue.swift in Sources */,
+				000000000000000000000623 /* FanModels.swift in Sources */,
+				000000000000000000000632 /* FanOwnershipPreflight.swift in Sources */,
+				000000000000000000000624 /* FanHardware.swift in Sources */,
+				000000000000000000000625 /* FanOwnershipJournal.swift in Sources */,
+				00000000000000000000062F /* FanOwnershipTransition.swift in Sources */,
+				000000000000000000000630 /* FanOwnershipRecovery.swift in Sources */,
+				000000000000000000000634 /* FanOwnershipProductionRecovery.swift in Sources */,
+				000000000000000000000626 /* FanControlEngine.swift in Sources */,
+				000000000000000000000627 /* ControlLease.swift in Sources */,
+				000000000000000000000628 /* FanControlCoordinator.swift in Sources */,
+				000000000000000000000629 /* DaemonLifecycle.swift in Sources */,
+				00000000000000000000062D /* SMCClient.swift in Sources */,
+				000000000000000000000511 /* HeliosXPCProtocol.swift in Sources */,
+				000000000000000000000513 /* XPCTrustRequirement.swift in Sources */,
+				000000000000000000000514 /* DiagnosticLease.swift in Sources */,
+				000000000000000000000515 /* DaemonSession.swift in Sources */,
+				000000000000000000000516 /* DaemonListenerDelegate.swift in Sources */,
+				000000000000000000000021 /* HeliosDaemon.swift in Sources */,
+				000000000000000000000022 /* HeliosServiceIdentity.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		000000000000000000000038 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 00000000000000000000002A /* HeliosDaemon */;
+			targetProxy = 00000000000000000000002B /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		00000000000000000000002C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 000000000000000000000010 /* Debug.xcconfig */;
+			buildSettings = {
+			};
+			name = Debug;
+		};
+		00000000000000000000002D /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 000000000000000000000011 /* Release.xcconfig */;
+			buildSettings = {
+			};
+			name = Release;
+		};
+		00000000000000000000002E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ENABLE_DEBUG_DYLIB = NO;
+				INFOPLIST_FILE = "Resources/HeliosApp-Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.snejda.Helios;
+				PRODUCT_NAME = Helios;
+				OTHER_LDFLAGS = ("$(inherited)", "-lproc");
+			};
+			name = Debug;
+		};
+		00000000000000000000002F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ENABLE_DEBUG_DYLIB = NO;
+				INFOPLIST_FILE = "Resources/HeliosApp-Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.snejda.Helios;
+				PRODUCT_NAME = Helios;
+				OTHER_LDFLAGS = ("$(inherited)", "-lproc");
+			};
+			name = Release;
+		};
+		000000000000000000000030 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
+				CREATE_INFOPLIST_SECTION_IN_BINARY = YES;
+				INFOPLIST_FILE = "Resources/HeliosDaemon-Info.plist";
+				PRODUCT_BUNDLE_IDENTIFIER = com.snejda.Helios.Daemon;
+				PRODUCT_NAME = HeliosDaemon;
+				SKIP_INSTALL = YES;
+			};
+			name = Debug;
+		};
+		000000000000000000000031 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
+				CREATE_INFOPLIST_SECTION_IN_BINARY = YES;
+				INFOPLIST_FILE = "Resources/HeliosDaemon-Info.plist";
+				PRODUCT_BUNDLE_IDENTIFIER = com.snejda.Helios.Daemon;
+				PRODUCT_NAME = HeliosDaemon;
+				SKIP_INSTALL = YES;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		000000000000000000000032 /* Build configuration list for PBXNativeTarget "HeliosApp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				00000000000000000000002E /* Debug */,
+				00000000000000000000002F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		000000000000000000000039 /* Build configuration list for PBXNativeTarget "HeliosDaemon" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				000000000000000000000030 /* Debug */,
+				000000000000000000000031 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		00000000000000000000003D /* Build configuration list for PBXProject "Helios" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				00000000000000000000002C /* Debug */,
+				00000000000000000000002D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 000000000000000000000029 /* Project object */;
+}
