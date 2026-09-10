@@ -97,6 +97,7 @@
 		000000000000000000000B01 /* DiagnosticsModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000A01 /* DiagnosticsModels.swift */; };
 		000000000000000000000B02 /* DiagnosticsPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000A02 /* DiagnosticsPreferences.swift */; };
 		000000000000000000000B03 /* DiagnosticsBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000A03 /* DiagnosticsBuilder.swift */; };
+		000000000000000000000B04 /* DiagnosticsPayloadView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000A04 /* DiagnosticsPayloadView.swift */; };
 		000000000000000000000800 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000801 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
@@ -225,6 +226,7 @@
 		000000000000000000000A01 /* DiagnosticsModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsModels.swift; sourceTree = "<group>"; };
 		000000000000000000000A02 /* DiagnosticsPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsPreferences.swift; sourceTree = "<group>"; };
 		000000000000000000000A03 /* DiagnosticsBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsBuilder.swift; sourceTree = "<group>"; };
+		000000000000000000000A04 /* DiagnosticsPayloadView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsPayloadView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -430,6 +432,7 @@
 				000000000000000000000A01 /* DiagnosticsModels.swift */,
 				000000000000000000000A02 /* DiagnosticsPreferences.swift */,
 				000000000000000000000A03 /* DiagnosticsBuilder.swift */,
+				000000000000000000000A04 /* DiagnosticsPayloadView.swift */,
 			);
 			path = Diagnostics;
 			sourceTree = "<group>";
@@ -531,6 +534,7 @@
 				000000000000000000000B01 /* DiagnosticsModels.swift in Sources */,
 				000000000000000000000B02 /* DiagnosticsPreferences.swift in Sources */,
 				000000000000000000000B03 /* DiagnosticsBuilder.swift in Sources */,
+				000000000000000000000B04 /* DiagnosticsPayloadView.swift in Sources */,
 				000000000000000000000710 /* HeliosPreferences.swift in Sources */,
 				000000000000000000000711 /* HeliosDashboardView.swift in Sources */,
 				000000000000000000000712 /* HeliosWindows.swift in Sources */,

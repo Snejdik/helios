@@ -216,6 +216,28 @@ private func builderChecks() throws {
   try require(reset.runtime.diagnosticsErrorCategory == .none, "diagnostics error survived relaunch")
 }
 
+@MainActor
+private func frozenPayloadChecks() throws {
+  let approval = DiagnosticsManualApproval()
+  let firstDate = Date(timeIntervalSince1970: 10_000)
+  try approval.replace(
+    with: health(type: .manualHealth, reason: .userInitiated),
+    reportType: .manualHealth, now: firstDate)
+  guard let displayed = approval.payload else {
+    throw CheckFailure(description: "manual preview was not frozen")
+  }
+  try require(approval.approve(at: firstDate) == displayed, "displayed payload was not approved")
+  try require(
+    approval.approvedPayload(at: firstDate)?.data == Data(approval.preview.utf8),
+    "preview UTF-8 bytes differ from approved body")
+
+  try approval.replace(
+    with: health(type: .manualHealth, reason: .userInitiated, model: "Mac14,2"),
+    reportType: .manualHealth, now: firstDate.addingTimeInterval(1))
+  try require(approval.approvedPayload(at: firstDate.addingTimeInterval(1)) == nil, "regeneration retained approval")
+  try require(approval.approve(at: firstDate.addingTimeInterval(902)) == nil, "stale payload was approved")
+}
+
 @main
 @MainActor
 struct DiagnosticsChecks {
@@ -226,5 +248,7 @@ struct DiagnosticsChecks {
     print("PASS diagnostics consent defaults OFF, survives relaunch, fails safe and stays independent")
     try builderChecks()
     print("PASS diagnostics allowlist builder is preference-blind and launch-scoped")
+    try frozenPayloadChecks()
+    print("PASS diagnostics preview is one frozen buffer with expiring generation-bound approval")
   }
 }
