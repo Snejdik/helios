@@ -12,6 +12,7 @@ struct SystemMetrics: Sendable {
     let modelIdentifier: MetricResult<String>
     let chipName: MetricResult<String>
     let osVersion: String
+    let osBuild: MetricResult<String>
     let uptimeSeconds: TimeInterval
     let logicalProcessorCount: Int
     let physicalMemoryBytes: UInt64
@@ -20,6 +21,28 @@ struct SystemMetrics: Sendable {
     let loadAverage15: MetricResult<Double>
     let thermalState: SystemThermalState
     let lowPowerModeEnabled: Bool
+
+    init(
+        modelIdentifier: MetricResult<String>, chipName: MetricResult<String>, osVersion: String,
+        osBuild: MetricResult<String> = .failure(.unavailable("macOS build unavailable")),
+        uptimeSeconds: TimeInterval, logicalProcessorCount: Int, physicalMemoryBytes: UInt64,
+        loadAverage1: MetricResult<Double>, loadAverage5: MetricResult<Double>,
+        loadAverage15: MetricResult<Double>, thermalState: SystemThermalState,
+        lowPowerModeEnabled: Bool
+    ) {
+        self.modelIdentifier = modelIdentifier
+        self.chipName = chipName
+        self.osVersion = osVersion
+        self.osBuild = osBuild
+        self.uptimeSeconds = uptimeSeconds
+        self.logicalProcessorCount = logicalProcessorCount
+        self.physicalMemoryBytes = physicalMemoryBytes
+        self.loadAverage1 = loadAverage1
+        self.loadAverage5 = loadAverage5
+        self.loadAverage15 = loadAverage15
+        self.thermalState = thermalState
+        self.lowPowerModeEnabled = lowPowerModeEnabled
+    }
 }
 
 enum SystemInfoReader {
@@ -30,6 +53,7 @@ enum SystemInfoReader {
             modelIdentifier: captureMetric { try sysctlString("hw.model", label: "Mac model identifier") },
             chipName: captureMetric { try sysctlString("machdep.cpu.brand_string", label: "Chip name") },
             osVersion: info.operatingSystemVersionString,
+            osBuild: captureMetric { try sysctlString("kern.osversion", label: "macOS build") },
             uptimeSeconds: max(0, info.systemUptime),
             logicalProcessorCount: max(1, info.processorCount),
             physicalMemoryBytes: info.physicalMemory,

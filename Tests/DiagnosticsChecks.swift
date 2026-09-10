@@ -148,6 +148,74 @@ private func preferencesChecks() throws {
   try require(preferences.consent == .notDecided, "erase-all did not restore undecided/OFF")
 }
 
+@MainActor
+private func builderChecks() throws {
+  let launch = Date(timeIntervalSince1970: 1_000)
+  let tracker = DiagnosticsSessionTracker(launchStartedAt: launch)
+  let pending = TelemetrySnapshot()
+  tracker.accept(pending)
+  var report = try tracker.buildHealth(
+    type: .automaticHealth, reason: .daily,
+    generatedAt: launch.addingTimeInterval(60))
+  try require(report.providers.cpu.state == .notObserved, "pending CPU was not cause-free")
+  try require(report.capabilities.cpu == .unknown, "unobserved capability was not unknown")
+  try require(report.providers.cpu.failureCategory == nil, "not_observed inferred a failure")
+  try require(report.providers.cpu.failureCount == .zero, "not_observed inferred a count")
+
+  var snapshot = pending
+  snapshot.system = MetricSample(
+    .success(
+      SystemMetrics(
+        modelIdentifier: .success("MacBookAir10,1"), chipName: .success("Apple M1"),
+        osVersion: "Version 26.6.2", osBuild: .success("25G83"), uptimeSeconds: 100,
+        logicalProcessorCount: 8, physicalMemoryBytes: 8 * 1_073_741_824,
+        loadAverage1: .success(1), loadAverage5: .success(1), loadAverage15: .success(1),
+        thermalState: .nominal, lowPowerModeEnabled: false)),
+    capturedTicks: 10)
+  snapshot.cpu = MetricSample(
+    .success(
+      CPUMetrics(
+        userPercent: 4, systemPercent: 2, nicePercent: 0, idlePercent: 94,
+        perCoreUsagePercent: [6])), capturedTicks: 11)
+  snapshot.fans = MetricSample(.success(FanInventory(fans: [])), capturedTicks: 12)
+  tracker.accept(snapshot)
+  report = try tracker.buildHealth(
+    type: .automaticHealth, reason: .daily,
+    generatedAt: launch.addingTimeInterval(16 * 60))
+  try require(report.providers.cpu.state == .available, "observed CPU was not available")
+  try require(report.system.machineModel == "MacBookAir10,1", "safe model was not copied")
+  try require(report.system.appleSiliconFamily == "M1", "safe family derivation failed")
+  try require(report.system.fanCount == 0, "positively observed fanless count was omitted")
+  try require(report.system.batteryPresent == nil, "unknown battery state was fabricated")
+  try require(
+    report.runtime.sessionDuration == .fifteenMinutesToOneHour,
+    "session duration was not current-launch scoped")
+
+  snapshot.cpu = MetricSample(.failure(.invalidData("must never be transmitted")), capturedTicks: 13)
+  tracker.accept(snapshot)
+  tracker.accept(snapshot)
+  report = try tracker.buildHealth(type: .automaticHealth, reason: .daily, generatedAt: launch)
+  try require(report.providers.cpu.state == .failed, "observed failure state missing")
+  try require(report.providers.cpu.failureCategory == .invalidData, "failure was not coarsened")
+  try require(report.providers.cpu.failureCount == .one, "one sample was counted more than once")
+  try require(report.runtime.providerFailureTotal == .one, "current-launch total was wrong")
+
+  snapshot.cpu = MetricSample(.failure(.ioKit("secret operation", -1)), capturedTicks: 14)
+  tracker.accept(snapshot)
+  report = try tracker.buildHealth(type: .automaticHealth, reason: .daily, generatedAt: launch)
+  try require(report.providers.cpu.failureCount == .twoToFive, "failure bucket did not advance")
+  let frozen = try DiagnosticsPayloadEncoder.freeze(report, reportType: .automaticHealth)
+  try require(!frozen.preview.contains("secret operation"), "raw error text leaked")
+  try require(!frozen.preview.contains("must never be transmitted"), "invalid-data text leaked")
+
+  let nextLaunch = DiagnosticsSessionTracker(launchStartedAt: launch.addingTimeInterval(3_600))
+  nextLaunch.accept(pending)
+  let reset = try nextLaunch.buildHealth(
+    type: .automaticHealth, reason: .daily, generatedAt: launch.addingTimeInterval(3_601))
+  try require(reset.runtime.providerFailureTotal == .zero, "failure counters survived relaunch")
+  try require(reset.runtime.diagnosticsErrorCategory == .none, "diagnostics error survived relaunch")
+}
+
 @main
 @MainActor
 struct DiagnosticsChecks {
@@ -156,5 +224,7 @@ struct DiagnosticsChecks {
     print("PASS diagnostics v1 closed DTOs, model grammar, omission, enums and strict validation")
     try preferencesChecks()
     print("PASS diagnostics consent defaults OFF, survives relaunch, fails safe and stays independent")
+    try builderChecks()
+    print("PASS diagnostics allowlist builder is preference-blind and launch-scoped")
   }
 }

@@ -96,6 +96,7 @@
 		000000000000000000000716 /* HeliosMetricPopovers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000706 /* HeliosMetricPopovers.swift */; };
 		000000000000000000000B01 /* DiagnosticsModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000A01 /* DiagnosticsModels.swift */; };
 		000000000000000000000B02 /* DiagnosticsPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000A02 /* DiagnosticsPreferences.swift */; };
+		000000000000000000000B03 /* DiagnosticsBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000A03 /* DiagnosticsBuilder.swift */; };
 		000000000000000000000800 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000801 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
@@ -223,6 +224,7 @@
 		000000000000000000000706 /* HeliosMetricPopovers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeliosMetricPopovers.swift; sourceTree = "<group>"; };
 		000000000000000000000A01 /* DiagnosticsModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsModels.swift; sourceTree = "<group>"; };
 		000000000000000000000A02 /* DiagnosticsPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsPreferences.swift; sourceTree = "<group>"; };
+		000000000000000000000A03 /* DiagnosticsBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsBuilder.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -427,6 +429,7 @@
 			children = (
 				000000000000000000000A01 /* DiagnosticsModels.swift */,
 				000000000000000000000A02 /* DiagnosticsPreferences.swift */,
+				000000000000000000000A03 /* DiagnosticsBuilder.swift */,
 			);
 			path = Diagnostics;
 			sourceTree = "<group>";
@@ -527,6 +530,7 @@
 			files = (
 				000000000000000000000B01 /* DiagnosticsModels.swift in Sources */,
 				000000000000000000000B02 /* DiagnosticsPreferences.swift in Sources */,
+				000000000000000000000B03 /* DiagnosticsBuilder.swift in Sources */,
 				000000000000000000000710 /* HeliosPreferences.swift in Sources */,
 				000000000000000000000711 /* HeliosDashboardView.swift in Sources */,
 				000000000000000000000712 /* HeliosWindows.swift in Sources */,
