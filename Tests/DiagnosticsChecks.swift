@@ -144,8 +144,18 @@ private func preferencesChecks() throws {
   try require(cancelled, "opt-out did not synchronously cancel automatic work")
   try require(preferences.nextEligibleTime == nil, "opt-out retained queued eligibility")
 
+  let manualSuccess = Date(timeIntervalSince1970: 20_000)
+  preferences.recordLocalStatus(.success, category: .none, at: manualSuccess)
+  try require(
+    preferences.lastSuccessfulReport == manualSuccess,
+    "manual success did not update the user-visible report date")
+  try require(
+    preferences.lastSuccessfulAutomaticSend == nil,
+    "manual success incorrectly advanced automatic scheduling state")
+
   preferences.eraseAllDiagnosticsPreferences()
   try require(preferences.consent == .notDecided, "erase-all did not restore undecided/OFF")
+  try require(preferences.lastSuccessfulReport == nil, "erase-all retained report status history")
 }
 
 @MainActor
@@ -310,6 +320,11 @@ private func transportChecks() async throws {
   try require(result == .accepted, "manual report failed while automatic diagnostics was OFF")
   try require(factoryCount == 1, "manual send did not lazily create transport")
   try require(mock.received == [manual.data], "manual transport did not receive frozen bytes")
+  try require(preferences.lastSuccessfulReport != nil, "manual success was not shown locally")
+  try require(
+    preferences.lastSuccessfulAutomaticSend == nil,
+    "manual success advanced the automatic-success cadence")
+  try require(preferences.nextEligibleTime == nil, "manual success scheduled automatic work")
   controller.shutdown()
 }
 

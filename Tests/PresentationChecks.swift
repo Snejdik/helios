@@ -477,6 +477,8 @@ private struct PresentationChecks {
     }
     uiDefaults.removePersistentDomain(forName: uiSuite)
     let uiPreferences = HeliosPreferences(defaults: uiDefaults)
+    let uiDiagnosticsPreferences = DiagnosticsPreferences(defaults: uiDefaults)
+    let uiDiagnostics = DiagnosticsController(preferences: uiDiagnosticsPreferences)
     let uiService = DaemonService(
       driver: PresentationRegistration(.enabled), connectAutomatically: false)
     defer {
@@ -522,7 +524,8 @@ private struct PresentationChecks {
     )
 
     for dark in [false, true] {
-      let content = HeliosSettingsView(preferences: uiPreferences, service: uiService)
+      let content = HeliosSettingsView(
+        preferences: uiPreferences, service: uiService, diagnostics: uiDiagnostics)
         .environment(\.colorScheme, dark ? .dark : .light)
       guard let image = nativeImage(content, width: 720),
         let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])

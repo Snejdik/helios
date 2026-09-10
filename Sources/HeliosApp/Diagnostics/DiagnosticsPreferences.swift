@@ -27,6 +27,7 @@ final class DiagnosticsPreferences: ObservableObject {
 
   @Published private(set) var consent: DiagnosticsConsentState
   @Published private(set) var consentRevision: Int
+  @Published private(set) var lastSuccessfulReport: Date?
   @Published private(set) var lastSuccessfulAutomaticSend: Date?
   @Published private(set) var lastReportStatus: DiagnosticsLocalReportStatus
   @Published private(set) var lastStatusCategory: DiagnosticsErrorCategory
@@ -45,6 +46,7 @@ final class DiagnosticsPreferences: ObservableObject {
   private enum Key {
     static let consent = DiagnosticsPreferences.namespace + "consent"
     static let consentRevision = DiagnosticsPreferences.namespace + "consentRevision"
+    static let lastSuccessfulReport = DiagnosticsPreferences.namespace + "lastSuccessfulReport"
     static let lastSuccessfulSend = DiagnosticsPreferences.namespace + "lastSuccessfulAutomaticSend"
     static let lastStatus = DiagnosticsPreferences.namespace + "lastStatus"
     static let lastStatusCategory = DiagnosticsPreferences.namespace + "lastStatusCategory"
@@ -56,7 +58,8 @@ final class DiagnosticsPreferences: ObservableObject {
     static let nextEligible = DiagnosticsPreferences.namespace + "nextEligibleTime"
 
     static let all = [
-      consent, consentRevision, lastSuccessfulSend, lastStatus, lastStatusCategory, lastVersion,
+      consent, consentRevision, lastSuccessfulReport, lastSuccessfulSend, lastStatus,
+      lastStatusCategory, lastVersion,
       lastBuild, lastMacOSBuild, chainStartedAt, retryCount, nextEligible,
     ]
   }
@@ -67,6 +70,7 @@ final class DiagnosticsPreferences: ObservableObject {
     consent = storedConsent.flatMap(DiagnosticsConsentState.init(rawValue:)) ?? .notDecided
     let revision = defaults.object(forKey: Key.consentRevision) as? NSNumber
     consentRevision = max(0, revision?.intValue ?? 0)
+    lastSuccessfulReport = Self.safeDate(defaults.object(forKey: Key.lastSuccessfulReport))
     lastSuccessfulAutomaticSend = Self.safeDate(defaults.object(forKey: Key.lastSuccessfulSend))
     let storedStatus = defaults.object(forKey: Key.lastStatus) as? String
     lastReportStatus = storedStatus.flatMap(DiagnosticsLocalReportStatus.init(rawValue:)) ?? .notSent
@@ -123,6 +127,7 @@ final class DiagnosticsPreferences: ObservableObject {
     macOSBuild: String
   ) {
     lastSuccessfulAutomaticSend = date
+    lastSuccessfulReport = date
     lastReportStatus = .success
     lastStatusCategory = .none
     lastReportedHeliosVersion = String(heliosVersion.prefix(32))
@@ -131,6 +136,7 @@ final class DiagnosticsPreferences: ObservableObject {
     pendingRetryCount = 0
     nextEligibleTime = date.addingTimeInterval(24 * 60 * 60)
     defaults.set(date, forKey: Key.lastSuccessfulSend)
+    defaults.set(date, forKey: Key.lastSuccessfulReport)
     defaults.set(lastReportStatus.rawValue, forKey: Key.lastStatus)
     defaults.set(lastStatusCategory.rawValue, forKey: Key.lastStatusCategory)
     defaults.set(lastReportedHeliosVersion, forKey: Key.lastVersion)
@@ -140,9 +146,15 @@ final class DiagnosticsPreferences: ObservableObject {
     defaults.set(nextEligibleTime, forKey: Key.nextEligible)
   }
 
-  func recordLocalStatus(_ status: DiagnosticsLocalReportStatus, category: DiagnosticsErrorCategory) {
+  func recordLocalStatus(
+    _ status: DiagnosticsLocalReportStatus, category: DiagnosticsErrorCategory, at date: Date = Date()
+  ) {
     lastReportStatus = status
     lastStatusCategory = category
+    if status == .success {
+      lastSuccessfulReport = date
+      defaults.set(date, forKey: Key.lastSuccessfulReport)
+    }
     defaults.set(status.rawValue, forKey: Key.lastStatus)
     defaults.set(category.rawValue, forKey: Key.lastStatusCategory)
   }
@@ -166,6 +178,7 @@ final class DiagnosticsPreferences: ObservableObject {
     for key in Key.all { defaults.removeObject(forKey: key) }
     consent = .notDecided
     consentRevision = 0
+    lastSuccessfulReport = nil
     lastSuccessfulAutomaticSend = nil
     lastReportStatus = .notSent
     lastStatusCategory = .none

@@ -77,7 +77,8 @@ final class HeliosWindowCoordinator: NSObject, NSWindowDelegate {
     if let settingsController {
       controller = settingsController
     } else {
-      let content = HeliosSettingsView(preferences: preferences, service: service)
+      let content = HeliosSettingsView(
+        preferences: preferences, service: service, diagnostics: diagnostics)
       let hosting = NSHostingController(rootView: content)
       let window = NSWindow(contentViewController: hosting)
       window.title = "Helios Settings"
@@ -4000,7 +4001,7 @@ private enum HeliosSettingsRoute: String, CaseIterable, Identifiable {
     case .graphs: "Graphs & Colors"
     case .fans: "Cooling"
     case .battery: "Battery & Energy"
-    case .privacy: "Privacy"
+    case .privacy: "Privacy & Diagnostics"
     case .advanced: "Advanced"
     case .about: "About"
     }
@@ -4031,11 +4032,27 @@ private enum HeliosModuleSettingsTab: String, CaseIterable, Identifiable {
 struct HeliosSettingsView: View {
   @ObservedObject var preferences: HeliosPreferences
   @ObservedObject var service: DaemonService
+  @ObservedObject var diagnostics: DiagnosticsController
+  @ObservedObject private var diagnosticsPreferences: DiagnosticsPreferences
+  @StateObject private var manualApproval = DiagnosticsManualApproval()
   @State private var selection: HeliosSettingsRoute? = .modules
   @State private var moduleTab: HeliosModuleSettingsTab = .collection
   @State private var showingPrepareRemoval = false
   @State private var eraseLocalDataOnRemoval = false
   @State private var removalStatus: String?
+  @State private var diagnosticsPreview: FrozenDiagnosticsPayload?
+  @State private var showingDiagnosticsPreview = false
+  @State private var previewAllowsSend = false
+  @State private var diagnosticsStatus: String?
+
+  init(
+    preferences: HeliosPreferences, service: DaemonService, diagnostics: DiagnosticsController
+  ) {
+    self.preferences = preferences
+    self.service = service
+    self.diagnostics = diagnostics
+    diagnosticsPreferences = diagnostics.preferences
+  }
 
   var body: some View {
     NavigationSplitView {
@@ -4056,6 +4073,32 @@ struct HeliosSettingsView: View {
       .background(Color(nsColor: .windowBackgroundColor))
     }
     .frame(minWidth: 720, minHeight: 520)
+    .sheet(isPresented: $showingDiagnosticsPreview) { diagnosticsPreviewSheet }
+  }
+
+  @ViewBuilder
+  private var diagnosticsPreviewSheet: some View {
+    if let diagnosticsPreview {
+      if previewAllowsSend {
+        DiagnosticsPayloadView(
+          title: "Confirm diagnostic report",
+          explanation:
+            "Review the complete request body, then choose Send report. This one-shot action does not enable automatic diagnostics.",
+          payload: diagnosticsPreview,
+          sending: diagnostics.sending,
+          status: diagnosticsStatus,
+          onSend: sendApprovedManualHealth,
+          onRegenerate: showManualHealthPreview)
+      } else {
+        DiagnosticsPayloadView(
+          title: "Beta diagnostics preview",
+          explanation:
+            "This local preview shows the complete automatic diagnostics body. Viewing it sends nothing.",
+          payload: diagnosticsPreview,
+          status: diagnosticsStatus,
+          onRegenerate: showAutomaticPreview)
+      }
+    }
   }
 
   private var settingsHeader: some View {
@@ -4090,7 +4133,7 @@ struct HeliosSettingsView: View {
       "Choose chart behavior, history ranges and a color for every module or data series."
     case .fans: "Understand the safe fan-control boundary and helper status."
     case .battery: "Read-only battery-life estimation and energy-history behavior."
-    case .privacy: "See what Helios reads, what it never uploads, and what stays macOS-managed."
+    case .privacy: "Control optional beta diagnostics and inspect every byte before a manual send."
     case .advanced: "Diagnostics and interface reset options for experienced users."
     case .about: "Version, author and project links."
     }
@@ -4943,10 +4986,37 @@ struct HeliosSettingsView: View {
     Form {
       Section("Local by design") {
         LabeledContent("Analytics", value: "None")
-        LabeledContent("Background network", value: "None")
+        LabeledContent(
+          "Background network",
+          value: diagnosticsPreferences.automaticEnabled
+            ? "Optional beta diagnostics enabled" : "No automatic diagnostics")
         LabeledContent("Battery", value: "Read-only telemetry")
         Text(
-          "Helios does not upload monitoring data. External project links open only when you click them."
+          "Helios does not send page views, clicks, feature-use events, identities, raw monitoring samples, or fan-control data. External links open only when you click them."
+        )
+        .foregroundStyle(.secondary)
+      }
+      Section("Privacy-preserving beta diagnostics") {
+        Toggle(
+          "Share beta diagnostics",
+          isOn: Binding(
+            get: { diagnosticsPreferences.automaticEnabled },
+            set: { diagnostics.setAutomaticEnabled($0) }))
+        LabeledContent(
+          "Last successful report", value: diagnosticsLastSuccessfulReport)
+        LabeledContent("Last report status", value: diagnosticsPreferences.lastReportStatus.label)
+        if diagnosticsPreferences.lastReportStatus == .failed {
+          Text("Last failure category: \(diagnosticsPreferences.lastStatusCategory.rawValue)")
+            .font(.system(size: 10)).foregroundStyle(.secondary)
+        }
+        Button("View exactly what is shared", action: showAutomaticPreview)
+        Button("Send diagnostic report now", action: showManualHealthPreview)
+        Button("Create compatibility report") {
+          diagnosticsStatus = "Compatibility report generation is available in the next setup step."
+        }
+        Button("Privacy information") { open("https://snejda.cz/helios/privacy") }
+        Text(
+          "Automatic diagnostics are off unless you enable them. Manual actions work while they are off, require an exact preview and separate Send confirmation, and never change this switch."
         )
         .foregroundStyle(.secondary)
       }
@@ -4963,9 +5033,64 @@ struct HeliosSettingsView: View {
           "The privileged helper is fan-only. Battery charging policy remains owned by macOS and is never modified by Helios."
         )
         .foregroundStyle(.secondary)
+        LabeledContent("Privacy & support", value: "helios@snejda.cz")
       }
     }
     .formStyle(.grouped)
+  }
+
+  private var diagnosticsLastSuccessfulReport: String {
+    diagnosticsPreferences.lastSuccessfulReport?.formatted(date: .abbreviated, time: .shortened)
+      ?? "Never"
+  }
+
+  private func showAutomaticPreview() {
+    do {
+      diagnosticsPreview = try diagnostics.makeHealthPayload(
+        type: .automaticHealth,
+        reason: diagnosticsPreferences.lastSuccessfulAutomaticSend == nil ? .initialOptIn : .daily)
+      previewAllowsSend = false
+      diagnosticsStatus = nil
+      manualApproval.invalidate()
+      showingDiagnosticsPreview = true
+    } catch {
+      diagnosticsStatus = "A safe diagnostics preview is not available yet. Nothing was sent."
+    }
+  }
+
+  private func showManualHealthPreview() {
+    do {
+      let payload = try diagnostics.makeHealthPayload(
+        type: .manualHealth, reason: .userInitiated)
+      manualApproval.setFrozen(payload)
+      diagnosticsPreview = manualApproval.payload
+      previewAllowsSend = true
+      diagnosticsStatus = nil
+      showingDiagnosticsPreview = true
+    } catch {
+      diagnosticsStatus = "A safe manual report could not be created. Nothing was sent."
+    }
+  }
+
+  private func sendApprovedManualHealth() {
+    guard let payload = manualApproval.approve() else {
+      diagnosticsStatus = "This preview expired. Regenerate it before sending."
+      return
+    }
+    Task {
+      let result = await diagnostics.sendManual(payload)
+      switch result {
+      case .accepted:
+        diagnosticsStatus = "Report sent successfully."
+        previewAllowsSend = false
+      case .retryable:
+        diagnosticsStatus = "Send failed. The same frozen preview can be retried explicitly."
+      case .rejected:
+        diagnosticsStatus = "The report was rejected and was not accepted."
+      case .cancelled:
+        diagnosticsStatus = "Send cancelled."
+      }
+    }
   }
 
   private var advanced: some View {
