@@ -7,6 +7,7 @@ final class HeliosWindowCoordinator: NSObject, NSWindowDelegate {
   private let service: DaemonService
   private let preferences: HeliosPreferences
   private let model: OverviewViewModel
+  private let diagnostics: DiagnosticsController
   private var monitorController: HeliosMonitorWindowController?
   private var energyInspectorController: NSWindowController?
   private var settingsController: NSWindowController?
@@ -14,10 +15,14 @@ final class HeliosWindowCoordinator: NSObject, NSWindowDelegate {
   private var lastMonitorRoute: HeliosMonitorRoute = .overview
   private let energyInspectorState = HeliosEnergyInspectorState()
 
-  init(service: DaemonService, preferences: HeliosPreferences, model: OverviewViewModel) {
+  init(
+    service: DaemonService, preferences: HeliosPreferences, model: OverviewViewModel,
+    diagnostics: DiagnosticsController
+  ) {
     self.service = service
     self.preferences = preferences
     self.model = model
+    self.diagnostics = diagnostics
     super.init()
   }
 
@@ -94,7 +99,8 @@ final class HeliosWindowCoordinator: NSObject, NSWindowDelegate {
       return
     }
 
-    let content = HeliosOnboardingView(preferences: preferences) { [weak self] in
+    let content = HeliosOnboardingView(preferences: preferences, diagnostics: diagnostics) {
+      [weak self] in
       self?.onboardingController?.close()
       self?.onboardingController = nil
     }
@@ -5207,11 +5213,60 @@ private struct HeliosMenuBarPreview: View {
 }
 
 struct HeliosOnboardingView: View {
+  private enum Page {
+    case interface
+    case diagnostics
+  }
+
   @ObservedObject var preferences: HeliosPreferences
+  @ObservedObject var diagnostics: DiagnosticsController
   let onFinish: () -> Void
   @State private var selection: HeliosDashboardMode = .advanced
+  @State private var page: Page = .interface
+  @State private var shareDiagnostics = false
+  @State private var previewPayload: FrozenDiagnosticsPayload?
+  @State private var showingPreview = false
+  @State private var previewError: String?
 
   var body: some View {
+    VStack(spacing: 0) {
+      if page == .interface {
+        interfacePage
+      } else {
+        diagnosticsPage
+      }
+
+      Spacer()
+
+      Divider()
+      HStack {
+        if page == .interface {
+          Text("You can customize the menu bar and dashboard independently at any time.")
+            .font(.system(size: 10)).foregroundStyle(.secondary)
+        } else {
+          Button("Back") { page = .interface }
+          Text("Diagnostics can be changed later in Privacy & Diagnostics.")
+            .font(.system(size: 10)).foregroundStyle(.secondary)
+        }
+        Spacer()
+        Button("Continue", action: continueAction)
+          .keyboardShortcut(.defaultAction)
+      }
+      .padding(18)
+    }
+    .frame(width: 720, height: 560)
+    .background(.regularMaterial)
+    .sheet(isPresented: $showingPreview) {
+      if let previewPayload {
+        DiagnosticsPayloadView(
+          title: "Beta diagnostics preview",
+          explanation: "This local preview shows the exact automatic diagnostics body. It is not sent from this screen.",
+          payload: previewPayload)
+      }
+    }
+  }
+
+  private var interfacePage: some View {
     VStack(spacing: 0) {
       VStack(spacing: 8) {
         HeliosBrandMark(size: 54)
@@ -5231,14 +5286,11 @@ struct HeliosOnboardingView: View {
         columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)],
         spacing: 12
       ) {
-        ForEach(HeliosDashboardMode.allCases) { mode in
-          onboardingCard(mode)
-        }
+        ForEach(HeliosDashboardMode.allCases) { mode in onboardingCard(mode) }
       }
       .padding(.horizontal, 24)
 
       Spacer()
-
       HStack(alignment: .center) {
         Label("Battery stays macOS-managed", systemImage: "battery.100percent")
         Text("·").foregroundStyle(.tertiary)
@@ -5247,22 +5299,64 @@ struct HeliosOnboardingView: View {
       .font(.system(size: 10))
       .foregroundStyle(.secondary)
       .padding(.bottom, 16)
+    }
+  }
 
-      Divider()
-      HStack {
-        Text("You can customize the menu bar and dashboard independently at any time.")
-          .font(.system(size: 10)).foregroundStyle(.secondary)
-        Spacer()
-        Button("Continue") {
-          preferences.completeOnboarding(with: selection)
-          onFinish()
+  private var diagnosticsPage: some View {
+    VStack(spacing: 22) {
+      Spacer()
+      HeliosBrandMark(size: 54)
+      Text("Help improve Helios Beta").font(.system(size: 26, weight: .semibold))
+      Text(
+        "Helios is being tested across different Apple Silicon Macs. You can optionally share privacy-preserving technical diagnostics to help improve hardware compatibility and stability. No diagnostic information is sent unless you enable this option."
+      )
+      .font(.system(size: 13))
+      .foregroundStyle(.secondary)
+      .multilineTextAlignment(.center)
+      .frame(maxWidth: 520)
+
+      VStack(alignment: .leading, spacing: 12) {
+        Toggle("Share beta diagnostics", isOn: $shareDiagnostics)
+          .toggleStyle(.checkbox)
+          .font(.system(size: 13, weight: .medium))
+        Button("View exactly what is shared", action: showAutomaticPreview)
+          .buttonStyle(.link)
+        if let previewError {
+          Text(previewError).font(.system(size: 10)).foregroundStyle(.secondary)
         }
-        .keyboardShortcut(.defaultAction)
       }
       .padding(18)
+      .frame(width: 440, alignment: .leading)
+      .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 13))
+
+      Text("The checkbox is off by default. Your choice does not affect any Helios feature.")
+        .font(.system(size: 10)).foregroundStyle(.secondary)
+      Spacer()
     }
-    .frame(width: 720, height: 560)
-    .background(.regularMaterial)
+    .padding(.horizontal, 24)
+  }
+
+  private func continueAction() {
+    if page == .interface, diagnostics.preferences.consent == .notDecided {
+      page = .diagnostics
+      return
+    }
+    if page == .diagnostics {
+      diagnostics.setAutomaticEnabled(shareDiagnostics)
+    }
+    preferences.completeOnboarding(with: selection)
+    onFinish()
+  }
+
+  private func showAutomaticPreview() {
+    do {
+      previewPayload = try diagnostics.makeHealthPayload(
+        type: .automaticHealth, reason: .initialOptIn)
+      previewError = nil
+      showingPreview = true
+    } catch {
+      previewError = "A safe diagnostics preview is not available yet. Nothing was sent."
+    }
   }
 
   private func onboardingCard(_ mode: HeliosDashboardMode) -> some View {

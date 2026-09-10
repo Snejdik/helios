@@ -9,6 +9,7 @@ xcrun swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors \
   Sources/Shared/*.swift Sources/HeliosApp/DaemonClient.swift Sources/HeliosApp/DaemonService.swift Sources/HeliosApp/DaemonServiceCard.swift \
   Sources/HeliosApp/CoolingRules.swift Sources/HeliosApp/FanControlModel.swift Sources/HeliosApp/FanControlView.swift \
   Sources/HeliosApp/Telemetry/*.swift Sources/HeliosApp/HeliosPreferences.swift Sources/HeliosApp/MenuBarView.swift \
+  Sources/HeliosApp/Diagnostics/*.swift \
   Sources/HeliosApp/HeliosBrand.swift Sources/HeliosApp/HeliosGraphKit.swift Sources/HeliosApp/HeliosBatteryEstimate.swift \
   Sources/HeliosApp/HeliosMetricPopovers.swift Sources/HeliosApp/HeliosDashboardView.swift Sources/HeliosApp/HeliosWindows.swift \
   Sources/HeliosApp/PresentationValues.swift Sources/HeliosApp/OverviewViewController.swift Sources/HeliosApp/StatusItemController.swift \

@@ -542,8 +542,11 @@ private struct PresentationChecks {
     }
     onboardingDefaults.removePersistentDomain(forName: onboardingPreferencesSuite)
     let onboardingPreferences = HeliosPreferences(defaults: onboardingDefaults)
+    let onboardingDiagnosticsPreferences = DiagnosticsPreferences(defaults: onboardingDefaults)
+    let onboardingDiagnostics = DiagnosticsController(preferences: onboardingDiagnosticsPreferences)
     defer { onboardingDefaults.removePersistentDomain(forName: onboardingPreferencesSuite) }
-    let onboarding = HeliosOnboardingView(preferences: onboardingPreferences, onFinish: {})
+    let onboarding = HeliosOnboardingView(
+      preferences: onboardingPreferences, diagnostics: onboardingDiagnostics, onFinish: {})
       .environment(\.colorScheme, .dark)
     guard let onboardingImage = nativeImage(onboarding, width: 720),
       let onboardingPNG = NSBitmapImageRep(cgImage: onboardingImage).representation(

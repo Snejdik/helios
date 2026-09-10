@@ -626,7 +626,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     self.diagnostics = diagnostics
     self.service = service
     service.start()
-    let controller = StatusItemController(service: service, preferences: preferences)
+    let controller = StatusItemController(
+      service: service, preferences: preferences, diagnostics: diagnostics)
     let monitor = TelemetryMonitor { [preferences] module in
       preferences.isTelemetryEnabled(module)
     }

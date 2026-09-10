@@ -7,8 +7,9 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
   private let preferences: HeliosPreferences
   private let model = OverviewViewModel()
   private let service: DaemonService
+  private let diagnostics: DiagnosticsController
   private lazy var windows = HeliosWindowCoordinator(
-    service: service, preferences: preferences, model: model)
+    service: service, preferences: preferences, model: model, diagnostics: diagnostics)
 
   private var snapshot = TelemetrySnapshot()
   private var subscriptions: Set<AnyCancellable> = []
@@ -29,9 +30,12 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
   private var localDismissMonitor: Any?
   private var globalDismissMonitor: Any?
 
-  init(service: DaemonService, preferences: HeliosPreferences) {
+  init(
+    service: DaemonService, preferences: HeliosPreferences, diagnostics: DiagnosticsController
+  ) {
     self.service = service
     self.preferences = preferences
+    self.diagnostics = diagnostics
     super.init()
 
     dashboardPopover.behavior = .transient

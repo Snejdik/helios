@@ -99,7 +99,10 @@ private struct UIMemoryChecks {
         entries: [AppEnergyEntry(appKey: "app:/System/Applications/Music.app", displayName: "Music",
           energyWattHours: 0.01, cpuCoreSeconds: 4, wakeups: 20, peakMemoryBytes: 80_000_000)])
     })
-    let coordinator = HeliosWindowCoordinator(service: service, preferences: preferences, model: model)
+    let diagnosticsPreferences = DiagnosticsPreferences(defaults: defaults)
+    let diagnostics = DiagnosticsController(preferences: diagnosticsPreferences)
+    let coordinator = HeliosWindowCoordinator(
+      service: service, preferences: preferences, model: model, diagnostics: diagnostics)
     await settle(3)
     print("stage,rss_mib,physical_mib")
     measure("baseline")
