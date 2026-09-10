@@ -691,8 +691,10 @@ enum DiagnosticsPayloadValidator {
       guard let key = item["key"] as? String, printableFour(key), thermalKeys.insert(key).inserted,
         enumString(item["read_state"], DiagnosticsReadState.allCases)
       else { throw DiagnosticsPayloadError.invalid(path) }
-      if let type = item["data_type"] as? String, !printableFour(type) {
-        throw DiagnosticsPayloadError.invalid("\(path).data_type")
+      if let rawType = item["data_type"] {
+        guard let type = rawType as? String, printableFour(type) else {
+          throw DiagnosticsPayloadError.invalid("\(path).data_type")
+        }
       }
       if let size = item["data_size"] {
         guard let size = integer(size), (1...32).contains(size) else {
@@ -791,6 +793,10 @@ enum DiagnosticsPayloadValidator {
       .multiFan where fanCount == nil || !(3...8).contains(fanCount!)
         || fans.count != fanCount || fanIndexes != Set(0..<fanCount!):
       throw DiagnosticsPayloadError.invalid("$.helios_classification.fan_topology_class")
+    case .unknown:
+      if let fanCount, fans.count == fanCount, fanIndexes == Set(0..<fanCount) {
+        throw DiagnosticsPayloadError.invalid("$.helios_classification.fan_topology_class")
+      }
     default: break
     }
   }

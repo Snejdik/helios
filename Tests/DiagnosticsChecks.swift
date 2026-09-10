@@ -328,6 +328,331 @@ private func transportChecks() async throws {
   controller.shutdown()
 }
 
+
+private struct MockSMCValue: Sendable {
+  let type: String
+  let bytes: [UInt8]
+}
+
+private final class MockSMCReadTransport: SMCReadTransport, @unchecked Sendable {
+  private let values: [String: MockSMCValue]
+  private let keys: [String]
+  private let unavailableKeys: Set<String>
+
+  init(values: [String: MockSMCValue], unavailableKeys: Set<String> = []) {
+    var complete = values
+    let discoveredKeys = Array(Set(values.keys).union(["#KEY"])).sorted()
+    let count = UInt32(discoveredKeys.count)
+    complete["#KEY"] = MockSMCValue(
+      type: "ui32",
+      bytes: [
+        UInt8(truncatingIfNeeded: count >> 24), UInt8(truncatingIfNeeded: count >> 16),
+        UInt8(truncatingIfNeeded: count >> 8), UInt8(truncatingIfNeeded: count),
+      ])
+    self.values = complete
+    self.keys = discoveredKeys
+    self.unavailableKeys = unavailableKeys
+  }
+
+  func exchange(_ request: SMCReadRequest) throws -> [UInt8] {
+    if unavailableKeys.contains(request.key) {
+      throw TelemetryError.unavailable("Unavailable in compatibility fixture")
+    }
+    switch request.command {
+    case .keyAtIndex:
+      guard Int(request.index) < keys.count else {
+        throw TelemetryError.invalidData("Fixture key index outside bounds")
+      }
+      var reply = emptyReply()
+      try putFourCC(keys[Int(request.index)], in: &reply, at: 0)
+      return reply
+    case .keyInfo:
+      guard let value = values[request.key] else { throw TelemetryError.smc(request.key, 0x84) }
+      var reply = emptyReply()
+      putUInt32LE(UInt32(value.bytes.count), in: &reply, at: 28)
+      try putFourCC(value.type, in: &reply, at: 32)
+      return reply
+    case .bytes:
+      guard let value = values[request.key] else { throw TelemetryError.smc(request.key, 0x84) }
+      var reply = emptyReply()
+      guard value.bytes.count <= 32 else { throw TelemetryError.invalidData("Fixture value too large") }
+      reply.replaceSubrange(48..<(48 + value.bytes.count), with: value.bytes)
+      return reply
+    }
+  }
+
+  private func emptyReply() -> [UInt8] {
+    [UInt8](repeating: 0, count: SMCCodec.frameSize)
+  }
+
+  private func putFourCC(_ value: String, in bytes: inout [UInt8], at offset: Int) throws {
+    putUInt32LE(try SMCCodec.fourCC(value), in: &bytes, at: offset)
+  }
+
+  private func putUInt32LE(_ value: UInt32, in bytes: inout [UInt8], at offset: Int) {
+    for index in 0..<4 {
+      bytes[offset + index] = UInt8(truncatingIfNeeded: value >> UInt32(index * 8))
+    }
+  }
+}
+
+private func sp78(_ celsius: Double) -> MockSMCValue {
+  let raw = Int16((celsius * 256).rounded())
+  let bits = UInt16(bitPattern: raw)
+  return MockSMCValue(
+    type: "sp78",
+    bytes: [UInt8(truncatingIfNeeded: bits >> 8), UInt8(truncatingIfNeeded: bits)])
+}
+
+private func flt(_ value: Float) -> MockSMCValue {
+  let bits = value.bitPattern
+  return MockSMCValue(
+    type: "flt ",
+    bytes: [
+      UInt8(truncatingIfNeeded: bits), UInt8(truncatingIfNeeded: bits >> 8),
+      UInt8(truncatingIfNeeded: bits >> 16), UInt8(truncatingIfNeeded: bits >> 24),
+    ])
+}
+
+private func fpe2(_ rpm: Int) -> MockSMCValue {
+  let raw = UInt16(clamping: rpm * 4)
+  return MockSMCValue(
+    type: "fpe2",
+    bytes: [UInt8(truncatingIfNeeded: raw >> 8), UInt8(truncatingIfNeeded: raw)])
+}
+
+private func ui8(_ value: UInt8) -> MockSMCValue {
+  MockSMCValue(type: "ui8 ", bytes: [value])
+}
+
+private func fanValues(
+  count: Int, minimum: MockSMCValue? = fpe2(2_000), maximum: MockSMCValue? = fpe2(6_000),
+  actual: MockSMCValue? = fpe2(2_500)
+) -> [String: MockSMCValue] {
+  var values: [String: MockSMCValue] = ["FNum": ui8(UInt8(count))]
+  for index in 0..<count {
+    if let minimum { values["F\(index)Mn"] = minimum }
+    if let maximum { values["F\(index)Mx"] = maximum }
+    if let actual { values["F\(index)Ac"] = actual }
+  }
+  return values
+}
+
+private func compatibilityCommon(fanCount: Int? = nil) -> DiagnosticsCommonFields {
+  let report = health(fanCount: fanCount)
+  return DiagnosticsCommonFields(
+    helios: report.helios, system: report.system, capabilities: report.capabilities,
+    providers: report.providers, helper: report.helper, runtime: report.runtime,
+    stability: report.stability)
+}
+
+private func compatibilityReport(
+  evidence: DiagnosticsCompatibilityEvidence, commonFanCount: Int? = nil
+) -> DiagnosticsCompatibilityReport {
+  DiagnosticsCompatibilityAssembler.report(
+    common: compatibilityCommon(fanCount: commonFanCount), evidence: evidence,
+    generatedAt: Date(timeIntervalSince1970: 10_000))
+}
+
+private func fixtureProbe(
+  values: [String: MockSMCValue], unavailableKeys: Set<String> = [],
+  classifier: ThermalClassifier = ThermalClassifier(cpuBrand: "")
+) -> DiagnosticsCompatibilityProbe {
+  let cpuBrand = classifier.cpuBrand
+  let machineModel = classifier.machineModel
+  let osBuild = classifier.osBuild
+  return DiagnosticsCompatibilityProbe(
+    transportFactory: { MockSMCReadTransport(values: values, unavailableKeys: unavailableKeys) },
+    classifierFactory: {
+      ThermalClassifier(cpuBrand: cpuBrand, machineModel: machineModel, osBuild: osBuild)
+    })
+}
+
+@MainActor
+private func compatibilityChecks() async throws {
+  var thermalAndFanless = fanValues(count: 0)
+  thermalAndFanless["Tp01"] = sp78(47.5)
+  thermalAndFanless["Te06"] = flt(48.7564)
+  thermalAndFanless["T! x"] = MockSMCValue(type: "x!  ", bytes: [0x01, 0x02])
+  let exactClassifier = ThermalClassifier(
+    cpuBrand: "Apple M4", machineModel: "Mac16,1", osBuild: "25G83")
+  let thermalEvidence = await fixtureProbe(
+    values: thermalAndFanless, classifier: exactClassifier
+  ).gather()
+  try require(thermalEvidence.fanTopologyClass == .fanless, "fanless topology was not recognized")
+  try require(thermalEvidence.safelyObservedFanCount == 0, "fanless count was not safely observed")
+  try require(thermalEvidence.rawHardware.fanTopology.isEmpty, "fanless topology encoded fan entries")
+  guard let te06 = thermalEvidence.rawHardware.smcThermalDiscovery.first(where: { $0.key == "Te06" }) else {
+    throw CheckFailure(description: "Te06 fixture was not discovered")
+  }
+  try require(te06.dataType == "flt ", "SMC type lost its exact four-character form")
+  try require(te06.dataSize == 4, "SMC data size was not preserved")
+  try require(te06.decodedCelsius == 48.756, "decoded temperature was not bounded to three decimals")
+  try require(
+    thermalEvidence.thermalClassifications.first(where: { $0.key == "Te06" })?.semanticGroup
+      == .validatedHotspot,
+    "validated_hotspot exact-profile provenance was lost")
+  guard let futureType = thermalEvidence.rawHardware.smcThermalDiscovery.first(where: { $0.key == "T! x" }) else {
+    throw CheckFailure(description: "printable punctuation SMC key was not preserved")
+  }
+  try require(futureType.dataType == "x!  ", "future printable SMC type was normalized")
+  try require(futureType.readState == .decodeFailed, "unknown SMC temperature type did not stay decode_failed")
+
+  var boundedThermals = fanValues(count: 0)
+  for index in 0...512 {
+    boundedThermals[String(format: "T%03X", index)] = sp78(40)
+  }
+  let boundedEvidence = await fixtureProbe(values: boundedThermals).gather()
+  try require(
+    boundedEvidence.rawHardware.smcThermalDiscovery.count == 512,
+    "manual compatibility exceeded the 512-thermal-entry bound")
+  try require(
+    boundedEvidence.rawHardware.providerDiagnostics.contains {
+      $0.provider == .thermal && $0.stage == .validate && $0.category == .invalidData
+    }, "truncated thermal discovery was not reported as coarse partial evidence")
+
+  var unclassifiedValues = fanValues(count: 0)
+  unclassifiedValues["Tp01"] = sp78(42)
+  let unclassified = await fixtureProbe(values: unclassifiedValues).gather()
+  try require(
+    unclassified.thermalClassifications.first(where: { $0.key == "Tp01" })?.semanticGroup
+      == .unclassified,
+    "unknown hardware acquired an unsupported thermal identity")
+
+  for count in 0...3 {
+    let evidence = await fixtureProbe(values: fanValues(count: count)).gather()
+    let expected: DiagnosticsFanTopologyClass = switch count {
+    case 0: .fanless
+    case 1: .singleFan
+    case 2: .dualFan
+    default: .multiFan
+    }
+    try require(evidence.fanTopologyClass == expected, "complete fan topology class drifted for count \(count)")
+    try require(evidence.safelyObservedFanCount == count, "complete fan count was not preserved")
+    try require(
+      evidence.rawHardware.fanTopology.map(\.index) == Array(0..<count),
+      "complete fan indexes were not contiguous")
+  }
+
+  let available = await fixtureProbe(values: fanValues(count: 1)).gather()
+  try require(available.rawHardware.fanTopology.first?.rangeState == .available, "available fan range drift")
+  let partial = await fixtureProbe(values: fanValues(count: 1, maximum: nil)).gather()
+  try require(partial.rawHardware.fanTopology.first?.rangeState == .partial, "partial fan range drift")
+  let unavailable = await fixtureProbe(
+    values: fanValues(count: 1, minimum: nil, maximum: nil),
+    unavailableKeys: ["F0Mn", "F0Mx"]
+  ).gather()
+  try require(
+    unavailable.rawHardware.fanTopology.first?.rangeState == .unavailable,
+    "unavailable fan range drift")
+  let readFailed = await fixtureProbe(
+    values: fanValues(count: 1, minimum: nil, maximum: nil)
+  ).gather()
+  try require(
+    readFailed.rawHardware.fanTopology.first?.rangeState == .readFailed,
+    "read_failed fan range drift")
+  try require(
+    readFailed.rawHardware.providerDiagnostics.contains {
+      $0.provider == .fanTelemetry && $0.stage == .read && $0.category == .ioError
+    }, "fan range read failure was not coarsened")
+
+  let unknown = await fixtureProbe(
+    values: [:], unavailableKeys: ["FNum"]
+  ).gather()
+  try require(unknown.fanTopologyClass == .unknown, "unknown fan topology was fabricated")
+  try require(unknown.safelyObservedFanCount == nil, "unknown fan count was fabricated")
+  try require(unknown.rawHardware.fanTopology.isEmpty, "unknown topology fabricated fan entries")
+  let unknownWithSafeCommonCount = compatibilityReport(evidence: unknown, commonFanCount: 2)
+  _ = try DiagnosticsPayloadEncoder.freeze(
+    unknownWithSafeCommonCount, reportType: .manualCompatibility)
+
+  let oneFanEntry = DiagnosticsFanTopologyEntry(
+    index: 0, rangeState: .available, minimumRPM: 2_000, maximumRPM: 6_000, actualRPM: 2_500)
+  let dishonestUnknown = DiagnosticsCompatibilityEvidence(
+    rawHardware: DiagnosticsRawHardware(
+      smcThermalDiscovery: [], fanTopology: [oneFanEntry], providerDiagnostics: []),
+    thermalClassifications: [], fanTopologyClass: .unknown, safelyObservedFanCount: 1,
+    compatibilityState: .partial)
+  do {
+    _ = try DiagnosticsPayloadEncoder.freeze(
+      compatibilityReport(evidence: dishonestUnknown), reportType: .manualCompatibility)
+    throw CheckFailure(description: "unknown topology masked a complete known topology")
+  } catch DiagnosticsPayloadError.invalid { }
+
+  let duplicateEntries = DiagnosticsCompatibilityEvidence(
+    rawHardware: DiagnosticsRawHardware(
+      smcThermalDiscovery: [], fanTopology: [oneFanEntry, oneFanEntry], providerDiagnostics: []),
+    thermalClassifications: [], fanTopologyClass: .unknown, safelyObservedFanCount: nil,
+    compatibilityState: .partial)
+  do {
+    _ = try DiagnosticsPayloadEncoder.freeze(
+      compatibilityReport(evidence: duplicateEntries), reportType: .manualCompatibility)
+    throw CheckFailure(description: "duplicate compatibility fan indexes were accepted")
+  } catch DiagnosticsPayloadError.invalid { }
+
+  let invalidIndexEntry = DiagnosticsFanTopologyEntry(
+    index: 8, rangeState: .unavailable, minimumRPM: nil, maximumRPM: nil, actualRPM: nil)
+  let invalidIndexEvidence = DiagnosticsCompatibilityEvidence(
+    rawHardware: DiagnosticsRawHardware(
+      smcThermalDiscovery: [], fanTopology: [invalidIndexEntry], providerDiagnostics: []),
+    thermalClassifications: [], fanTopologyClass: .unknown, safelyObservedFanCount: nil,
+    compatibilityState: .partial)
+  do {
+    _ = try DiagnosticsPayloadEncoder.freeze(
+      compatibilityReport(evidence: invalidIndexEvidence), reportType: .manualCompatibility)
+    throw CheckFailure(description: "out-of-range compatibility fan index was accepted")
+  } catch DiagnosticsPayloadError.invalid { }
+
+  let compatibilityPayload = try DiagnosticsPayloadEncoder.freeze(
+    compatibilityReport(evidence: thermalEvidence), reportType: .manualCompatibility)
+  var compatibilityObject = try JSONSerialization.jsonObject(with: compatibilityPayload.data) as! [String: Any]
+  var rawHardware = compatibilityObject["raw_hardware"] as! [String: Any]
+  var rawThermals = rawHardware["smc_thermal_discovery"] as! [[String: Any]]
+  rawThermals[0]["raw_bytes"] = [1, 2, 3]
+  rawHardware["smc_thermal_discovery"] = rawThermals
+  compatibilityObject["raw_hardware"] = rawHardware
+  do {
+    try DiagnosticsPayloadValidator.validate(
+      JSONSerialization.data(withJSONObject: compatibilityObject), expectedType: .manualCompatibility)
+    throw CheckFailure(description: "raw SMC bytes were accepted by compatibility schema")
+  } catch DiagnosticsPayloadError.invalid { }
+
+  rawThermals[0].removeValue(forKey: "raw_bytes")
+  rawThermals[0]["data_type"] = 1234
+  rawHardware["smc_thermal_discovery"] = rawThermals
+  compatibilityObject["raw_hardware"] = rawHardware
+  do {
+    try DiagnosticsPayloadValidator.validate(
+      JSONSerialization.data(withJSONObject: compatibilityObject), expectedType: .manualCompatibility)
+    throw CheckFailure(description: "non-string SMC data_type was accepted")
+  } catch DiagnosticsPayloadError.invalid { }
+
+  let suiteName = "DiagnosticsCompatibilityChecks.\(ProcessInfo.processInfo.processIdentifier)"
+  guard let defaults = UserDefaults(suiteName: suiteName) else {
+    throw CheckFailure(description: "could not create isolated compatibility defaults")
+  }
+  defaults.removePersistentDomain(forName: suiteName)
+  defer { defaults.removePersistentDomain(forName: suiteName) }
+  let preferences = DiagnosticsPreferences(defaults: defaults)
+  preferences.setConsent(.disabled)
+  var diagnosticsTransportCreations = 0
+  let transport = MockDiagnosticsTransport()
+  let previewProbe = fixtureProbe(values: fanValues(count: 0))
+  let controller = DiagnosticsController(
+    preferences: preferences,
+    transportFactory: {
+      diagnosticsTransportCreations += 1
+      return transport
+    },
+    compatibilityProbeFactory: { previewProbe })
+  let preview = try await controller.makeCompatibilityPayload()
+  try require(preview.reportType == .manualCompatibility, "compatibility preview type drift")
+  try require(
+    diagnosticsTransportCreations == 0,
+    "Generate Preview created a diagnostics network transport")
+  try require(!preferences.automaticEnabled, "compatibility preview enabled automatic diagnostics")
+}
+
 @main
 @MainActor
 struct DiagnosticsChecks {
@@ -342,5 +667,7 @@ struct DiagnosticsChecks {
     print("PASS diagnostics preview is one frozen buffer with expiring generation-bound approval")
     try await transportChecks()
     print("PASS diagnostics transport endpoint, body, consent gate, retry and cooldown contract")
+    try await compatibilityChecks()
+    print("PASS manual compatibility probe, topology, raw-SMC bounds, provenance and zero-network preview")
   }
 }

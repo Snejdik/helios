@@ -171,7 +171,9 @@ final class DiagnosticsController: ObservableObject {
   @Published private(set) var sending = false
 
   private let transportFactory: @MainActor () -> any DiagnosticsTransporting
+  private let compatibilityProbeFactory: @Sendable () -> DiagnosticsCompatibilityProbe
   private var transport: (any DiagnosticsTransporting)?
+  private var compatibilityProbe: DiagnosticsCompatibilityProbe?
   private var automaticTask: Task<Void, Never>?
   private var started = false
   private var generation: UInt64 = 0
@@ -181,11 +183,15 @@ final class DiagnosticsController: ObservableObject {
     session: DiagnosticsSessionTracker = DiagnosticsSessionTracker(),
     transportFactory: @escaping @MainActor () -> any DiagnosticsTransporting = {
       DiagnosticsURLSessionTransport()
+    },
+    compatibilityProbeFactory: @escaping @Sendable () -> DiagnosticsCompatibilityProbe = {
+      DiagnosticsCompatibilityProbe()
     }
   ) {
     self.preferences = preferences
     self.session = session
     self.transportFactory = transportFactory
+    self.compatibilityProbeFactory = compatibilityProbeFactory
     preferences.automaticWorkCancellation = { [weak self] in self?.cancelAutomaticWork() }
   }
 
@@ -226,6 +232,15 @@ final class DiagnosticsController: ObservableObject {
     let report = try session.buildHealth(type: type, reason: reason, generatedAt: now)
     return try DiagnosticsPayloadEncoder.freeze(
       report, reportType: type, now: now, generation: generation)
+  }
+
+  func makeCompatibilityPayload(now: Date = Date()) async throws -> FrozenDiagnosticsPayload {
+    let evidence = await resolvedCompatibilityProbe().gather()
+    let report = DiagnosticsCompatibilityAssembler.report(
+      common: session.commonFields(generatedAt: now), evidence: evidence, generatedAt: now)
+    generation &+= 1
+    return try DiagnosticsPayloadEncoder.freeze(
+      report, reportType: .manualCompatibility, now: now, generation: generation)
   }
 
   func sendManual(_ payload: FrozenDiagnosticsPayload) async -> DiagnosticsTransportResult {
@@ -339,6 +354,13 @@ final class DiagnosticsController: ObservableObject {
     if let transport { return transport }
     let created = transportFactory()
     transport = created
+    return created
+  }
+
+  private func resolvedCompatibilityProbe() -> DiagnosticsCompatibilityProbe {
+    if let compatibilityProbe { return compatibilityProbe }
+    let created = compatibilityProbeFactory()
+    compatibilityProbe = created
     return created
   }
 }

@@ -49,12 +49,59 @@ final class DiagnosticsManualApproval: ObservableObject {
   }
 }
 
+struct DiagnosticsCompatibilityConsentView: View {
+  let generating: Bool
+  let status: String?
+  let onCancel: () -> Void
+  let onGenerate: () -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 16) {
+      Text("Create compatibility report").font(.system(size: 20, weight: .semibold))
+      Text(
+        "Helios will run a bounded read-only hardware probe. Generation stays on this Mac and makes no network request. You will see the complete JSON before a separate Send action."
+      )
+      .foregroundStyle(.secondary)
+
+      GroupBox("Read-only categories") {
+        VStack(alignment: .leading, spacing: 8) {
+          Label("Thermal SMC key, type and size metadata", systemImage: "thermometer.medium")
+          Label("Safely decoded finite temperatures", systemImage: "waveform.path.ecg")
+          Label("Fan count, available RPM ranges and one actual-RPM reading", systemImage: "fan")
+          Label(
+            "Coarse provider failures and numeric driver codes",
+            systemImage: "wrench.and.screwdriver")
+        }
+        .padding(4)
+      }
+      Text(
+        "It never collects raw SMC bytes, serial numbers, identifiers, files, process names, logs, fan commands, or write capability. The privileged helper is not used."
+      )
+      .font(.system(size: 10.5)).foregroundStyle(.secondary)
+      if let status {
+        Text(status).font(.system(size: 10.5, weight: .medium)).foregroundStyle(.secondary)
+      }
+      HStack {
+        Spacer()
+        Button("Cancel", action: onCancel).disabled(generating)
+        Button("Generate preview", action: onGenerate)
+          .buttonStyle(.borderedProminent)
+          .disabled(generating)
+      }
+    }
+    .padding(22)
+    .frame(width: 560)
+    .interactiveDismissDisabled(generating)
+  }
+}
+
 struct DiagnosticsPayloadView: View {
   let title: String
   let explanation: String
   let payload: FrozenDiagnosticsPayload
   var sendTitle = "Send report"
   var sending = false
+  var sendDisabled = false
   var status: String?
   var onSend: (() -> Void)?
   var onRegenerate: (() -> Void)?
@@ -90,7 +137,7 @@ struct DiagnosticsPayloadView: View {
         if let onSend {
           Button(sendTitle, action: onSend)
             .buttonStyle(.borderedProminent)
-            .disabled(sending || payload.isExpired())
+            .disabled(sending || sendDisabled || payload.isExpired())
         }
       }
     }

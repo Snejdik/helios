@@ -4044,6 +4044,11 @@ struct HeliosSettingsView: View {
   @State private var showingDiagnosticsPreview = false
   @State private var previewAllowsSend = false
   @State private var diagnosticsStatus: String?
+  @State private var showingCompatibilityConsent = false
+  @State private var generatingCompatibility = false
+  @State private var compatibilityStatus: String?
+  @State private var compatibilityTransitioningToPreview = false
+  @State private var manualSendCompleted = false
 
   init(
     preferences: HeliosPreferences, service: DaemonService, diagnostics: DiagnosticsController
@@ -4073,7 +4078,15 @@ struct HeliosSettingsView: View {
       .background(Color(nsColor: .windowBackgroundColor))
     }
     .frame(minWidth: 720, minHeight: 520)
-    .sheet(isPresented: $showingDiagnosticsPreview) { diagnosticsPreviewSheet }
+    .sheet(isPresented: $showingDiagnosticsPreview, onDismiss: dismissDiagnosticsPreview) {
+      diagnosticsPreviewSheet
+    }
+    .sheet(isPresented: $showingCompatibilityConsent, onDismiss: compatibilityConsentDismissed) {
+      DiagnosticsCompatibilityConsentView(
+        generating: generatingCompatibility, status: compatibilityStatus,
+        onCancel: cancelCompatibilityReport,
+        onGenerate: generateCompatibilityPreview)
+    }
   }
 
   @ViewBuilder
@@ -4085,10 +4098,13 @@ struct HeliosSettingsView: View {
           explanation:
             "Review the complete request body, then choose Send report. This one-shot action does not enable automatic diagnostics.",
           payload: diagnosticsPreview,
+          sendTitle: manualSendCompleted ? "Sent" : "Send report",
           sending: diagnostics.sending,
+          sendDisabled: manualSendCompleted,
           status: diagnosticsStatus,
-          onSend: sendApprovedManualHealth,
-          onRegenerate: showManualHealthPreview)
+          onSend: sendApprovedManualReport,
+          onRegenerate: diagnosticsPreview.reportType == .manualCompatibility
+            ? generateCompatibilityPreview : showManualHealthPreview)
       } else {
         DiagnosticsPayloadView(
           title: "Beta diagnostics preview",
@@ -5011,9 +5027,7 @@ struct HeliosSettingsView: View {
         }
         Button("View exactly what is shared", action: showAutomaticPreview)
         Button("Send diagnostic report now", action: showManualHealthPreview)
-        Button("Create compatibility report") {
-          diagnosticsStatus = "Compatibility report generation is available in the next setup step."
-        }
+        Button("Create compatibility report", action: beginCompatibilityReport)
         Button("Privacy information") { open("https://snejda.cz/helios/privacy") }
         Text(
           "Automatic diagnostics are off unless you enable them. Manual actions work while they are off, require an exact preview and separate Send confirmation, and never change this switch."
@@ -5050,6 +5064,7 @@ struct HeliosSettingsView: View {
         type: .automaticHealth,
         reason: diagnosticsPreferences.lastSuccessfulAutomaticSend == nil ? .initialOptIn : .daily)
       previewAllowsSend = false
+      manualSendCompleted = false
       diagnosticsStatus = nil
       manualApproval.invalidate()
       showingDiagnosticsPreview = true
@@ -5065,6 +5080,7 @@ struct HeliosSettingsView: View {
       manualApproval.setFrozen(payload)
       diagnosticsPreview = manualApproval.payload
       previewAllowsSend = true
+      manualSendCompleted = false
       diagnosticsStatus = nil
       showingDiagnosticsPreview = true
     } catch {
@@ -5072,7 +5088,78 @@ struct HeliosSettingsView: View {
     }
   }
 
-  private func sendApprovedManualHealth() {
+  private func beginCompatibilityReport() {
+    manualApproval.invalidate()
+    diagnosticsPreview = nil
+    previewAllowsSend = false
+    manualSendCompleted = false
+    diagnosticsStatus = nil
+    compatibilityStatus = nil
+    compatibilityTransitioningToPreview = false
+    showingCompatibilityConsent = true
+  }
+
+  private func cancelCompatibilityReport() {
+    manualApproval.invalidate()
+    diagnosticsPreview = nil
+    previewAllowsSend = false
+    manualSendCompleted = false
+    compatibilityStatus = nil
+    compatibilityTransitioningToPreview = false
+    showingCompatibilityConsent = false
+  }
+
+  private func compatibilityConsentDismissed() {
+    if compatibilityTransitioningToPreview {
+      compatibilityTransitioningToPreview = false
+      return
+    }
+    manualApproval.invalidate()
+    diagnosticsPreview = nil
+    previewAllowsSend = false
+    manualSendCompleted = false
+    compatibilityStatus = nil
+  }
+
+  private func dismissDiagnosticsPreview() {
+    manualApproval.invalidate()
+    diagnosticsPreview = nil
+    previewAllowsSend = false
+    manualSendCompleted = false
+    diagnosticsStatus = nil
+  }
+
+  private func generateCompatibilityPreview() {
+    let transitioningFromConsent = showingCompatibilityConsent
+    manualApproval.invalidate()
+    diagnosticsPreview = nil
+    previewAllowsSend = false
+    manualSendCompleted = false
+    generatingCompatibility = true
+    compatibilityStatus = "Reading bounded compatibility metadata…"
+    Task {
+      do {
+        let payload = try await diagnostics.makeCompatibilityPayload()
+        manualApproval.setFrozen(payload)
+        diagnosticsPreview = manualApproval.payload
+        previewAllowsSend = true
+        diagnosticsStatus = nil
+        compatibilityStatus = nil
+        generatingCompatibility = false
+        if transitioningFromConsent {
+          compatibilityTransitioningToPreview = true
+          showingCompatibilityConsent = false
+        }
+        showingDiagnosticsPreview = true
+      } catch {
+        generatingCompatibility = false
+        compatibilityStatus =
+          "A safe compatibility preview could not be created. Nothing was sent."
+      }
+    }
+  }
+
+  private func sendApprovedManualReport() {
     guard let payload = manualApproval.approve() else {
       diagnosticsStatus = "This preview expired. Regenerate it before sending."
       return
@@ -5082,7 +5169,7 @@ struct HeliosSettingsView: View {
       switch result {
       case .accepted:
         diagnosticsStatus = "Report sent successfully."
-        previewAllowsSend = false
+        manualSendCompleted = true
       case .retryable:
         diagnosticsStatus = "Send failed. The same frozen preview can be retried explicitly."
       case .rejected:
@@ -5204,11 +5291,30 @@ struct HeliosSettingsView: View {
       Text("Native macOS system monitoring and fan control").foregroundStyle(.secondary)
       Text("Created by Jakub Šnejda").font(.system(size: 13, weight: .medium))
       Text(versionText).font(.system(size: 11)).foregroundStyle(.tertiary)
+
       HStack {
         Button("snejda.cz") { open("https://www.snejda.cz") }
         Button("GitHub") { open("https://github.com/Snejdik/helios") }
         Button("Report Issue") { open("https://github.com/Snejdik/helios/issues") }
+        Button("Contact") { open("mailto:helios@snejda.cz") }
       }
+
+      VStack(spacing: 8) {
+        Label("Support Helios", systemImage: "cup.and.saucer")
+          .font(.system(size: 13, weight: .semibold))
+        Text(
+          "Helios is independently developed and free to use. If you find it useful and want to support continued development, you can buy me a coffee."
+        )
+        .font(.system(size: 11))
+        .foregroundStyle(.secondary)
+        .multilineTextAlignment(.center)
+        .frame(maxWidth: 420)
+        Button("Buy Me a Coffee") { open("https://buymeacoffee.com/snejda") }
+          .buttonStyle(.borderedProminent)
+      }
+      .padding(14)
+      .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
+
       Text("Battery telemetry is read-only. Fan control is isolated in the privileged helper.")
         .font(.system(size: 10)).foregroundStyle(.tertiary)
       Spacer()

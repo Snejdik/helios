@@ -99,6 +99,7 @@
 		000000000000000000000B03 /* DiagnosticsBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000A03 /* DiagnosticsBuilder.swift */; };
 		000000000000000000000B04 /* DiagnosticsPayloadView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000A04 /* DiagnosticsPayloadView.swift */; };
 		000000000000000000000B05 /* DiagnosticsTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000A05 /* DiagnosticsTransport.swift */; };
+		000000000000000000000B06 /* DiagnosticsCompatibilityProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000A06 /* DiagnosticsCompatibilityProbe.swift */; };
 		000000000000000000000800 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000801 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
@@ -229,6 +230,7 @@
 		000000000000000000000A03 /* DiagnosticsBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsBuilder.swift; sourceTree = "<group>"; };
 		000000000000000000000A04 /* DiagnosticsPayloadView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsPayloadView.swift; sourceTree = "<group>"; };
 		000000000000000000000A05 /* DiagnosticsTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsTransport.swift; sourceTree = "<group>"; };
+		000000000000000000000A06 /* DiagnosticsCompatibilityProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsCompatibilityProbe.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -436,6 +438,7 @@
 				000000000000000000000A03 /* DiagnosticsBuilder.swift */,
 				000000000000000000000A04 /* DiagnosticsPayloadView.swift */,
 				000000000000000000000A05 /* DiagnosticsTransport.swift */,
+				000000000000000000000A06 /* DiagnosticsCompatibilityProbe.swift */,
 			);
 			path = Diagnostics;
 			sourceTree = "<group>";
@@ -539,6 +542,7 @@
 				000000000000000000000B03 /* DiagnosticsBuilder.swift in Sources */,
 				000000000000000000000B04 /* DiagnosticsPayloadView.swift in Sources */,
 				000000000000000000000B05 /* DiagnosticsTransport.swift in Sources */,
+				000000000000000000000B06 /* DiagnosticsCompatibilityProbe.swift in Sources */,
 				000000000000000000000710 /* HeliosPreferences.swift in Sources */,
 				000000000000000000000711 /* HeliosDashboardView.swift in Sources */,
 				000000000000000000000712 /* HeliosWindows.swift in Sources */,
