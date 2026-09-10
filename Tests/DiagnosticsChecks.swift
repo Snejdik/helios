@@ -108,10 +108,53 @@ private func schemaChecks() throws {
   try require(DiagnosticsThermalSemanticGroup.validatedHotspot.rawValue == "validated_hotspot", "hotspot provenance case missing")
 }
 
+@MainActor
+private func preferencesChecks() throws {
+  let suiteName = "DiagnosticsChecks.\(ProcessInfo.processInfo.processIdentifier)"
+  guard let defaults = UserDefaults(suiteName: suiteName) else {
+    throw CheckFailure(description: "could not create isolated defaults")
+  }
+  defaults.removePersistentDomain(forName: suiteName)
+  defer { defaults.removePersistentDomain(forName: suiteName) }
+
+  var preferences = DiagnosticsPreferences(defaults: defaults)
+  try require(preferences.consent == .notDecided, "clean consent was not OFF")
+  try require(!preferences.automaticEnabled, "clean consent enabled automatic diagnostics")
+
+  preferences.setConsent(.disabled)
+  preferences = DiagnosticsPreferences(defaults: defaults)
+  try require(preferences.consent == .disabled, "disabled consent did not survive relaunch")
+
+  preferences.setConsent(.enabled)
+  preferences = DiagnosticsPreferences(defaults: defaults)
+  try require(preferences.consent == .enabled, "enabled consent did not survive relaunch")
+
+  defaults.set("corrupt", forKey: DiagnosticsPreferences.namespace + "consent")
+  preferences = DiagnosticsPreferences(defaults: defaults)
+  try require(preferences.consent == .notDecided, "corrupt consent did not fail OFF")
+
+  preferences.setConsent(.enabled)
+  defaults.set(false, forKey: "next23.ui.onboardingCompleted")
+  preferences = DiagnosticsPreferences(defaults: defaults)
+  try require(preferences.consent == .enabled, "welcome reset changed diagnostics consent")
+
+  var cancelled = false
+  preferences.automaticWorkCancellation = { cancelled = true }
+  preferences.setConsent(.disabled)
+  try require(cancelled, "opt-out did not synchronously cancel automatic work")
+  try require(preferences.nextEligibleTime == nil, "opt-out retained queued eligibility")
+
+  preferences.eraseAllDiagnosticsPreferences()
+  try require(preferences.consent == .notDecided, "erase-all did not restore undecided/OFF")
+}
+
 @main
+@MainActor
 struct DiagnosticsChecks {
   static func main() throws {
     try schemaChecks()
     print("PASS diagnostics v1 closed DTOs, model grammar, omission, enums and strict validation")
+    try preferencesChecks()
+    print("PASS diagnostics consent defaults OFF, survives relaunch, fails safe and stays independent")
   }
 }
