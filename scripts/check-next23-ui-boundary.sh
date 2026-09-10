@@ -35,7 +35,7 @@ dcaf2a0f7ca2fe9ab91a28a6f52640201ee9001ec1dacbc5eefc5146afb6a0b0 Sources/HeliosD
 434af87bf299bec68dbdf7fa93fda0ab183179a6da7c2b44d6a9bde6ba3001cf Sources/HeliosDaemon/HeliosDaemon.swift
 6a58d23b18bd435059414252e6c186257629c35e3f1a72b9811ef8d26a1f9451 Sources/HeliosApp/CoolingRules.swift
 a9e993b7a241d2a0982a536853d17a5a72d795cd55288d23ef52fa836db3c44d Sources/HeliosApp/DaemonClient.swift
-5b96b35717690c2db8801e31a1528b41d8070573cbd5d72f54062e8c65456c2a Sources/HeliosApp/FanControlModel.swift
+dbb6e99a3dcae7a6114832693360129126988d4c378e8c3208f2131ade61c814 Sources/HeliosApp/FanControlModel.swift
 46adf80c769f80e67a0e0ef9bbd7ae4d3f540fce0ac10db18993d3643c237672 Sources/HeliosApp/FanControlView.swift
 6c698290f8c6a92f7f006969e8cb2f09bbbec79ee1d2f9cbc0d3d5f06886a10c Sources/HeliosApp/Telemetry/BatteryProvider.swift
 a6dee07d1c7b6886dd825b182a39f029c1a08a4b820d572d6a608f63d493aae8 Sources/Shared/FanModels.swift
@@ -250,9 +250,9 @@ for required in \
   'struct HeliosArcGauge' \
   'CABasicAnimation(keyPath: "transform.translation.x")' \
   'ThermalDisplayClassifier.classify(raw)' \
-  'CPU die maximum · community' \
-  'Virtual / derived sensors' \
-  'Inactive / placeholder-like' \
+  'Validated hotspot' \
+  'Unclassified SMC temperature' \
+  'Raw / unclassified sensors' \
   'LazyVStack(spacing: 5)' \
   'advisoryRefreshInterval: Duration = .seconds(15)' \
   'advisoryReadingsCapturedAt' \

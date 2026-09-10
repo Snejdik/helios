@@ -4,29 +4,40 @@ import OSLog
 
 struct ThermalClassifier {
   let cpuBrand: String
+  let machineModel: String
+  let osBuild: String
 
-  // Curated M4-family thermal-zone keys. Do not classify an arbitrary `Tp`,
-  // `Te`, or `Tg` prefix as trusted SoC temperature data: undocumented SMC
-  // namespaces evolve and a newly discovered key must not silently become a
-  // fan-control input. The sets are the currently source-visible Stats M4
-  // mappings plus the M4 Pro replacements independently reported in 2026.
-  // References:
-  // - github.com/exelban/stats/blob/master/Modules/Sensors/values.swift
-  // - github.com/exelban/stats/issues/3270
-  // Missing keys are harmless because discovery only reads keys present on
-  // this Mac; unknown keys remain visible as `.unclassified` diagnostics.
+  init(cpuBrand: String, machineModel: String = "", osBuild: String = "") {
+    self.cpuBrand = cpuBrand
+    self.machineModel = machineModel
+    self.osBuild = osBuild
+  }
+
+  // Exact M4-family thermal-zone mappings derived from the MIT-licensed Stats
+  // sensor catalogue. See THIRD_PARTY_NOTICES.md. Prefixes are never trusted:
+  // a key must be in one of these exact allowlists.
   private static let m4PerformanceCPUKeys: Set<String> = [
-    "Tp01", "Tp05", "Tp09", "Tp0D", "Tp0H", "Tp0V", "Tp0Y", "Tp0b", "Tp0e",
+    "Tp01", "Tp05", "Tp09", "Tp0D", "Tp0V", "Tp0Y", "Tp0b", "Tp0e",
   ]
   private static let m4EfficiencyCPUKeys: Set<String> = [
-    "Te05", "Te06", "Te09", "Te0H", "Te0S", "Te0T",
+    "Te05", "Te09", "Te0H", "Te0S",
   ]
   private static let m4GPUKeys: Set<String> = [
     "Tg0G", "Tg0H", "Tg0K", "Tg0L", "Tg0d", "Tg0e", "Tg0j", "Tg0k", "Tg1U", "Tg1k",
   ]
+  // Direct read-only measurements on Mac16,1 / 25G83 established that Te06 and
+  // Te0T are changing thermal channels which can affect conservative Max SoC.
+  // Their physical component and CPU-cluster identities remain unknown.
+  private static let mac161ValidatedHotspotKeys: Set<String> = ["Te06", "Te0T"]
 
   func group(for key: String) -> ThermalGroup {
-    guard cpuBrand == "Apple M4" || cpuBrand.hasPrefix("Apple M4 ") else { return .unclassified }
+    let isM4Family = cpuBrand == "Apple M4" || cpuBrand.hasPrefix("Apple M4 ")
+    if isM4Family, machineModel == "Mac16,1", osBuild == "25G83",
+      Self.mac161ValidatedHotspotKeys.contains(key)
+    {
+      return .validatedHotspot
+    }
+    guard isM4Family else { return .unclassified }
     if Self.m4PerformanceCPUKeys.contains(key) { return .performanceCPU }
     if Self.m4EfficiencyCPUKeys.contains(key) { return .efficiencyCPU }
     if Self.m4GPUKeys.contains(key) { return .gpu }
@@ -34,34 +45,35 @@ struct ThermalClassifier {
   }
 
   static func native() throws -> Self {
+    Self(
+      cpuBrand: try sysctlString("machdep.cpu.brand_string"),
+      machineModel: (try? sysctlString("hw.model")) ?? "",
+      osBuild: (try? sysctlString("kern.osversion")) ?? "")
+  }
+
+  private static func sysctlString(_ name: String) throws -> String {
     var size = 0
-    guard sysctlbyname("machdep.cpu.brand_string", nil, &size, nil, 0) == 0 else {
-      throw TelemetryError.kernel("Read CPU identity", errno)
+    guard sysctlbyname(name, nil, &size, nil, 0) == 0 else {
+      throw TelemetryError.kernel("Read \(name)", errno)
     }
     guard size > 0, size <= 256 else {
-      throw TelemetryError.invalidData("Invalid CPU identity size")
+      throw TelemetryError.invalidData("Invalid \(name) size")
     }
     var bytes = [UInt8](repeating: 0, count: size)
     let status = bytes.withUnsafeMutableBytes {
-      sysctlbyname("machdep.cpu.brand_string", $0.baseAddress, &size, nil, 0)
+      sysctlbyname(name, $0.baseAddress, &size, nil, 0)
     }
-    guard status == 0 else { throw TelemetryError.kernel("Read CPU identity", errno) }
-    guard size <= bytes.count else { throw TelemetryError.invalidData("Truncated CPU identity") }
-    return Self(
-      cpuBrand: String(decoding: bytes.prefix(size).prefix(while: { $0 != 0 }), as: UTF8.self))
+    guard status == 0 else { throw TelemetryError.kernel("Read \(name)", errno) }
+    guard size <= bytes.count else { throw TelemetryError.invalidData("Truncated \(name)") }
+    return String(decoding: bytes.prefix(size).prefix(while: { $0 != 0 }), as: UTF8.self)
   }
 }
 
-/// UI-only interpretation of raw thermal channels. This layer deliberately does
-/// not alter `ThermalGroup`, Max SoC, Cooling Rules, health thresholds, or fan
-/// safety. Apple does not publish the meaning of most Apple Silicon SMC keys;
-/// names below are conservative community mappings used only to make the expert
-/// inventory understandable.
+/// UI-only interpretation of raw thermal channels. Exact Stats-derived
+/// auxiliary mappings retain attributed display names; every other raw key stays
+/// explicitly unclassified and never acquires a meaning from its spelling.
 enum ThermalDisplayKind: String, Sendable {
   case knownAuxiliary
-  case communityAuxiliary
-  case virtualOrDerived
-  case placeholderCandidate
   case unknown
 }
 
@@ -79,10 +91,8 @@ struct ThermalDisplayReading: Identifiable, Sendable {
 }
 
 enum ThermalDisplayClassifier {
-  /// Exact auxiliary mappings that are independently present in the public
-  /// Stats Apple-Silicon sensor catalogue. "Known" here means corroborated by
-  /// open monitoring projects, not documented by Apple. They remain display-
-  /// only in Helios.
+  /// Exact display-only mappings derived from the MIT-licensed Stats Apple-
+  /// Silicon sensor catalogue. See THIRD_PARTY_NOTICES.md.
   private static let knownAuxiliary: [String: String] = [
     "Tm0p": "Memory proximity 1",
     "Tm1p": "Memory proximity 2",
@@ -95,218 +105,20 @@ enum ThermalDisplayClassifier {
     "TW0P": "Wi-Fi / AirPort proximity",
   ]
 
-  /// Exact community Apple-SMC mappings corroborated by open sensor catalogs.
-  /// Apple does not publish these meanings, so they are advisory only.
-  private static let communityAuxiliary: [String: String] = [
-    "TCMz": "CPU die maximum",
-    "TCMb": "CPU die average",
-    "TCDX": "CPU die aggregate",
-    "TaLT": "Thunderbolt left proximity",
-    "TaRT": "Thunderbolt right proximity",
-    "TaLW": "Airflow left wall",
-    "TaRW": "Airflow right wall",
-    "TaFL": "Airflow front left",
-    "TaFR": "Airflow front right",
-    "TaRL": "Airflow rear left",
-    "TaRR": "Airflow rear right",
-    "TAOL": "Ambient outside lid",
-    "TaTP": "Ambient top proximity",
-    "TS0P": "SSD proximity 1",
-    "TS1P": "SSD proximity 2",
-    "TSVR": "SoC regulator V",
-    "TSWR": "SoC regulator W",
-    "TSXR": "SoC regulator X",
-    "TSG1": "Thermal sensor group 1",
-    "TSG2": "Thermal sensor group 2",
-    "TPSD": "Power-supply diode",
-    "TT0P": "Thunderbolt proximity",
-    "TDBP": "Board diode · battery proximity",
-    "TDEL": "Board diode · edge left",
-    "TDER": "Board diode · edge right",
-    "TDeL": "Board diode · edge left (case variant)",
-    "TDeR": "Board diode · edge right (case variant)",
-    "TDTP": "Board diode · top proximity",
-    "TDTC": "Board diode · top center",
-    "TDCR": "Board diode · center right",
-    "TDEC": "Board diode · edge center",
-    "TDVx": "Board diode · virtual",
-    "TR0Z": "RF thermal reference",
-    "TR1d": "RF thermal probe 1",
-    "TR2d": "RF thermal probe 2",
-    "TR3d": "RF thermal probe 3",
-    "TR4d": "RF thermal probe 4",
-    "TR5d": "RF thermal probe 5",
-  ]
-
-  /// Case-sensitive TVM keys explicitly catalogued by community projects.
-  /// The user's observed `TVMS` is intentionally *not* collapsed into this
-  /// table: SMC keys are case-sensitive, so an unknown case variant receives a
-  /// family-level label rather than a false exact identity.
-  private static let virtualMemoryExact: [String: String] = [
-    "TVMR": "Virtual memory",
-    "TVMr": "Virtual memory r",
-    "TVmS": "Virtual memory summary",
-    "TVms": "Virtual memory summary",
-    "TVMX": "Virtual memory summary",
-    "TVM0": "Virtual memory 0",
-    "TVM4": "Virtual memory hottest channel",
-    "TVm0": "Virtual memory m0",
-    "TVm1": "Virtual memory m1",
-    "TVm2": "Virtual memory m2",
-    "TVh0": "Virtual memory bank h0",
-    "TVh1": "Virtual memory bank h1",
-    "TVh2": "Virtual memory bank h2",
-    "TVMC": "Virtual memory cluster",
-  ]
-
   static func classify(_ readings: [ThermalReading]) -> [ThermalDisplayReading] {
     readings.map { reading in
       ThermalDisplayReading(reading: reading, info: info(for: reading, allReadings: readings))
     }
   }
 
-  static func info(for reading: ThermalReading, allReadings: [ThermalReading]) -> ThermalDisplayInfo
+  static func info(for reading: ThermalReading, allReadings _: [ThermalReading]) -> ThermalDisplayInfo
   {
     if let title = knownAuxiliary[reading.key] {
       return ThermalDisplayInfo(
         title: title,
         kind: .knownAuxiliary,
         detail:
-          "Corroborated community Apple-Silicon mapping. Informational only; not a fan-safety input."
-      )
-    }
-    if let title = communityAuxiliary[reading.key] {
-      return ThermalDisplayInfo(
-        title: title,
-        kind: .communityAuxiliary,
-        detail:
-          "Community SMC mapping. Apple does not document this key; Helios keeps it advisory only."
-      )
-    }
-    if let title = virtualMemoryExact[reading.key] {
-      return ThermalDisplayInfo(
-        title: title,
-        kind: .virtualOrDerived,
-        detail:
-          "Community-mapped TVM virtual/derived thermal channel. It may differ substantially from physical CPU/GPU temperatures and never enters fan safety."
-      )
-    }
-
-    if looksLikeInactiveAmbientPlaceholder(reading, among: allReadings) {
-      return ThermalDisplayInfo(
-        title: "Inactive / placeholder-like ambient channel",
-        kind: .placeholderCandidate,
-        detail:
-          "Several Ta0* channels report the same unusually low value on this Mac. Helios preserves the raw reading but does not treat it as a validated ambient temperature."
-      )
-    }
-
-    let key = reading.key
-    let lower = key.lowercased()
-    if lower.hasPrefix("tvm") {
-      let exactCaseNote =
-        key == "TVMS"
-        ? " The exact uppercase TVMS key is not an exact match for the case-sensitive community catalogue, so Helios labels only the TVM* family rather than asserting a precise sensor identity."
-        : ""
-      return ThermalDisplayInfo(
-        title: "TVM* virtual / derived thermal channel",
-        kind: .virtualOrDerived,
-        detail:
-          "Community mappings describe the TVM* family as virtual/derived memory thermal channels. A high value is not automatically a physical hotspot and never enters fan safety.\(exactCaseNote)"
-      )
-    }
-    if lower.hasPrefix("tvd") {
-      return ThermalDisplayInfo(
-        title: "Virtual die thermal channel",
-        kind: .virtualOrDerived,
-        detail:
-          "Community-mapped firmware-derived/virtual die family. Displayed for diagnostics only."
-      )
-    }
-    if lower.hasPrefix("tva") || lower.hasPrefix("tvs") || lower.hasPrefix("tvv") {
-      return ThermalDisplayInfo(
-        title: "Virtual thermal channel",
-        kind: .virtualOrDerived,
-        detail:
-          "Community-mapped firmware-derived/virtual sensor family. Displayed for diagnostics only."
-      )
-    }
-    if isSoCThermalDiodeProbe(key) {
-      let cluster = Int(String(key[key.index(key.startIndex, offsetBy: 2)])) ?? 0
-      return ThermalDisplayInfo(
-        title: "SoC thermal-diode cluster \(cluster + 1) probe",
-        kind: .communityAuxiliary,
-        detail:
-          "Community family mapping for TD0*/TD1*/TD2* SoC thermal-diode probes. Exact probe roles are undocumented; advisory only."
-      )
-    }
-    if lower.hasPrefix("tpd") {
-      return ThermalDisplayInfo(
-        title: lower == "tpdx" ? "Power-delivery maximum" : "Power-delivery thermal channel",
-        kind: .communityAuxiliary,
-        detail: "Community mapping for the Apple power-delivery thermal family. Informational only."
-      )
-    }
-    if lower.hasPrefix("trd") {
-      return ThermalDisplayInfo(
-        title: lower == "trdx" ? "RF-delivery maximum" : "RF-delivery thermal channel",
-        kind: .communityAuxiliary,
-        detail: "Community mapping for the RF-delivery thermal family. Informational only."
-      )
-    }
-    if lower.hasPrefix("th") {
-      return ThermalDisplayInfo(
-        title: "Heatsink / storage thermal family",
-        kind: .communityAuxiliary,
-        detail:
-          "The TH*/Th* namespace is used by community sensor catalogues for heatsink and storage/NAND probes. Exact identity is not asserted for this key."
-      )
-    }
-    if lower.hasPrefix("tm") {
-      return ThermalDisplayInfo(
-        title: "Memory thermal family",
-        kind: .communityAuxiliary,
-        detail:
-          "Community family classification only. Exact memory sensor identity is not documented by Apple and is not a safety input."
-      )
-    }
-    if lower.hasPrefix("tb") {
-      return ThermalDisplayInfo(
-        title: "Battery thermal family",
-        kind: .communityAuxiliary,
-        detail:
-          "Community family classification only. Battery health/charging remains read-only and this raw key does not drive fan policy."
-      )
-    }
-    if lower.hasPrefix("tw") {
-      return ThermalDisplayInfo(
-        title: "Wi-Fi / wireless thermal family",
-        kind: .communityAuxiliary,
-        detail: "Community family classification only. Exact role remains undocumented."
-      )
-    }
-    if lower.hasPrefix("ta") {
-      return ThermalDisplayInfo(
-        title: "Ambient / airflow thermal family",
-        kind: .communityAuxiliary,
-        detail:
-          "Community family classification only. Exact role remains undocumented; unusually-low repeated Ta0* values are separated as placeholder-like instead."
-      )
-    }
-    if lower.hasPrefix("tp") || lower.hasPrefix("te") || lower.hasPrefix("tg") {
-      let family: String
-      if lower.hasPrefix("tg") {
-        family = "GPU-family"
-      } else if lower.hasPrefix("te") {
-        family = "E-core / die-family"
-      } else {
-        family = "P-core / processor-family"
-      }
-      return ThermalDisplayInfo(
-        title: "Unvalidated \(family) thermal channel",
-        kind: .communityAuxiliary,
-        detail:
-          "The prefix is associated with this hardware family in community mappings, but this exact key is not in Helios' curated M4 safety allowlist. It remains advisory only."
+          "Attributed Stats Apple-Silicon mapping. Informational only; not a fan-safety input."
       )
     }
 
@@ -315,23 +127,6 @@ enum ThermalDisplayClassifier {
       kind: .unknown,
       detail: "Undocumented raw SMC temperature key. No meaning or safety role is inferred."
     )
-  }
-
-  private static func isSoCThermalDiodeProbe(_ key: String) -> Bool {
-    guard key.count == 4 else { return false }
-    return key.hasPrefix("TD0") || key.hasPrefix("TD1") || key.hasPrefix("TD2")
-  }
-
-  private static func looksLikeInactiveAmbientPlaceholder(
-    _ reading: ThermalReading, among readings: [ThermalReading]
-  ) -> Bool {
-    guard reading.key.hasPrefix("Ta0"), reading.celsius < 12 else { return false }
-    let family = readings.filter { $0.key.hasPrefix("Ta0") && $0.celsius < 12 }
-    guard family.count >= 3,
-      let minimum = family.map(\.celsius).min(),
-      let maximum = family.map(\.celsius).max()
-    else { return false }
-    return maximum - minimum <= 0.35
   }
 }
 

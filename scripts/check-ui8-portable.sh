@@ -206,6 +206,7 @@ enum ThermalGroup: String, Sendable, CaseIterable {
   case performanceCPU = "P-core group"
   case efficiencyCPU = "E-core group"
   case gpu = "GPU group"
+  case validatedHotspot = "Validated hotspot"
   case unclassified = "Unclassified"
 }
 struct ThermalReading: Sendable {
@@ -240,15 +241,17 @@ struct ThermalDisplayProbe {
     func kind(_ key: String) -> ThermalDisplayKind? {
       classified.first(where: { $0.reading.key == key })?.info.kind
     }
-    precondition(kind("TCMz") == .communityAuxiliary)
-    precondition(kind("TVMS") == .virtualOrDerived)
-    precondition(classified.first(where: { $0.reading.key == "TVMS" })?.info.title.contains("TVM*") == true)
-    precondition(kind("TVmS") == .virtualOrDerived)
-    precondition(kind("TD14") == .communityAuxiliary)
-    precondition(kind("TDER") == .communityAuxiliary)
+    precondition(kind("TCMz") == .unknown)
+    precondition(kind("TVMS") == .unknown)
+    precondition(kind("TVmS") == .unknown)
+    precondition(kind("TD14") == .unknown)
+    precondition(kind("TDER") == .unknown)
     precondition(kind("Tm0p") == .knownAuxiliary)
-    precondition(kind("Ta01") == .placeholderCandidate)
+    precondition(kind("Ta01") == .unknown)
     precondition(kind("Txyz") == .unknown)
+    precondition(classified.filter { $0.info.kind == .unknown }.allSatisfy {
+      $0.info.title == "Unclassified SMC temperature"
+    })
   }
 }
 SWIFT
@@ -271,6 +274,7 @@ enum ThermalGroup: String, Sendable, CaseIterable {
   case performanceCPU = "P-core group"
   case efficiencyCPU = "E-core group"
   case gpu = "GPU group"
+  case validatedHotspot = "Validated hotspot"
   case unclassified = "Unclassified"
 }
 struct ThermalReading: Sendable {
@@ -360,7 +364,68 @@ struct ThermalCadenceProbe {
 SWIFT
 run_swift "$thermal_cadence" "$tmpdir/ThermalCadenceProbe"
 
-printf '%s\n' "PASS Next23 UI8 portable semantic probes: fast battery ETA, persistent/live graph merge, legacy 24h-history decode, display-only thermal classification, and split trusted/advisory thermal cadence"
+thermal_trust="$tmpdir/ThermalTrustProbe.swift"
+cat > "$thermal_trust" <<'SWIFT'
+import Foundation
+
+enum ThermalGroup: String, Sendable, CaseIterable {
+  case performanceCPU = "P-core group"
+  case efficiencyCPU = "E-core group"
+  case gpu = "GPU group"
+  case validatedHotspot = "Validated hotspot"
+  case unclassified = "Unclassified"
+}
+struct ThermalReading: Sendable {
+  let key: String
+  let group: ThermalGroup
+  let celsius: Double
+}
+struct ThermalMetrics: Sendable { let readings: [ThermalReading] }
+SWIFT
+awk '
+  /^enum CoolingRuleSensorKind:/ {copy=1}
+  /^struct CoolingRuleTarget:/ {copy=0}
+  copy {print}
+' Sources/HeliosApp/CoolingRules.swift >> "$thermal_trust"
+awk '
+  /^struct CoolingRuleInputs:/ {copy=1}
+  /^struct CoolingRuleDecision:/ {copy=0}
+  copy {print}
+' Sources/HeliosApp/CoolingRules.swift >> "$thermal_trust"
+cat >> "$thermal_trust" <<'SWIFT'
+
+@main
+struct ThermalTrustProbe {
+  static func main() {
+    let inputs = CoolingRuleInputs(
+      thermals: ThermalMetrics(readings: [
+        ThermalReading(key: "Tp01", group: .performanceCPU, celsius: 60),
+        ThermalReading(key: "Te06", group: .validatedHotspot, celsius: 95),
+        ThermalReading(key: "Tzzz", group: .unclassified, celsius: 120),
+      ]),
+      batteryCelsius: nil,
+      storageCelsius: nil)
+    precondition(inputs.value(for: .maximumSoC) == 95)
+    precondition(inputs.value(for: .anySensor) == 95)
+    precondition(inputs.value(for: .individual("Te06")) == 95)
+    precondition(inputs.value(for: .highestCPU) == 60)
+    precondition(inputs.value(for: .individual("Tzzz")) == nil)
+  }
+}
+SWIFT
+run_swift "$thermal_trust" "$tmpdir/ThermalTrustProbe"
+
+if ! grep -Fq 'case .validatedHotspot: "Validated hotspot"' Sources/HeliosApp/FanControlModel.swift || \
+   ! grep -Fq 'case .validatedHotspot: return "Validated hotspot"' Sources/HeliosApp/OverviewViewController.swift; then
+  echo "FAIL: validated thermal hotspots are missing provenance-safe user-visible labels" >&2
+  exit 1
+fi
+if grep -Eq 'communityAuxiliary|virtualMemoryExact|virtualOrDerived|placeholderCandidate' Sources/HeliosApp/Telemetry/ThermalProvider.swift; then
+  echo "FAIL: provenance-uncleared thermal display semantics remain in the classifier" >&2
+  exit 1
+fi
+
+printf '%s\n' "PASS Next23 UI8 portable semantic probes: fast battery ETA, persistent/live graph merge, legacy 24h-history decode, provenance-safe thermal display, validated-hotspot trust, and split trusted/advisory cadence"
 
 notification_policy="$tmpdir/HealthNotificationPolicyProbe.swift"
 cat > "$notification_policy" <<'SWIFT'

@@ -700,6 +700,7 @@ final class FanControlModel: ObservableObject {
             case .performanceCPU: "P-Core"
             case .efficiencyCPU: "E-Core"
             case .gpu: "GPU"
+            case .validatedHotspot: "Validated hotspot"
             case .unclassified: "Sensor"
             }
             options.append(.init(source: .individual(reading.key), label: "\(group) · \(reading.key)"))

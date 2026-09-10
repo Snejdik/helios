@@ -271,6 +271,9 @@ enum ThermalGroup: String, Sendable, CaseIterable {
     case performanceCPU = "P-core group"
     case efficiencyCPU = "E-core group"
     case gpu = "GPU group"
+    /// Independently validated for conservative Max SoC monitoring on an exact
+    /// hardware/build profile, without asserting a physical component identity.
+    case validatedHotspot = "Validated hotspot"
     case unclassified = "Unclassified"
 }
 
@@ -284,7 +287,7 @@ struct ThermalMetrics: Sendable {
     let readings: [ThermalReading]
     let failures: [String: TelemetryError]
     /// Raw/unclassified SMC inventory is intentionally sampled less often than
-    /// the curated SoC keys used by Cooling Rules. This timestamp makes that
+    /// the exact trusted keys used by Max SoC and Cooling Rules. This timestamp makes that
     /// relaxed cadence explicit in expert UI instead of pretending every raw
     /// value was captured with the fast safety sample.
     let advisoryReadingsCapturedAt: Date?
@@ -300,7 +303,7 @@ struct ThermalMetrics: Sendable {
         guard let hottest = readings
             .filter({ $0.group != .unclassified })
             .max(by: { $0.celsius < $1.celsius }) else {
-            return .failure(.unavailable("No identified SoC temperature sensors available"))
+            return .failure(.unavailable("No trusted temperature sensors available"))
         }
         return .success(hottest)
     }

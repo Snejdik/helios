@@ -1344,15 +1344,11 @@ private struct HeliosModuleDetail: View {
               .filter { $0.group == .unclassified }
               .sorted(by: { $0.celsius > $1.celsius })
             let classifiedRaw = ThermalDisplayClassifier.classify(raw)
-            let auxiliary = classifiedRaw.filter {
-              $0.info.kind == .knownAuxiliary || $0.info.kind == .communityAuxiliary
-            }
-            let virtual = classifiedRaw.filter { $0.info.kind == .virtualOrDerived }
-            let placeholders = classifiedRaw.filter { $0.info.kind == .placeholderCandidate }
+            let auxiliary = classifiedRaw.filter { $0.info.kind == .knownAuxiliary }
             let unknown = classifiedRaw.filter { $0.info.kind == .unknown }
 
             if identified.isEmpty {
-              Text("No identified SoC sensor groups are currently available.")
+              Text("No trusted thermal groups are currently available.")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
             } else {
@@ -1385,23 +1381,11 @@ private struct HeliosModuleDetail: View {
                 }
               }
               .help(
-                "Raw/unclassified SMC channels are refreshed less often than trusted SoC keys to minimize monitoring overhead. Curated Max SoC / Cooling Rules sensors remain on the fast thermal cadence."
+                "Raw/unclassified SMC channels are refreshed less often than trusted keys to minimize monitoring overhead. Exact Max SoC / Cooling Rules sensors remain on the fast thermal cadence."
               )
 
-              if let cpuDieMaximum = classifiedRaw.first(where: { $0.reading.key == "TCMz" }) {
-                advisoryThermalRow(
-                  "CPU die maximum · community", item: cpuDieMaximum,
-                  valueSuffix: "advisory")
-              }
-              if let virtualMaximum = virtual.max(by: {
-                $0.reading.celsius < $1.reading.celsius
-              }) {
-                advisoryThermalRow(
-                  "Virtual / derived maximum", item: virtualMaximum,
-                  valueSuffix: virtualMaximum.reading.key)
-              }
               Text(
-                "Only the curated M4 CPU/GPU groups above participate in trusted Max SoC and fan safety. CPU-die/auxiliary community mappings are monitored as advisory context; virtual channels, placeholder-like values, and unknown keys are never promoted into control policy without separate validation."
+                "Only the exact trusted groups above participate in Max SoC and fan safety. Attributed Stats auxiliary mappings and unclassified raw keys remain advisory and are never promoted into control policy without independent validation."
               )
               .font(.system(size: 9.5))
               .foregroundStyle(.secondary)
@@ -1417,46 +1401,6 @@ private struct HeliosModuleDetail: View {
                   .padding(.top, 6)
                 } label: {
                   thermalDisclosureLabel("Auxiliary sensors", count: auxiliary.count)
-                }
-              }
-
-              if !virtual.isEmpty {
-                DisclosureGroup {
-                  LazyVStack(spacing: 5) {
-                    Text(
-                      "Virtual/derived channels can legitimately diverge from physical CPU/GPU temperatures. A high value here is not, by itself, evidence that the silicon is overheating."
-                    )
-                    .font(.system(size: 9.25))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.bottom, 2)
-                    ForEach(virtual) { item in
-                      thermalDisplayRow(item)
-                    }
-                  }
-                  .padding(.top, 6)
-                } label: {
-                  thermalDisclosureLabel("Virtual / derived sensors", count: virtual.count)
-                }
-              }
-
-              if !placeholders.isEmpty {
-                DisclosureGroup {
-                  LazyVStack(spacing: 5) {
-                    Text(
-                      "These channels form a repeated unusually-low Ta0* cluster on this Mac. They are preserved as raw diagnostics, but Helios does not present them as real ambient temperature."
-                    )
-                    .font(.system(size: 9.25))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.bottom, 2)
-                    ForEach(placeholders) { item in
-                      thermalDisplayRow(item)
-                    }
-                  }
-                  .padding(.top, 6)
-                } label: {
-                  thermalDisclosureLabel("Inactive / placeholder-like", count: placeholders.count)
                 }
               }
 
@@ -2021,11 +1965,11 @@ private struct HeliosModuleDetail: View {
           let raw = thermals.readings.filter { $0.group == .unclassified }
           let classified = ThermalDisplayClassifier.classify(raw)
           Text(
-            "Raw SMC keys are community/reverse-engineered context. Virtual, placeholder-like and unknown channels never enter cooling policy without separate validation."
+            "Attributed Stats auxiliary mappings and unclassified raw SMC keys remain display-only. Unclassified channels never enter cooling policy without independent validation."
           )
           .font(.system(size: 9.5)).foregroundStyle(.secondary)
           DisclosureGroup(
-            "Raw / classified sensors (\(classified.count))", isExpanded: $showRawThermalSensors
+            "Raw / unclassified sensors (\(classified.count))", isExpanded: $showRawThermalSensors
           ) {
             LazyVStack(spacing: 5) {
               ForEach(classified) { item in thermalDisplayRow(item) }
@@ -2250,7 +2194,7 @@ private struct HeliosModuleDetail: View {
     VStack(spacing: 10) {
       diagnosticSection(
         "Thermal sensors", "thermometer.medium",
-        subtitle: "Curated and advisory SMC temperatures grouped by meaning",
+        subtitle: "Trusted groups and unclassified raw SMC temperatures",
         summary: thermalDiagnosticSummary
       ) {
         if case .success(let t) = p.thermals {
@@ -3535,31 +3479,6 @@ private struct HeliosModuleDetail: View {
   private func nvmeCounterText(_ value: NVMeCounter128) -> String {
     if let exact = value.uint64Value { return TelemetryFormatting.count(exact) }
     return String(format: "%.6e", value.approximateValue)
-  }
-
-  private func advisoryThermalRow(
-    _ title: String, item: ThermalDisplayReading, valueSuffix: String
-  ) -> some View {
-    HStack(alignment: .firstTextBaseline, spacing: 10) {
-      VStack(alignment: .leading, spacing: 1) {
-        Text(title)
-          .foregroundStyle(.secondary)
-        Text(item.info.title)
-          .font(.system(size: 8.5))
-          .foregroundStyle(.tertiary)
-          .lineLimit(1)
-      }
-      Spacer(minLength: 8)
-      VStack(alignment: .trailing, spacing: 1) {
-        Text(String(format: "%.1f°C", item.reading.celsius))
-          .monospacedDigit()
-        Text(valueSuffix)
-          .font(.system(size: 8.5))
-          .foregroundStyle(.tertiary)
-      }
-    }
-    .font(.system(size: 10.5))
-    .help(item.info.detail)
   }
 
   private func thermalDisclosureLabel(_ title: String, count: Int) -> some View {

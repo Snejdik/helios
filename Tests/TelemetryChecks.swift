@@ -1654,14 +1654,42 @@ private struct TelemetryChecks {
     try require(
       request[28] == 4 && request[42] == 9 && request[44] == 17, "Native SMC command offsets")
     let m4Classifier = ThermalClassifier(cpuBrand: "Apple M4")
+    let statsPKeys = ["Tp01", "Tp05", "Tp09", "Tp0D", "Tp0V", "Tp0Y", "Tp0b", "Tp0e"]
+    let statsEKeys = ["Te05", "Te09", "Te0H", "Te0S"]
+    let statsGPUKeys = ["Tg0G", "Tg0H", "Tg0K", "Tg0L", "Tg0d", "Tg0e", "Tg0j", "Tg0k", "Tg1U", "Tg1k"]
     try require(
-      m4Classifier.group(for: "Tp01") == .performanceCPU, "Known M4 P-zone was not trusted")
+      statsPKeys.allSatisfy { m4Classifier.group(for: $0) == .performanceCPU },
+      "An attributed Stats M4 P-zone mapping changed")
     try require(
-      m4Classifier.group(for: "Te05") == .efficiencyCPU, "Known M4 E-zone was not trusted")
-    try require(m4Classifier.group(for: "Tg0G") == .gpu, "Known M4 GPU zone was not trusted")
+      statsEKeys.allSatisfy { m4Classifier.group(for: $0) == .efficiencyCPU },
+      "An attributed Stats M4 E-zone mapping changed")
+    try require(
+      statsGPUKeys.allSatisfy { m4Classifier.group(for: $0) == .gpu },
+      "An attributed Stats M4 GPU-zone mapping changed")
     try require(
       m4Classifier.group(for: "TpZZ") == .unclassified,
       "Unknown Tp prefix became a trusted fan-control sensor")
+    try require(
+      ["Te06", "Te0T", "Tp0H"].allSatisfy { m4Classifier.group(for: $0) == .unclassified },
+      "Issue-only keys must not be trusted without the exact validated hardware/build")
+
+    let validatedClassifier = ThermalClassifier(
+      cpuBrand: "Apple M4", machineModel: "Mac16,1", osBuild: "25G83")
+    try require(
+      validatedClassifier.group(for: "Te06") == .validatedHotspot
+        && validatedClassifier.group(for: "Te0T") == .validatedHotspot,
+      "Mac16,1 / 25G83 hotspots lost their independent trusted classification")
+    try require(
+      validatedClassifier.group(for: "Tp0H") == .unclassified,
+      "Tp0H was incorrectly treated as independently validated Mac16,1 evidence")
+    let wrongModel = ThermalClassifier(
+      cpuBrand: "Apple M4", machineModel: "Mac16,2", osBuild: "25G83")
+    let wrongBuild = ThermalClassifier(
+      cpuBrand: "Apple M4", machineModel: "Mac16,1", osBuild: "25G84")
+    try require(
+      wrongModel.group(for: "Te06") == .unclassified
+        && wrongBuild.group(for: "Te0T") == .unclassified,
+      "Validated hotspot trust escaped the exact Mac16,1 / 25G83 scope")
 
     let displayFixtures = [
       ThermalReading(key: "TCMz", group: .unclassified, celsius: 66.6),
@@ -1680,33 +1708,71 @@ private struct TelemetryChecks {
       displayClassified.first(where: { $0.reading.key == key })?.info.kind
     }
     try require(
-      displayKind("TCMz") == .communityAuxiliary,
-      "Community CPU-die mapping must remain display-only auxiliary telemetry")
-    try require(
-      displayKind("TVMS") == .virtualOrDerived,
-      "Unverified TVM case variants must be presented as virtual/derived, never a physical hotspot")
-    let tvmsInfo = displayClassified.first(where: { $0.reading.key == "TVMS" })?.info
-    try require(
-      tvmsInfo?.title.contains("TVM*") == true && tvmsInfo?.title.contains("summary") == false,
-      "Unknown case-sensitive TVMS must receive only a family-level identity")
-    try require(
-      displayKind("TVmS") == .virtualOrDerived,
-      "Exact community TVmS summary key should remain virtual/derived")
-    try require(
-      displayKind("TD14") == .communityAuxiliary && displayKind("TDER") == .communityAuxiliary,
-      "Community SoC/board-diode families should be classified for display without entering safety")
+      ["TCMz", "TVMS", "TVmS", "TD14", "TDER", "Ta01", "Ta05", "Ta09", "Txyz"]
+        .allSatisfy { displayKind($0) == .unknown },
+      "Unsupported exact/family mappings must resolve to unclassified display semantics")
     try require(
       displayKind("Tm0p") == .knownAuxiliary,
-      "Known M4 memory-proximity key should receive a friendly auxiliary label")
+      "Attributed Stats auxiliary key should retain its display mapping")
     try require(
-      displayKind("Ta01") == .placeholderCandidate,
-      "Repeated low Ta0* cluster should be presented as placeholder-like diagnostics")
-    try require(
-      displayKind("Txyz") == .unknown,
-      "Unknown SMC temperature keys must stay explicitly unclassified")
+      displayClassified.filter { $0.info.kind == .unknown }.allSatisfy {
+        $0.info.title == "Unclassified SMC temperature"
+          && $0.info.detail.contains("No meaning or safety role is inferred")
+      },
+      "Raw unknown keys must retain one provenance-safe generic presentation")
     try require(
       displayFixtures.allSatisfy { m4Classifier.group(for: $0.key) == .unclassified },
       "Display classification must never promote auxiliary/raw keys into fan-safety groups")
+    let conservative = ThermalMetrics(
+      readings: [
+        ThermalReading(key: "Tp01", group: .performanceCPU, celsius: 60),
+        ThermalReading(key: "Te06", group: .validatedHotspot, celsius: 95),
+        ThermalReading(key: "Tzzz", group: .unclassified, celsius: 120),
+      ], failures: ["Tbad": .invalidData("fixture")], advisoryReadingsCapturedAt: Date())
+    let conservativeMaximum = try conservative.maximumSoCReading.get()
+    try require(
+      conservativeMaximum.key == "Te06" && conservativeMaximum.group == .validatedHotspot
+        && conservativeMaximum.celsius == 95,
+      "Validated hotspot did not participate in conservative trusted Max SoC")
+    try require(
+      conservative.readings.count == 3 && conservative.failures.count == 1
+        && conservative.advisoryReadingsCapturedAt != nil,
+      "Thermal values, counts, failures, or advisory metadata disappeared")
+    let hotspotFixtures = [
+      SensorFixture(key: "Te06", type: "flt ", bytes: word(Float(70).bitPattern)),
+      SensorFixture(key: "Te0T", type: "flt ", bytes: word(Float(65).bitPattern)),
+      SensorFixture(key: "Tp0H", type: "flt ", bytes: word(Float(100).bitPattern)),
+      SensorFixture(key: "Tzzz", type: "flt ", bytes: word(Float(110).bitPattern)),
+    ]
+    let hotspotTransport = FixtureTransport(hotspotFixtures)
+    let hotspotReader = SMCThermalReader(
+      client: SMCClient(transport: hotspotTransport), classifier: validatedClassifier)
+    let hotspotFirst = try hotspotReader.read()
+    try require(
+      try hotspotFirst.maximumSoCReading.get().key == "Te06",
+      "Validated hotspots did not drive the reader's trusted maximum")
+    try require(
+      hotspotFirst.readings.first(where: { $0.key == "Te0T" })?.group == .validatedHotspot,
+      "Te0T lost validated-hotspot semantics in raw reader output")
+    try require(
+      hotspotFirst.readings.first(where: { $0.key == "Tp0H" })?.group == .unclassified,
+      "Tp0H disappeared from raw telemetry or became trusted")
+    let hotspotReadsAfterFirst = hotspotTransport.requests.filter {
+      $0.command == .bytes && ($0.key == "Te06" || $0.key == "Te0T")
+    }.count
+    let tp0HReadsAfterFirst = hotspotTransport.requests.filter {
+      $0.command == .bytes && $0.key == "Tp0H"
+    }.count
+    _ = try hotspotReader.read()
+    try require(
+      hotspotTransport.requests.filter {
+        $0.command == .bytes && ($0.key == "Te06" || $0.key == "Te0T")
+      }.count == hotspotReadsAfterFirst + 2,
+      "Validated hotspots did not remain on the fast trusted cadence")
+    try require(
+      hotspotTransport.requests.filter { $0.command == .bytes && $0.key == "Tp0H" }.count
+        == tp0HReadsAfterFirst,
+      "Unvalidated Tp0H was promoted from advisory to fast trusted cadence")
     let fixtures = [
       SensorFixture(key: "Tp01", type: "flt ", bytes: word(Float(55).bitPattern)),
       SensorFixture(key: "Te05", type: "sp78", bytes: [40, 0]),

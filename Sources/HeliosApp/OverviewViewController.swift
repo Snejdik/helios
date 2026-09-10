@@ -333,6 +333,7 @@ struct OverviewCards: View {
     case .performanceCPU: return "P-Cores"
     case .efficiencyCPU: return "E-Cores"
     case .gpu: return "GPU"
+    case .validatedHotspot: return "Validated hotspot"
     case .unclassified: return "Unknown"
     }
   }
