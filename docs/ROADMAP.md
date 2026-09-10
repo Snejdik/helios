@@ -26,7 +26,7 @@ Helios is now in **release engineering / external-beta preparation**. The monito
 - [ ] Dual-fan Mac read-only topology validation
 - [ ] Desktop/no-battery validation
 - [ ] Older supported macOS smoke testing
-- [ ] Choose the project license
+- [x] Adopt the PolyForm Noncommercial License 1.0.0 for Helios original material
 - [ ] Define the public support matrix
 - [ ] Collect beta crash/compatibility feedback
 

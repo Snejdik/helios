@@ -41,7 +41,7 @@ The subsequent exact live-app interactive memory test used three repeated cycles
 
 ## Before a GitHub source preview
 
-A source repository may be published without a binary release. Before treating it as an open-source project, the owner still needs to choose an explicit `LICENSE`.
+Helios is source-available under the PolyForm Noncommercial License 1.0.0. Publication must include the root `LICENSE` and separate `THIRD_PARTY_NOTICES.md`.
 
 The public tree should not contain local DerivedData, performance captures, private signing logs, local preferences, heap/vmmap dumps, or other machine-specific engineering artifacts.
 
@@ -61,7 +61,7 @@ A binary shared with people who are not building from source should use an inten
 
 Still required:
 
-- select the source license,
+- verify that the source license and third-party notices are included in the release,
 - physical read-only validation on additional Apple Silicon generations/device classes,
 - Developer ID signing,
 - notarization and stapling,

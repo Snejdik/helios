@@ -8,7 +8,7 @@
 ![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-arm64-111111)
 ![Swift 6](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)
 ![Status](https://img.shields.io/badge/status-source%20preview-orange)
-![License](https://img.shields.io/badge/license-not%20selected-lightgrey)
+![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue)
 
 Helios is a lightweight native menu-bar utility that brings deep hardware telemetry, persistent history, per-app energy/process insight, and a safety-first cooling interface into one macOS app.
 
@@ -244,7 +244,7 @@ Current focus is release engineering rather than adding large new features.
 Near-term priorities:
 
 - physical read-only smoke testing on more Apple Silicon generations and device classes,
-- choosing the source license,
+- finalizing source-available release metadata,
 - Developer ID signing and notarization,
 - a clean downloadable package,
 - external-beta feedback and compatibility fixes.
@@ -253,11 +253,16 @@ Longer-term ideas live in [ROADMAP.md](docs/ROADMAP.md).
 
 ## License
 
-**No project license has been selected yet.**
+Helios original project material is **source-available** under the
+[PolyForm Noncommercial License 1.0.0](LICENSE).
 
-Until a `LICENSE` file is added, this repository should be treated as **source-visible for evaluation**, not as granting a general license to copy, modify, redistribute, or incorporate the code into other projects.
+Non-commercial use, modification, and redistribution are permitted subject to
+the license terms. Commercial use requires separate permission from project
+owner Jakub Šnejda, who may offer separate commercial licenses in the future.
 
-A license will be selected before Helios is presented as an open-source release.
+Third-party material is not relicensed under PolyForm. Components and their
+separate notices, including the MIT-licensed Stats mappings, are documented in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## Disclaimer
 
