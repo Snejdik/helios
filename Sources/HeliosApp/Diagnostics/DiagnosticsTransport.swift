@@ -28,7 +28,7 @@ final class DiagnosticsRedirectDelegate: NSObject, URLSessionTaskDelegate, @unch
 
 @MainActor
 final class DiagnosticsURLSessionTransport: DiagnosticsTransporting {
-  nonisolated static let endpoint = URL(string: "https://snejda.cz/api/helios/diagnostics")!
+  nonisolated static let endpoint = URL(string: "https://www.snejda.cz/api/helios/diagnostics")!
   nonisolated static let timeout: TimeInterval = 8
   private let session: URLSession
   private var activeTask: Task<(Data, URLResponse), Error>?
