@@ -143,6 +143,7 @@ final class SMCThermalReader {
   private var trustedTemperatureKeys: [String]?
   private var advisoryTemperatureKeys: [String]?
   private var discoveryFailures: [String: TelemetryError] = [:]
+  private var trustedDiscoveryFailures: [String: TelemetryError] = [:]
 
   private var cachedAdvisoryReadings: [ThermalReading] = []
   private var cachedAdvisoryFailures: [String: TelemetryError] = [:]
@@ -184,9 +185,16 @@ final class SMCThermalReader {
     }
 
     let readings = trustedBatch.readings + cachedAdvisoryReadings
+
+    // Preserve the complete raw/per-key failure inventory for expert surfaces.
     var failures = discoveryFailures
     failures.merge(trustedBatch.failures, uniquingKeysWith: { _, newest in newest })
     failures.merge(cachedAdvisoryFailures, uniquingKeysWith: { _, newest in newest })
+
+    // Health and safety semantics use only failures tied to exact classifier-
+    // trusted keys. Advisory/raw SMC failures remain evidence, not health faults.
+    var trustedFailures = trustedDiscoveryFailures
+    trustedFailures.merge(trustedBatch.failures, uniquingKeysWith: { _, newest in newest })
 
     guard !readings.isEmpty else {
       let firstFailure = failures.keys.sorted().first.flatMap { failures[$0] }
@@ -196,6 +204,7 @@ final class SMCThermalReader {
     return ThermalMetrics(
       readings: readings,
       failures: failures,
+      trustedFailures: trustedFailures,
       advisoryReadingsCapturedAt: advisoryReadingsCapturedAt)
   }
 
@@ -204,24 +213,44 @@ final class SMCThermalReader {
 
     let discovered = try client.discoverKeys()
     discoveryFailures = discovered.failures
+
+    // A discovery gap has no trustworthy key identity. It may have hidden a
+    // safety-relevant thermal channel, so unknown enumeration failures remain
+    // health-blocking even though known unclassified channels do not.
+    trustedDiscoveryFailures = discovered.failures
+
     var trusted: [String] = []
     var advisory: [String] = []
 
     for key in discovered.keys where key.hasPrefix("T") {
+      let group = classifier.group(for: key)
+
       switch captureMetric({ try client.keyInfo(key) }) {
       case .success(let info):
         guard (info.type == "sp78" && info.size == 2) || (info.type == "flt " && info.size == 4)
         else {
-          discoveryFailures[key] = .invalidData("Unsupported temperature type/size for \(key)")
+          let error = TelemetryError.invalidData(
+            "Unsupported temperature type/size for \(key)")
+          discoveryFailures[key] = error
+
+          if group != .unclassified {
+            trustedDiscoveryFailures[key] = error
+          }
           continue
         }
-        if classifier.group(for: key) == .unclassified {
+
+        if group == .unclassified {
           advisory.append(key)
         } else {
           trusted.append(key)
         }
+
       case .failure(let error):
         discoveryFailures[key] = error
+
+        if group != .unclassified {
+          trustedDiscoveryFailures[key] = error
+        }
       }
     }
 

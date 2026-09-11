@@ -497,6 +497,36 @@ private func compatibilityChecks() async throws {
   }
   try require(futureType.dataType == "x!  ", "future printable SMC type was normalized")
   try require(futureType.readState == .decodeFailed, "unknown SMC temperature type did not stay decode_failed")
+  try require(
+    thermalEvidence.compatibilityState == .needsReview,
+    "unclassified raw SMC decode evidence incorrectly downgraded compatibility to partial")
+  try require(
+    thermalEvidence.rawHardware.providerDiagnostics.contains {
+      $0.provider == .thermal && $0.stage == .decode && $0.category == .invalidData
+    },
+    "unclassified raw SMC decode evidence was not preserved")
+
+  let liveReader = SMCThermalReader(
+    client: SMCClient(transport: MockSMCReadTransport(values: thermalAndFanless)),
+    classifier: exactClassifier)
+  let liveThermals = try liveReader.read()
+  try require(
+    liveThermals.failures["T! x"] != nil,
+    "unsupported unclassified T-prefixed SMC metadata disappeared from raw evidence")
+  try require(
+    liveThermals.trustedFailures["T! x"] == nil,
+    "unsupported unclassified T-prefixed SMC metadata polluted trusted thermal health")
+
+  var trustedFailureValues = fanValues(count: 0)
+  trustedFailureValues["Tp01"] = sp78(47.5)
+  let trustedFailure = await fixtureProbe(
+    values: trustedFailureValues,
+    unavailableKeys: ["Tp01"],
+    classifier: exactClassifier
+  ).gather()
+  try require(
+    trustedFailure.compatibilityState == .partial,
+    "trusted thermal read failure did not keep compatibility partial")
 
   var boundedThermals = fanValues(count: 0)
   for index in 0...512 {

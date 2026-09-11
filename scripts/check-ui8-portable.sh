@@ -285,13 +285,18 @@ struct ThermalReading: Sendable {
 struct ThermalMetrics: Sendable {
   let readings: [ThermalReading]
   let failures: [String: TelemetryError]
+  let trustedFailures: [String: TelemetryError]
   let advisoryReadingsCapturedAt: Date?
+
   init(
-    readings: [ThermalReading], failures: [String: TelemetryError],
+    readings: [ThermalReading],
+    failures: [String: TelemetryError],
+    trustedFailures: [String: TelemetryError]? = nil,
     advisoryReadingsCapturedAt: Date? = nil
   ) {
     self.readings = readings
     self.failures = failures
+    self.trustedFailures = trustedFailures ?? failures
     self.advisoryReadingsCapturedAt = advisoryReadingsCapturedAt
   }
 }

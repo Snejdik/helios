@@ -285,17 +285,33 @@ struct ThermalReading: Sendable {
 
 struct ThermalMetrics: Sendable {
     let readings: [ThermalReading]
+
+    /// Complete per-key evidence for expert/raw telemetry. This intentionally
+    /// includes failures from advisory and unclassified SMC channels.
     let failures: [String: TelemetryError]
+
+    /// Failures belonging to classifier-trusted thermal channels only.
+    /// Health, safety readiness and ordinary user-facing warnings must use this
+    /// instead of treating every raw T-prefixed SMC key as a thermal failure.
+    let trustedFailures: [String: TelemetryError]
+
     /// Raw/unclassified SMC inventory is intentionally sampled less often than
     /// the exact trusted keys used by Max SoC and Cooling Rules. This timestamp makes that
     /// relaxed cadence explicit in expert UI instead of pretending every raw
     /// value was captured with the fast safety sample.
     let advisoryReadingsCapturedAt: Date?
 
-    init(readings: [ThermalReading], failures: [String: TelemetryError],
-         advisoryReadingsCapturedAt: Date? = nil) {
+    init(
+        readings: [ThermalReading],
+        failures: [String: TelemetryError],
+        trustedFailures: [String: TelemetryError]? = nil,
+        advisoryReadingsCapturedAt: Date? = nil
+    ) {
         self.readings = readings
         self.failures = failures
+        // Preserve historical semantics for manually constructed fixtures.
+        // Production SMCThermalReader supplies the exact trusted subset.
+        self.trustedFailures = trustedFailures ?? failures
         self.advisoryReadingsCapturedAt = advisoryReadingsCapturedAt
     }
 

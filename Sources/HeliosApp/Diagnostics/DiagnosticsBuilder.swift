@@ -35,7 +35,9 @@ final class DiagnosticsSessionTracker {
     observe(.memory, sample: snapshot.memory)
     observe(.gpu, sample: snapshot.gpu)
     observe(.thermal, sample: snapshot.thermals) { metrics in
-      metrics.failures.isEmpty ? nil : (.invalidData, metrics.failures.count)
+      metrics.trustedFailures.isEmpty
+        ? nil
+        : (.invalidData, metrics.trustedFailures.count)
     }
     observe(.fanTelemetry, sample: snapshot.fans)
     observe(.battery, sample: snapshot.battery)
@@ -134,7 +136,7 @@ final class DiagnosticsSessionTracker {
       memory: summary(.memory, latestSnapshot.memory),
       gpu: summary(.gpu, latestSnapshot.gpu),
       thermal: summary(.thermal, latestSnapshot.thermals) { metrics in
-        metrics.failures.isEmpty ? nil : .invalidData
+        metrics.trustedFailures.isEmpty ? nil : .invalidData
       },
       fanTelemetry: summary(.fanTelemetry, latestSnapshot.fans),
       battery: summary(.battery, latestSnapshot.battery),

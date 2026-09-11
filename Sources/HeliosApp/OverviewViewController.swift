@@ -295,8 +295,9 @@ struct OverviewCards: View {
       .help("Averages and maxima summarize the available temperature sensors in each group.")
       if case .failure = presentation.thermals {
         notice("Temperature readings unavailable")
-      } else if case .success(let thermals) = presentation.thermals, !thermals.failures.isEmpty {
-        notice("Some temperature readings are unavailable")
+      } else if case .success(let thermals) = presentation.thermals,
+                !thermals.trustedFailures.isEmpty {
+        notice("Some trusted temperature readings are unavailable")
       }
       if case .success(let thermals) = presentation.thermals {
         DisclosureGroup("Sensor browser") {

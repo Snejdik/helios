@@ -109,10 +109,33 @@ actor DiagnosticsCompatibilityProbe {
 
     let fanResult = fanEvidence(client: client)
     diagnostics.append(contentsOf: fanResult.diagnostics)
-    let hasThermalFailure = thermal.contains { $0.readState != .readable }
+
+    let thermalGroups = Dictionary(
+      uniqueKeysWithValues: classifications.map { ($0.key, $0.semanticGroup) })
+
+    // Raw/unclassified channels are compatibility evidence, not trusted
+    // thermal-health inputs. Missing classification fails closed.
+    let hasTrustedThermalFailure = thermal.contains { item in
+      guard item.readState != .readable else { return false }
+      return thermalGroups[item.key] != .unclassified
+    }
+
+    // Discovery/validation failures can hide real hardware capabilities and
+    // therefore remain blocking. Per-channel raw read/decode evidence is
+    // blocking only through hasTrustedThermalFailure above.
+    let hasBlockingDiagnostic = diagnostics.contains { diagnostic in
+      guard diagnostic.provider == .thermal else { return true }
+      switch diagnostic.stage {
+      case .open, .discover, .validate:
+        return true
+      default:
+        return false
+      }
+    }
+
     let hasUnclassified = classifications.contains { $0.semanticGroup == .unclassified }
     let state: DiagnosticsCompatibilityState
-    if fanResult.fanCount == nil || hasThermalFailure || !diagnostics.isEmpty {
+    if fanResult.fanCount == nil || hasTrustedThermalFailure || hasBlockingDiagnostic {
       state = thermal.isEmpty && fanResult.fanCount == nil ? .unsupported : .partial
     } else if hasUnclassified {
       state = .needsReview

@@ -1795,6 +1795,11 @@ private struct TelemetryChecks {
     try require(
       metrics.readings.count == 5 && metrics.failures.count == 3,
       "Per-key validation retains good readings")
+    try require(
+      metrics.trustedFailures.count == 2
+        && metrics.failures["Tbad"] != nil
+        && metrics.trustedFailures["Tbad"] == nil,
+      "Raw advisory failure evidence leaked into trusted thermal health")
     let hottest = try metrics.maximumSoCReading.get()
     try require(
       hottest.key == "Tp01" && hottest.group == .performanceCPU,
@@ -1856,6 +1861,16 @@ private struct TelemetryChecks {
     try require(
       discovery.keys.count == fixtures.count - 1 && discovery.failures.count == 1,
       "One failed enumeration index must not discard other keys")
+
+    let holeThermals = try SMCThermalReader(
+      client: SMCClient(transport: hole),
+      classifier: ThermalClassifier(cpuBrand: "Apple M4 Pro")
+    ).read()
+    let discoveryFailureKeys = Set(discovery.failures.keys)
+    try require(
+      discoveryFailureKeys.isSubset(of: Set(holeThermals.failures.keys))
+        && discoveryFailureKeys.isSubset(of: Set(holeThermals.trustedFailures.keys)),
+      "Unknown SMC discovery gaps must remain trusted thermal health failures")
     for count: UInt32 in [0, 16385, UInt32.max] {
       let invalid = FixtureTransport(fixtures)
       invalid.countOverride = count
