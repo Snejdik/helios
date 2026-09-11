@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 @MainActor
@@ -133,6 +134,11 @@ struct DiagnosticsPayloadView: View {
         Text("This exact UTF-8 JSON is the complete request body.")
           .font(.system(size: 10)).foregroundStyle(.secondary)
         Spacer()
+        Button("Copy JSON") {
+          let pasteboard = NSPasteboard.general
+          pasteboard.clearContents()
+          pasteboard.setString(payload.preview, forType: .string)
+        }
         if let onRegenerate { Button("Regenerate preview", action: onRegenerate) }
         if let onSend {
           Button(sendTitle, action: onSend)
