@@ -5287,7 +5287,7 @@ struct HeliosSettingsView: View {
   private var about: some View {
     VStack(spacing: 14) {
       Spacer()
-      HeliosBrandMark(size: 64)
+      HeliosApplicationIcon(size: 64)
       Text("Helios").font(.system(size: 28, weight: .semibold))
       Text("Native macOS system monitoring and fan control").foregroundStyle(.secondary)
       Text("Created by Jakub Šnejda").font(.system(size: 13, weight: .medium))
@@ -5501,7 +5501,7 @@ struct HeliosOnboardingView: View {
   private var interfacePage: some View {
     VStack(spacing: 0) {
       VStack(spacing: 8) {
-        HeliosBrandMark(size: 54)
+        HeliosApplicationIcon(size: 54)
         Text("Welcome to Helios").font(.system(size: 26, weight: .semibold))
         Text(
           "Choose a starting point. Nothing is locked in — every module can be changed later in Settings."
@@ -5537,7 +5537,7 @@ struct HeliosOnboardingView: View {
   private var diagnosticsPage: some View {
     VStack(spacing: 22) {
       Spacer()
-      HeliosBrandMark(size: 54)
+      HeliosApplicationIcon(size: 54)
       Text("Help improve Helios Beta").font(.system(size: 26, weight: .semibold))
       Text(
         "Helios is being tested across different Apple Silicon Macs. You can optionally share privacy-preserving technical diagnostics to help improve hardware compatibility and stability. No diagnostic information is sent unless you enable this option."

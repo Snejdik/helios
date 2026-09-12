@@ -1,43 +1,151 @@
-# macOS
-.DS_Store
+# ============================================================
+# macOS filesystem metadata
+# ============================================================
 
-# Xcode / local user state
+.DS_Store
+._*
+.Spotlight-V100/
+.Trashes/
+
+
+# ============================================================
+# Xcode / local developer state
+# ============================================================
+
 xcuserdata/
 *.xcuserstate
 *.xccheckout
 *.xcscmblueprint
+*.moved-aside
+
 DerivedData/
 build/
 *.xcresult
+*.xcarchive
+*.xcdistributionlogs
 
-# Machine-local signing
+
+# ============================================================
+# Swift / local build state
+# ============================================================
+
+.build/
+.swiftpm/
+
+
+# ============================================================
+# Machine-local Helios configuration / signing
+# ============================================================
+
 Config/Local.xcconfig
 
-# Swift / local build output
-.build/
 
-# Python tooling cache
-__pycache__/
-*.pyc
+# ============================================================
+# Signing certificates / provisioning / API credentials
+# Never commit private signing material
+# ============================================================
 
-# Local validation and performance artifacts
-perf-baseline/
-*.trace
-*.heap
+*.p12
+*.pfx
+*.key
+*.mobileprovision
+*.provisionprofile
+AuthKey_*.p8
 
-# Local packaged binaries / archives
+
+# ============================================================
+# Environment files / local secrets
+# ============================================================
+
+.env
+.env.*
+!.env.example
+
+
+# ============================================================
+# Local packaged binaries / release artifacts
+# GitHub Release assets should not live in Git history
+# ============================================================
+
 *.app
 *.dmg
 *.pkg
 *.zip
+*.ipa
 *.dSYM
 *.dSYM.zip
-*.ipa
 
-# Carthage (not currently used)
+
+# ============================================================
+# Helios validation / profiling / performance artifacts
+# ============================================================
+
+perf-baseline/
+*.trace
+*.heap
+
+*.profraw
+*.profdata
+*.gcda
+*.gcno
+*.gcov
+
+*.crash
+*.ips
+
+
+# ============================================================
+# Python tooling cache
+# ============================================================
+
+__pycache__/
+*.pyc
+*.pyo
+
+
+# ============================================================
+# Editors / IDEs
+# ============================================================
+
+.vscode/
+.idea/
+
+*.swp
+*.swo
+*~
+
+
+# ============================================================
+# Temporary / merge / backup files
+# ============================================================
+
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej
+
+
+# ============================================================
+# Local logs
+# ============================================================
+
+*.log
+
+
+# ============================================================
+# Carthage
+# Not currently used, retained defensively
+# ============================================================
+
 Carthage/Build/
 
-# fastlane local output (not currently used)
+
+# ============================================================
+# fastlane local output
+# Not currently used, retained defensively
+# ============================================================
+
 fastlane/report.xml
 fastlane/Preview.html
 fastlane/screenshots/**/*.png

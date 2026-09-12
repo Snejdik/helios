@@ -1,9 +1,23 @@
 import AppKit
 import SwiftUI
 
-/// Helios' own lightweight solar mark. It deliberately avoids SF Symbol
-/// geometry: four primary rays and four shorter secondary rays surround a
-/// simple disc, so the silhouette stays recognizable from 14 pt to onboarding.
+/// Uses the bundled application's multi-resolution icon without modifying its artwork.
+struct HeliosApplicationIcon: View {
+  var size: CGFloat = 28
+
+  var body: some View {
+    Image(nsImage: NSApplication.shared.applicationIconImage)
+      .resizable()
+      .interpolation(.high)
+      .scaledToFit()
+      .frame(width: size, height: size)
+      .clipShape(RoundedRectangle(cornerRadius: size * 0.22, style: .continuous))
+      .accessibilityHidden(true)
+  }
+}
+
+/// Monochrome menu-bar hub preview, matching MenuBarView's compact solar symbol.
+/// Full-color branding surfaces use HeliosApplicationIcon instead.
 struct HeliosBrandMark: View {
   var size: CGFloat = 28
   var colored = true

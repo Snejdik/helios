@@ -2,6 +2,32 @@
 
 Helios is an Apple-Silicon-only macOS project written in Swift 6 with AppKit, SwiftUI and native system frameworks.
 
+For a supplied test app, use [Installation](INSTALLATION.md). This page is for
+developers compiling the source; a local build is not a distributable beta.
+
+## Get the source
+
+If the source preview is not yet public, repository access is required. If
+GitHub returns a 404, request access through [support](mailto:helios@snejda.cz); the
+public availability of this URL is a separate publication step.
+
+```sh
+git clone https://github.com/Snejdik/helios.git
+cd helios
+```
+
+Open Xcode once to finish installing its components. In Xcode → Settings →
+Locations, select the intended Command Line Tools installation. Verify the tools
+and shared schemes before building:
+
+```sh
+xcodebuild -version
+xcrun swift --version
+xcodebuild -list -project Helios.xcodeproj
+```
+
+The app scheme is **HeliosApp** (not `Helios`).
+
 ## Requirements
 
 - Apple Silicon Mac (`arm64`)
@@ -16,10 +42,11 @@ No third-party package manager or runtime dependency is required.
 The repository keeps machine/developer-specific signing configuration outside source control.
 
 ```sh
-cp Config/Local.xcconfig.example Config/Local.xcconfig
+test -f Config/Local.xcconfig || cp Config/Local.xcconfig.example Config/Local.xcconfig
 ```
 
-Edit the new ignored file:
+Keep an existing local override; do not overwrite another developer’s configuration.
+Edit the ignored file locally (never commit your team or signing details):
 
 ```text
 DEVELOPMENT_TEAM = YOUR_TEAM_ID
@@ -72,6 +99,27 @@ Artifacts are produced under:
 .build/DerivedData/Build/Products/<configuration>/Helios.app
 ```
 
+## Run locally
+
+After a successful Debug build, open
+`.build/DerivedData/Build/Products/Debug/Helios.app` in Finder, or:
+
+```sh
+open .build/DerivedData/Build/Products/Debug/Helios.app
+```
+
+Quit other copies first. The app lives in the menu bar and does not normally
+show a Dock icon. Start in System cooling mode. Helper registration and an
+authenticated connection are separate from successful compilation; use the
+[installation guide](INSTALLATION.md#6-understand-permissions-and-helper-approval)
+for the actual UI flow. Do not modify entitlements, trust requirements or frozen
+backend hashes to make a local helper connect.
+
+If Xcode reports a signing-team/certificate error, check the ignored local
+configuration and your Xcode account. If the command uses the wrong toolchain,
+check Xcode’s Command Line Tools selection. A Debug build launched under a
+debugger is not evidence of production helper connectivity.
+
 ## Regression gate
 
 Before treating a change as valid, run:
@@ -85,6 +133,11 @@ A complete pass ends with:
 ```text
 PASS full Helios regression gate and Xcode build
 ```
+
+Keep the complete output and exit status. The boundary check compares protected
+files against frozen hashes; do not regenerate those hashes to accept a change.
+A regression pass does not prove notarization, clean-machine installation or
+physical fan recovery. See [Pre-beta checklist](PRE_BETA_CHECKLIST.md).
 
 The suite includes read-only/simulated checks around telemetry, persistence, presentation, XPC authentication, fan ownership/lifecycle and safety invariants. Generic regression runs must not be used as an excuse to broaden or physically exercise fan writes on unvalidated hardware.
 

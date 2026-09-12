@@ -40,17 +40,21 @@ Helios is now in **release engineering / external-beta preparation**. The monito
 - [ ] Release automation
 - [ ] Update strategy
 
-## Future product ideas
+## ROADMAP / PLANNED — not implemented
 
-These are post-stabilization ideas, not current release blockers:
+These are future product directions, not currently available modules, first-beta
+commitments or release blockers. No delivery dates are promised.
 
-- Caffeine / Keep Awake utility
-- pointer and scrolling controls where public macOS APIs make them reliable
-- global Helios command/search palette
-- unified export for current views and selected ranges
-- meaningful-event timeline
-- named UI profiles/presets
-- additional low-overhead utility modules that remain modular and independently disableable
+- **LinearMouse-style mouse controls/customization:** pointer and scrolling preferences.
+- **Keep Awake:** a dedicated utility; the existing sleep-blocker inventory does not keep the Mac awake.
+- **Drag-and-drop utilities/workflows.**
+- **Clipboard / copy-paste history and tools:** existing Copy/export actions are not a clipboard-history module.
+- **Future unified Mac utility modules:** scoped and independently disableable.
+
+Other exploratory ideas include a command/search palette, unified exports,
+a meaningful-event timeline and named UI profiles. Each requires separate
+design, implementation and validation. None authorizes broadening the fan-only
+helper or existing privacy/security boundaries.
 
 ## Non-goals / constraints
 

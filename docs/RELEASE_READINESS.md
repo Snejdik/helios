@@ -2,11 +2,16 @@
 
 ## Current status
 
-The current codebase is an **engineering release-candidate / external-beta source preview**.
+The current codebase is a **pre-beta development build / source preview**.
 
 The canonical regression and Release gates pass on the primary M4 validation machine. The privileged fan/helper boundary remains frozen, and the latest live-app UI memory stress demonstrates a bounded plateau rather than monotonic post-close growth.
 
 There is still no public binary release.
+
+For the tester-facing workflow, see [Installation](INSTALLATION.md). Track the
+remaining candidate checks in [Pre-beta checklist](PRE_BETA_CHECKLIST.md).
+The measurements below are historical engineering evidence, not measurements
+rerun by a documentation pass or proof of a distributable binary.
 
 ## Latest primary-host evidence
 
