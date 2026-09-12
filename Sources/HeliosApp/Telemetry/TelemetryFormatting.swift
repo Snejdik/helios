@@ -28,6 +28,30 @@ enum TelemetryFormatting {
         }
     }
 
+    /// `ProcessActivity.cpuPercent` follows Activity Monitor semantics: 100% means
+    /// one logical CPU fully occupied, so a multi-threaded process can exceed 100%.
+    /// Normal user-facing process lists instead show the process share of the
+    /// machine's total logical CPU capacity on a familiar 0...100% scale.
+    static func processCPUSharePercent(
+        _ activityMonitorPercent: Double?,
+        logicalProcessorCount: Int = max(1, ProcessInfo.processInfo.processorCount)
+    ) -> Double? {
+        guard let activityMonitorPercent,
+              activityMonitorPercent.isFinite,
+              activityMonitorPercent >= 0,
+              logicalProcessorCount > 0 else { return nil }
+        return min(100, activityMonitorPercent / Double(logicalProcessorCount))
+    }
+
+    static func processCPUShareText(
+        _ activityMonitorPercent: Double?,
+        logicalProcessorCount: Int = max(1, ProcessInfo.processInfo.processorCount)
+    ) -> String {
+        processCPUSharePercent(
+            activityMonitorPercent, logicalProcessorCount: logicalProcessorCount
+        ).map { String(format: "%.1f%%", $0) } ?? "—"
+    }
+
     static func gibibytes(_ bytes: UInt64) -> String { String(format: "%.2f GiB", Double(bytes) / 1_073_741_824) }
 
     static func storageBytes(_ bytes: UInt64) -> String {

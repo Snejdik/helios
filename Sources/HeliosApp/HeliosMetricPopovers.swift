@@ -180,7 +180,7 @@ struct HeliosMetricPopoverView: View {
           ForEach(processes.topByCPU.prefix(3)) { process in
             processRow(
               process.name,
-              process.cpuPercent.map { String(format: "%.1f%%", $0) } ?? "—")
+              TelemetryFormatting.processCPUShareText(process.cpuPercent))
           }
         }
       }

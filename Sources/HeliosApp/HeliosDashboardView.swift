@@ -480,7 +480,7 @@ struct HeliosPopoverView: View {
           HStack {
             Text(process.name).lineLimit(1)
             Spacer()
-            Text(process.cpuPercent.map { String(format: "%.1f%%", $0) } ?? "—")
+            Text(TelemetryFormatting.processCPUShareText(process.cpuPercent))
               .monospacedDigit().foregroundStyle(.secondary)
           }.font(.system(size: 11))
         }

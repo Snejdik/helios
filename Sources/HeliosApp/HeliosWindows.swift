@@ -1755,7 +1755,7 @@ private struct HeliosModuleDetail: View {
               Text("PID \(process.pid)").font(.system(size: 9)).foregroundStyle(.tertiary)
             }
             Spacer()
-            Text(process.cpuPercent.map { String(format: "%.1f%%", $0) } ?? "—").monospacedDigit()
+            Text(TelemetryFormatting.processCPUShareText(process.cpuPercent)).monospacedDigit()
             Text(TelemetryFormatting.storageBytes(process.physicalFootprintBytes)).foregroundStyle(
               .secondary
             ).frame(width: 84, alignment: .trailing)
@@ -3288,7 +3288,8 @@ private struct HeliosModuleDetail: View {
         diagnosticMiniMetric(
           "Neural memory", TelemetryFormatting.storageBytes(process.neuralFootprintBytes))
         diagnosticMiniMetric(
-          "CPU", process.cpuPercent.map { String(format: "%.4f%%", $0) } ?? "—")
+          "CPU (1 core = 100%)",
+          process.cpuPercent.map { String(format: "%.4f%%", $0) } ?? "—")
         diagnosticMiniMetric(
           "Power", process.powerWatts.map { String(format: "%.6f W", $0) } ?? "—")
         diagnosticMiniMetric(

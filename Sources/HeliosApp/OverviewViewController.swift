@@ -1170,7 +1170,7 @@ struct OverviewCards: View {
       }
       Spacer(minLength: 4)
       VStack(alignment: .trailing, spacing: 1) {
-        Text(process.cpuPercent.map { String(format: "%.1f%%", $0) } ?? "—")
+        Text(TelemetryFormatting.processCPUShareText(process.cpuPercent))
           .font(.system(size: 10, weight: .semibold, design: .rounded).monospacedDigit())
         Text(process.powerWatts.map { String(format: "%.2f W", $0) } ?? "—")
           .font(.system(size: 8, weight: .medium, design: .rounded).monospacedDigit())

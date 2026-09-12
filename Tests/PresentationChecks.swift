@@ -58,6 +58,24 @@ private struct PresentationChecks {
       DisplayValue(expired.processes.map(\.accessibleProcessCount)) { String($0) }.failure != nil,
       "Process staleness must survive presentation")
 
+    // Process telemetry intentionally keeps Activity Monitor semantics where
+    // 100% == one logical CPU. Normal UI must convert that to a whole-machine
+    // share so a multi-threaded process never renders as >100% in Top CPU.
+    let buildCPUShare = TelemetryFormatting.processCPUSharePercent(
+      461, logicalProcessorCount: 10)
+    try require(
+      buildCPUShare.map { abs($0 - 46.1) < 0.000_001 } == true,
+      "Top CPU must normalize multi-core process CPU to whole-machine capacity")
+    try require(
+      TelemetryFormatting.processCPUShareText(461, logicalProcessorCount: 10) == "46.1%",
+      "Top CPU normalized display text")
+    try require(
+      TelemetryFormatting.processCPUSharePercent(1_250, logicalProcessorCount: 10) == 100,
+      "Top CPU presentation must remain bounded at 100%")
+    try require(
+      TelemetryFormatting.processCPUSharePercent(.nan, logicalProcessorCount: 10) == nil,
+      "Top CPU presentation must reject non-finite values")
+
     // UI8 battery ETA must prefer macOS when available, but produce a fast
     // explicitly approximate read-only fallback instead of waiting indefinitely
     // on IOPowerSources "calculating".
