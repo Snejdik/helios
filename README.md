@@ -9,6 +9,8 @@
 Native menu-bar monitoring for Apple Silicon: system activity, temperatures,
 battery and energy history, with carefully gated fan controls.
 
+**[⬇ Download Helios 0.1.0 Pre-beta 1](https://github.com/Snejdik/helios/releases/tag/v0.1.0-prebeta.1)**
+
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-111111?logo=apple&logoColor=white)
 ![Apple Silicon / arm64](https://img.shields.io/badge/Apple%20Silicon-arm64-111111)
 ![Swift 6](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)
@@ -103,17 +105,21 @@ The official application icon, version and project links.
 ## Install a test build
 
 Start with the [step-by-step installation guide](docs/INSTALLATION.md).
-If your supplied test build is a **ZIP**, extract it and copy **Helios.app** to
-Applications. If it is a **DMG**, open it, drag Helios to Applications, then eject
-the disk image. Launch the Applications copy and look for Helios in the menu bar.
-A DMG is a possible future package, not a download promised by this repository.
+The recommended download is **Helios-0.1.0-prebeta.dmg** from
+[GitHub Releases](https://github.com/Snejdik/helios/releases/tag/v0.1.0-prebeta.1).
+Open the DMG, drag **Helios.app** to Applications, then eject the disk image.
+Launch the Applications copy and look for Helios in the menu bar.
+If you use a **ZIP** test build, extract it and copy **Helios.app** to Applications.
+
+This build is **Apple Development signed and not notarized**, so you may need
+**System Settings → Privacy & Security → Open Anyway** to launch it.
 
 The guide covers macOS **Open Anyway**, optional helper approval, troubleshooting
 and clean removal. Basic monitoring does not require the fan helper.
 
 GitHub's **Code → Download ZIP** downloads source code, not an installable app.
-If you have not received a test app from the maintainer, use the separate
-[developer build guide](docs/BUILDING.md) or ask [support](mailto:helios@snejda.cz).
+To build from source, use the separate [developer build guide](docs/BUILDING.md)
+or ask [support](mailto:helios@snejda.cz).
 
 ## Compatibility & cooling safety
 
