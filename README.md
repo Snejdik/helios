@@ -31,9 +31,7 @@ and follow changes over time without keeping a large monitoring window open.
 Helios is an **external testing build**, not a finished public release or
 notarized public distribution. The support matrix is still being established;
 not every Apple Silicon Mac has been validated. Successful compilation or
-working telemetry does **not** establish fan-write compatibility. See the
-[beta checklist](docs/PRE_BETA_CHECKLIST.md) and
-[release-readiness record](docs/RELEASE_READINESS.md).
+working telemetry does **not** establish fan-write compatibility.
 
 ## What Helios can do today
 
@@ -56,9 +54,10 @@ An unavailable reading is not a zero reading. Battery charging policy remains co
 
 ## A look inside
 
-Live captures from the current pre-beta working tree on the primary M4 MacBook
-Pro, 12 September 2026. These illustrate the interface, not universal hardware
-compatibility. Select an image to inspect its original resolution.
+Live captures from the Pre-beta 1-era UI on the primary M4 MacBook Pro,
+12 September 2026. They illustrate the interface and may not include every later
+pre-beta polish change; they are not evidence of universal hardware compatibility.
+Select an image to inspect its original resolution.
 [Capture details and secondary views](docs/images/README.md).
 
 ### Quick Dashboard
@@ -135,13 +134,17 @@ The privileged helper is fan-only, with authentication and thermal safety
 checks; it is not a general-purpose root service. Battery charging policy remains
 controlled by macOS.
 See the [compatibility contract](docs/APPLE_SILICON_COMPATIBILITY.md) for exact
-validated profiles, [release-readiness record](docs/RELEASE_READINESS.md) for
-host-specific evidence, and [security information](https://www.snejda.cz/helios/security)
+validated profiles and [security information](https://www.snejda.cz/helios/security)
 for the protection boundaries.
 
 ## Privacy
 
-Monitoring history is stored locally. **Automatic beta diagnostics are off by
+Monitoring history is stored locally. After Welcome Setup is complete, Helios
+may contact GitHub on launch for release information, at most roughly once per
+day. Update requests contain no Helios telemetry or Helios device identifier.
+This happens independently of diagnostics consent.
+
+**Automatic beta diagnostics are off by
 default** and can be enabled in Settings → Privacy & Diagnostics. Manual health
 and compatibility reports require a preview and a separate Send confirmation;
 they do not turn on automatic sharing. These optional reports use the project's
@@ -153,8 +156,7 @@ attaching them publicly. Microphone access is not requested for audio inventory;
 Bluetooth information and some other fields may be restricted by macOS.
 
 [Privacy information](https://www.snejda.cz/helios/privacy) ·
-[Diagnostics information](https://www.snejda.cz/helios/diagnostics) ·
-[Diagnostics design and constraints](docs/BETA_DIAGNOSTICS.md)
+[Diagnostics information](https://www.snejda.cz/helios/diagnostics)
 
 ## Bugs, questions & support
 
@@ -166,10 +168,8 @@ whether the problem is monitoring, first launch or helper connection. Never
 post credentials, serial numbers, unreviewed diagnostic reports or sensitive
 screenshots publicly.
 
-If GitHub shows a 404 or you do not have repository access, use email instead.
 For private questions or security-sensitive reports, contact
 [helios@snejda.cz](mailto:helios@snejda.cz) instead of posting public details.
-See the [tester checklist](docs/PRE_BETA_CHECKLIST.md) for useful checks.
 
 Helios is independently developed by Jakub Šnejda. If it helps you,
 [Buy Me a Coffee](https://buymeacoffee.com/snejda) supports continued development.
@@ -204,9 +204,6 @@ Changes must preserve the frozen backend boundary. The canonical check is:
 ```sh
 ./scripts/check-all.sh
 ```
-
-Historical host-specific performance measurements and their limits belong in
-[Release readiness](docs/RELEASE_READINESS.md), not universal performance claims.
 
 ## License & notices
 

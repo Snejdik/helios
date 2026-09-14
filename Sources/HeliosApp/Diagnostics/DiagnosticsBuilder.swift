@@ -5,6 +5,19 @@ struct DiagnosticsHelperObservation: Sendable, Equatable {
   var connectionState: DiagnosticsHelperConnectionState = .disconnected
   var protocolCompatibility: DiagnosticsProtocolCompatibility = .notChecked
   var failureCategory: DiagnosticsHelperFailureCategory?
+
+  var inferredFailureCategory: DiagnosticsHelperFailureCategory? {
+    if let failureCategory { return failureCategory }
+    switch connectionState {
+    case .signingRequired: return .signing
+    case .versionMismatch: return .protocol
+    case .failed: return .connection
+    default: break
+    }
+    if installationState == .requiresApproval { return .approval }
+    if installationState == .unavailable { return .registration }
+    return nil
+  }
 }
 
 private struct DiagnosticsProviderObservation {
@@ -20,6 +33,9 @@ final class DiagnosticsSessionTracker {
   private(set) var latestSnapshot = TelemetrySnapshot()
   private(set) var helper = DiagnosticsHelperObservation()
   private(set) var diagnosticsErrorCategory = DiagnosticsErrorCategory.none
+
+  var stability = DiagnosticsStability(
+    previousSessionEndedUncleanly: false, previousSessionDuration: nil, lifecycleCategory: .unknown)
 
   private var lastTicks: [DiagnosticsProviderName: UInt64] = [:]
   private var hasObservation: Set<DiagnosticsProviderName> = []
@@ -47,6 +63,13 @@ final class DiagnosticsSessionTracker {
     observe(.bluetooth, sample: snapshot.bluetooth)
     observe(.energyProcess, sample: snapshot.processes)
     observeNVMe(snapshot.storage)
+  }
+
+  var observedMacOSBuild: String {
+    guard case .success(let system) = latestSnapshot.system.result,
+      case .success(let build) = system.osBuild, DiagnosticsFieldRules.validOSBuild(build)
+    else { return "unknown" }
+    return build
   }
 
   func updateHelper(_ observation: DiagnosticsHelperObservation) { helper = observation }
@@ -99,9 +122,9 @@ final class DiagnosticsSessionTracker {
     guard changed, hasObservation.contains(name) else { return }
     switch sample.result {
     case .success(let value):
-      if let (_, count) = partial(value) { failureCounts[name, default: 0] += max(1, count) }
+      if let (_, count) = partial(value) { failureCounts[name] = min(21, failureCounts[name, default: 0] + min(21, max(1, count))) }
     case .failure(let error):
-      if isActualFailure(error) { failureCounts[name, default: 0] += 1 }
+      if isActualFailure(error) { failureCounts[name] = min(21, failureCounts[name, default: 0] + 1) }
     }
   }
 
@@ -114,7 +137,7 @@ final class DiagnosticsSessionTracker {
       if previous != nil, changed { hasObservation.insert(name) }
       if changed, hasObservation.contains(name), case .failure(let error) = sample.result,
         isActualFailure(error)
-      { failureCounts[name, default: 0] += 1 }
+      { failureCounts[name] = min(21, failureCounts[name, default: 0] + 1) }
       return
     }
     if previous == nil {
@@ -127,7 +150,7 @@ final class DiagnosticsSessionTracker {
     }
     if changed, hasObservation.contains(name), case .failure(let error) = storage.smartHealth,
       isActualFailure(error)
-    { failureCounts[name, default: 0] += 1 }
+    { failureCounts[name] = min(21, failureCounts[name, default: 0] + 1) }
   }
 
   private func buildCommon(generatedAt: Date, bundle: Bundle) -> DiagnosticsCommonFields {
@@ -188,6 +211,10 @@ final class DiagnosticsSessionTracker {
     let version = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
     let build = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String
     let total = failureCounts.values.reduce(0, +)
+    // Reuse only Helios's own existing sample. Never encode names, PIDs or paths.
+    let own = (try? TelemetryFormatting.fresh(
+      latestSnapshot.processes, maxAge: 15, now: generatedAt).get())?.heliosActivity
+    let ownIsValid = own?.pid == ProcessInfo.processInfo.processIdentifier
     return DiagnosticsCommonFields(
       helios: DiagnosticsHelios(
         version: DiagnosticsFieldRules.validVersion(version) ? version! : "0.0.0",
@@ -201,15 +228,15 @@ final class DiagnosticsSessionTracker {
       providers: providerValues,
       helper: DiagnosticsHelper(
         installationState: helper.installationState, connectionState: helper.connectionState,
-        protocolCompatibility: helper.protocolCompatibility, failureCategory: helper.failureCategory),
+        protocolCompatibility: helper.protocolCompatibility, failureCategory: helper.inferredFailureCategory),
       runtime: DiagnosticsRuntime(
-        memoryFootprintMiB: .unknown, cpuPercent: .unknown,
+        memoryFootprintMiB: DiagnosticsFieldRules.runtimeMemory(
+          bytes: ownIsValid ? own?.physicalFootprintBytes : nil),
+        cpuPercent: DiagnosticsFieldRules.runtimeCPU(ownIsValid ? own?.cpuPercent : nil),
         sessionDuration: DiagnosticsFieldRules.duration(generatedAt.timeIntervalSince(launchStartedAt)),
         providerFailureTotal: DiagnosticsFailureCount(count: total),
         diagnosticsErrorCategory: diagnosticsErrorCategory),
-      stability: DiagnosticsStability(
-        previousSessionEndedUncleanly: false, previousSessionDuration: nil,
-        lifecycleCategory: .unknown))
+      stability: stability)
   }
 
   private func summary<Value: Sendable>(
@@ -233,7 +260,8 @@ final class DiagnosticsSessionTracker {
     }
     return DiagnosticsProviderSummary(
       state: observation.state, failureCategory: observation.category,
-      failureCount: DiagnosticsFailureCount(count: failureCounts[name, default: 0]))
+      failureCount: observation.state == .notObserved ? .zero
+        : DiagnosticsFailureCount(count: failureCounts[name, default: 0]))
   }
 
   private func nvmeSummary(_ sample: MetricSample<StorageMetrics>) -> DiagnosticsProviderSummary {
@@ -252,7 +280,8 @@ final class DiagnosticsSessionTracker {
     }
     return DiagnosticsProviderSummary(
       state: observation.state, failureCategory: observation.category,
-      failureCount: DiagnosticsFailureCount(count: failureCounts[.nvmeSmart, default: 0]))
+      failureCount: observation.state == .notObserved ? .zero
+        : DiagnosticsFailureCount(count: failureCounts[.nvmeSmart, default: 0]))
   }
 
   private func providerObservation(_ error: TelemetryError) -> DiagnosticsProviderObservation {
@@ -362,6 +391,30 @@ enum DiagnosticsFieldRules {
     case ...64: .thirtyThreeToSixtyFour
     case ...128: .sixtyFiveToOneTwentyEight
     default: .overOneTwentyEight
+    }
+  }
+
+  static func runtimeMemory(bytes: UInt64?) -> DiagnosticsRuntimeMemoryBucket {
+    guard let bytes, bytes > 0 else { return .unknown }
+    let mib = Double(bytes) / 1_048_576
+    return switch mib {
+    case ...16: .upToSixteen
+    case ...32: .seventeenToThirtyTwo
+    case ...64: .thirtyThreeToSixtyFour
+    case ...128: .sixtyFiveToOneTwentyEight
+    case ...256: .oneTwentyNineToTwoFiftySix
+    default: .overTwoFiftySix
+    }
+  }
+
+  static func runtimeCPU(_ percent: Double?) -> DiagnosticsCPUPercentBucket {
+    guard let percent, percent.isFinite, percent >= 0 else { return .unknown }
+    return switch percent {
+    case ..<0.2: .underPointTwo
+    case ...1: .pointTwoToOne
+    case ...5: .oneToFive
+    case ...20: .fiveToTwenty
+    default: .overTwenty
     }
   }
 

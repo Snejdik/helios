@@ -108,8 +108,9 @@ final class HeliosWindowCoordinator: NSObject, NSWindowDelegate {
     let hosting = NSHostingController(rootView: content)
     let window = NSWindow(contentViewController: hosting)
     window.title = "Welcome to Helios"
-    window.styleMask = [.titled, .closable, .fullSizeContentView]
+    window.styleMask = [.titled, .closable, .resizable]
     window.titlebarAppearsTransparent = true
+    window.contentMinSize = NSSize(width: 600, height: 440)
     window.setContentSize(NSSize(width: 720, height: 560))
     window.isReleasedWhenClosed = false
     window.center()
@@ -4031,12 +4032,13 @@ private enum HeliosModuleSettingsTab: String, CaseIterable, Identifiable {
 }
 
 struct HeliosSettingsView: View {
+  @ObservedObject private var updateChecker = HeliosUpdatePresenter.shared.checker
   @ObservedObject var preferences: HeliosPreferences
   @ObservedObject var service: DaemonService
   @ObservedObject var diagnostics: DiagnosticsController
   @ObservedObject private var diagnosticsPreferences: DiagnosticsPreferences
   @StateObject private var manualApproval = DiagnosticsManualApproval()
-  @State private var selection: HeliosSettingsRoute? = .modules
+  @State private var selection: HeliosSettingsRoute? = .general
   @State private var moduleTab: HeliosModuleSettingsTab = .collection
   @State private var showingPrepareRemoval = false
   @State private var eraseLocalDataOnRemoval = false
@@ -4204,23 +4206,12 @@ struct HeliosSettingsView: View {
         .foregroundStyle(.secondary)
       }
       Section("Startup") {
-        Toggle(
-          "Launch Helios at login",
-          isOn: Binding(
-            get: { service.launchAtLoginEnabled },
-            set: { enabled in Task { await service.setLaunchAtLogin(enabled) } })
-        )
-        .disabled(service.launchAtLoginBusy)
-        Text(
-          "Uses macOS Service Management. This starts the Helios app after you sign in; it is separate from the optional privileged fan helper."
-        )
-        .foregroundStyle(.secondary)
-        if service.launchAtLoginRequiresApproval {
-          Button("Open Login Items Settings") { service.openApprovalSettings() }
-        }
-        if let message = service.launchAtLoginMessage {
-          Text(message).foregroundStyle(.secondary)
-        }
+        HeliosLaunchAtLoginView(
+          enabled: service.launchAtLoginEnabled,
+          requiresApproval: service.launchAtLoginRequiresApproval,
+          busy: service.launchAtLoginBusy, message: service.launchAtLoginMessage,
+          setEnabled: { enabled in Task { await service.setLaunchAtLogin(enabled) } },
+          openSettings: { service.openApprovalSettings() })
       }
       Section("Interface behavior") {
         Toggle(
@@ -5006,12 +4997,16 @@ struct HeliosSettingsView: View {
         LabeledContent(
           "Background network",
           value: diagnosticsPreferences.automaticEnabled
-            ? "Optional beta diagnostics enabled" : "No automatic diagnostics")
+            ? "Update checks + optional beta diagnostics" : "Update checks only")
         LabeledContent("Battery", value: "Read-only telemetry")
         Text(
-          "Helios does not send page views, clicks, feature-use events, identities, raw monitoring samples, or fan-control data. External links open only when you click them."
+          "Automatic reports contain no page views, clicks, feature-use events, identities, raw monitoring samples, or fan commands. Raw hardware evidence is included only in a compatibility report you explicitly generate, preview, and send."
         )
         .foregroundStyle(.secondary)
+      }
+      Section("Update checks") {
+        Text("After Welcome Setup is complete, Helios may contact GitHub for release information on launch, at most roughly once per day. The request contains no Helios telemetry and no Helios device identifier. Beta diagnostics are a separate opt-in system.")
+          .foregroundStyle(.secondary)
       }
       Section("Privacy-preserving beta diagnostics") {
         Toggle(
@@ -5022,6 +5017,18 @@ struct HeliosSettingsView: View {
         LabeledContent(
           "Last successful report", value: diagnosticsLastSuccessfulReport)
         LabeledContent("Last report status", value: diagnosticsPreferences.lastReportStatus.label)
+        if diagnosticsPreferences.automaticEnabled {
+          LabeledContent("Next automatic opportunity", value:
+            diagnosticsPreferences.nextEligibleTime?.formatted(date: .abbreviated, time: .shortened)
+              ?? "Waiting for scheduling")
+          if diagnosticsPreferences.pendingRetryCount > 0 {
+            Text("Retry \(diagnosticsPreferences.pendingRetryCount) of 2 is scheduled.")
+              .foregroundStyle(.secondary)
+          }
+          Text("The first report is eligible after five minutes of this launch. Later reports are roughly daily; an app or macOS build change may allow an earlier report, at least one hour after the last success. Failed chains wait 24 hours before starting again.")
+            .font(.system(size: 10)).foregroundStyle(.secondary)
+        }
+        if diagnostics.sending { Text("Sending a report…").foregroundStyle(.secondary) }
         if diagnosticsPreferences.lastReportStatus == .failed {
           Text("Last failure category: \(diagnosticsPreferences.lastStatusCategory.rawValue)")
             .font(.system(size: 10)).foregroundStyle(.secondary)
@@ -5292,6 +5299,10 @@ struct HeliosSettingsView: View {
       Text("Native macOS system monitoring and fan control").foregroundStyle(.secondary)
       Text("Created by Jakub Šnejda").font(.system(size: 13, weight: .medium))
       Text(versionText).font(.system(size: 11)).foregroundStyle(.tertiary)
+      Button(updateChecker.isChecking ? "Checking for Updates…" : "Check for Updates…") {
+        HeliosUpdatePresenter.shared.check(manual: true)
+      }
+      .disabled(updateChecker.isChecking)
 
       HStack {
         Button("snejda.cz") { open("https://www.snejda.cz") }
@@ -5324,14 +5335,10 @@ struct HeliosSettingsView: View {
   }
 
   private var versionText: String {
-    let short = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-    let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
-    switch (short, build) {
-    case (let version?, let build?) where version != build: return "Version \(version) (\(build))"
-    case (let version?, _): return "Version \(version)"
-    case (_, let build?): return "Build \(build)"
-    default: return "Development build"
-    }
+    HeliosReleaseVersion.aboutText(
+      tag: Bundle.main.object(forInfoDictionaryKey: "HeliosReleaseTag") as? String,
+      version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+      build: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String)
   }
 
   private func open(_ value: String) {
@@ -5444,50 +5451,120 @@ private struct HeliosMenuBarPreview: View {
   }
 }
 
-struct HeliosOnboardingView: View {
-  private enum Page {
-    case interface
-    case diagnostics
+struct HeliosLaunchAtLoginView: View {
+  let enabled: Bool
+  let requiresApproval: Bool
+  let busy: Bool
+  let message: String?
+  let setEnabled: (Bool) -> Void
+  let openSettings: () -> Void
+
+  var body: some View {
+    Toggle("Launch Helios at Login", isOn: Binding(get: { enabled }, set: { setEnabled($0) }))
+      .disabled(busy || requiresApproval)
+    Text(busy ? "Updating login setting…" : requiresApproval
+      ? "Waiting for approval in System Settings. Helios is not enabled at login yet."
+      : enabled ? "Helios will open when you sign in." : "Helios will not open automatically at login.")
+      .foregroundStyle(.secondary)
+    Text("Starts the Helios app after macOS login. This is separate from the optional privileged fan helper.")
+      .font(.system(size: 10)).foregroundStyle(.secondary)
+    if requiresApproval {
+      Button("Open Login Items Settings", action: openSettings)
+      Button("Cancel Login Registration") { setEnabled(false) }.disabled(busy)
+    }
+    if let message { Text(message).foregroundStyle(.secondary) }
   }
+}
+
+/// Capture the route for this presentation: saving a choice must not change its Back path.
+@MainActor
+struct HeliosOnboardingFlow {
+  enum Page: String, CaseIterable { case interface, diagnostics, support }
+  private(set) var page: Page
+  let asksForDiagnostics: Bool
+
+  init(consent: DiagnosticsConsentState, initialPage: Page = .interface) {
+    asksForDiagnostics = consent == .notDecided
+    page = initialPage
+  }
+
+  mutating func back() {
+    page = page == .support && asksForDiagnostics ? .diagnostics : .interface
+  }
+
+  mutating func advance(diagnostics: DiagnosticsController, shareDiagnostics: Bool) -> Bool {
+    switch page {
+    case .interface:
+      page = asksForDiagnostics ? .diagnostics : .support
+    case .diagnostics:
+      diagnostics.setAutomaticEnabled(shareDiagnostics)
+      page = .support
+    case .support:
+      return true
+    }
+    return false
+  }
+}
+
+struct HeliosOnboardingView: View {
+  typealias Page = HeliosOnboardingFlow.Page
 
   @ObservedObject var preferences: HeliosPreferences
   @ObservedObject var diagnostics: DiagnosticsController
   let onFinish: () -> Void
   @State private var selection: HeliosDashboardMode = .advanced
-  @State private var page: Page = .interface
+  @State private var flow: HeliosOnboardingFlow
   @State private var shareDiagnostics = false
   @State private var previewPayload: FrozenDiagnosticsPayload?
   @State private var showingPreview = false
   @State private var previewError: String?
 
+  init(
+    preferences: HeliosPreferences, diagnostics: DiagnosticsController,
+    initialPage: Page = .interface, onFinish: @escaping () -> Void
+  ) {
+    self.preferences = preferences
+    self.diagnostics = diagnostics
+    self.onFinish = onFinish
+    _flow = State(initialValue: HeliosOnboardingFlow(
+      consent: diagnostics.preferences.consent, initialPage: initialPage))
+  }
+
   var body: some View {
     VStack(spacing: 0) {
-      if page == .interface {
-        interfacePage
-      } else {
-        diagnosticsPage
+      ScrollView {
+        Group {
+          switch flow.page {
+          case .interface: interfacePage
+          case .diagnostics: diagnosticsPage
+          case .support: supportPage
+          }
+        }
+        .frame(maxWidth: .infinity)
       }
-
-      Spacer()
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
 
       Divider()
       HStack {
-        if page == .interface {
+        if flow.page == .interface {
           Text("You can customize the menu bar and dashboard independently at any time.")
             .font(.system(size: 10)).foregroundStyle(.secondary)
         } else {
-          Button("Back") { page = .interface }
-          Text("Diagnostics can be changed later in Privacy & Diagnostics.")
+          Button("Back") { flow.back() }
+          Text(flow.page == .diagnostics
+            ? "Diagnostics can be changed later in Privacy & Diagnostics."
+            : "Support is completely optional.")
             .font(.system(size: 10)).foregroundStyle(.secondary)
         }
         Spacer()
-        Button("Continue", action: continueAction)
+        Button(flow.page == .support ? "Finish Setup" : "Continue", action: continueAction)
           .keyboardShortcut(.defaultAction)
       }
       .padding(18)
     }
-    .frame(width: 720, height: 560)
+    .frame(minWidth: 600, idealWidth: 720, minHeight: 440, idealHeight: 560)
     .background(.regularMaterial)
+    .onAppear { shareDiagnostics = diagnostics.preferences.automaticEnabled }
     .sheet(isPresented: $showingPreview) {
       if let previewPayload {
         DiagnosticsPayloadView(
@@ -5522,7 +5599,6 @@ struct HeliosOnboardingView: View {
       }
       .padding(.horizontal, 24)
 
-      Spacer()
       HStack(alignment: .center) {
         Label("Battery stays macOS-managed", systemImage: "battery.100percent")
         Text("·").foregroundStyle(.tertiary)
@@ -5530,13 +5606,12 @@ struct HeliosOnboardingView: View {
       }
       .font(.system(size: 10))
       .foregroundStyle(.secondary)
-      .padding(.bottom, 16)
+      .padding(.vertical, 16)
     }
   }
 
   private var diagnosticsPage: some View {
     VStack(spacing: 22) {
-      Spacer()
       HeliosApplicationIcon(size: 54)
       Text("Help improve Helios Beta").font(.system(size: 26, weight: .semibold))
       Text(
@@ -5563,19 +5638,34 @@ struct HeliosOnboardingView: View {
 
       Text("The checkbox is off by default. Your choice does not affect any Helios feature.")
         .font(.system(size: 10)).foregroundStyle(.secondary)
-      Spacer()
     }
-    .padding(.horizontal, 24)
+    .padding(24)
+  }
+
+  private var supportPage: some View {
+    VStack(spacing: 22) {
+      HeliosApplicationIcon(size: 54)
+      Text("Support Helios").font(.system(size: 26, weight: .semibold))
+      Text("I develop Helios independently alongside my university studies. Your support helps fund development time, testing hardware, and continued improvements to the app.")
+        .font(.system(size: 13))
+        .foregroundStyle(.secondary)
+        .multilineTextAlignment(.center)
+        .frame(maxWidth: 520)
+      Button("Support Helios") {
+        guard let url = URL(string: "https://buymeacoffee.com/snejda") else { return }
+        NSWorkspace.shared.open(url)
+      }
+      .buttonStyle(.borderedProminent)
+      Text("Completely optional. Helios remains fully usable without supporting.")
+        .font(.system(size: 10))
+        .foregroundStyle(.secondary)
+        .multilineTextAlignment(.center)
+    }
+    .padding(28)
   }
 
   private func continueAction() {
-    if page == .interface, diagnostics.preferences.consent == .notDecided {
-      page = .diagnostics
-      return
-    }
-    if page == .diagnostics {
-      diagnostics.setAutomaticEnabled(shareDiagnostics)
-    }
+    guard flow.advance(diagnostics: diagnostics, shareDiagnostics: shareDiagnostics) else { return }
     preferences.completeOnboarding(with: selection)
     onFinish()
   }
@@ -5617,7 +5707,6 @@ struct HeliosOnboardingView: View {
           .font(.system(size: 10))
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
-        Spacer(minLength: 0)
         Text(onboardingModules(mode))
           .font(.system(size: 9, weight: .medium))
           .foregroundStyle(.secondary)

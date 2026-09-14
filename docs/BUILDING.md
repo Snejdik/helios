@@ -137,7 +137,7 @@ PASS full Helios regression gate and Xcode build
 Keep the complete output and exit status. The boundary check compares protected
 files against frozen hashes; do not regenerate those hashes to accept a change.
 A regression pass does not prove notarization, clean-machine installation or
-physical fan recovery. See [Pre-beta checklist](PRE_BETA_CHECKLIST.md).
+physical fan recovery.
 
 The suite includes read-only/simulated checks around telemetry, persistence, presentation, XPC authentication, fan ownership/lifecycle and safety invariants. Generic regression runs must not be used as an excuse to broaden or physically exercise fan writes on unvalidated hardware.
 

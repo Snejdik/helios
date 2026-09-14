@@ -36,9 +36,10 @@ Helios is now in **release engineering / external-beta preparation**. The monito
 - [ ] Notarization
 - [ ] Stapling
 - [ ] Clean-machine helper install/approval test
-- [ ] DMG or equivalent packaging
+- [x] DMG/ZIP packaging for public pre-beta testing
 - [ ] Release automation
-- [ ] Update strategy
+- [x] Pre-beta update strategy: GitHub Releases checker with manual download
+- [ ] Secure automatic update installation after Developer ID signing and notarization
 
 ## ROADMAP / PLANNED — not implemented
 

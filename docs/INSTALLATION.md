@@ -1,8 +1,9 @@
 # Install Helios — guide for first-time testers
 
-You do not need Terminal or Xcode to install an app supplied by the maintainer.
-These instructions describe the existing test-app flow, not an already published
-installer. A public packaged, notarized binary is still pending.
+You do not need Terminal or Xcode to install a Helios test build.
+Helios 0.1.0 Pre-beta 1 is publicly available from GitHub Releases as a DMG
+and ZIP test build. It is Apple Development signed and not notarized; a
+Developer ID signed, notarized public-beta distribution is still pending.
 
 ## 1. Check your Mac
 
@@ -13,16 +14,17 @@ version or Mac model has been tested. Most testing is on the base M4 MacBook Pro
 
 ## 2. Download the app
 
-Use the test-build link supplied directly by the Helios maintainer. If you have
-no link, ask [helios@snejda.cz](mailto:helios@snejda.cz). Do not look for a guessed
-DMG filename. GitHub's **Code → Download ZIP** contains developer source files,
-not an app you can double-click.
+Use the current test build from [GitHub Releases](https://github.com/Snejdik/helios/releases).
+The recommended package is the DMG release asset. GitHub's **Code → Download ZIP**
+contains developer source files, not an app you can double-click. If a release
+asset or checksum looks inconsistent, stop and contact
+[helios@snejda.cz](mailto:helios@snejda.cz).
 
 ## 3. Copy the supplied app to Applications
 
 If another Helios is already installed, follow [Reinstall or replace a test
 build](#reinstall-or-replace-a-test-build) first. Choose the flow matching the
-file you received; a DMG is not yet promised as a current download.
+release asset you downloaded.
 
 ### If your test build is supplied as a ZIP
 

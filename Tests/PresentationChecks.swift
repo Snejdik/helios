@@ -566,20 +566,93 @@ private struct PresentationChecks {
     let onboardingDiagnosticsPreferences = DiagnosticsPreferences(defaults: onboardingDefaults)
     let onboardingDiagnostics = DiagnosticsController(preferences: onboardingDiagnosticsPreferences)
     defer { onboardingDefaults.removePersistentDomain(forName: onboardingPreferencesSuite) }
-    let onboarding = HeliosOnboardingView(
-      preferences: onboardingPreferences, diagnostics: onboardingDiagnostics, onFinish: {})
-      .environment(\.colorScheme, .dark)
-    guard let onboardingImage = nativeImage(onboarding, width: 720),
-      let onboardingPNG = NSBitmapImageRep(cgImage: onboardingImage).representation(
-        using: .png, properties: [:])
-    else {
-      throw PresentationCheckFailure(message: "Next23 onboarding render failed")
+    for consent in DiagnosticsConsentState.allCases {
+      let suite = "Helios.OnboardingFlow.\(UUID().uuidString)"
+      let defaults = UserDefaults(suiteName: suite)!
+      defer { defaults.removePersistentDomain(forName: suite) }
+      let consentPreferences = DiagnosticsPreferences(defaults: defaults)
+      if consent != .notDecided { consentPreferences.setConsent(consent) }
+      let controller = DiagnosticsController(preferences: consentPreferences)
+      defer { controller.shutdown() }
+      let revision = consentPreferences.consentRevision
+      if consent == .enabled { consentPreferences.recordScheduledCheck(at: Date(timeIntervalSince1970: 2_000_000_000)) }
+      let originalSchedule = consentPreferences.nextEligibleTime
+      var flow = HeliosOnboardingFlow(consent: consent)
+      try require(!flow.advance(diagnostics: controller, shareDiagnostics: false), "Interface prematurely finished")
+      if consent == .notDecided {
+        try require(flow.page == .diagnostics, "New user skipped diagnostics")
+        flow.back()
+        try require(flow.page == .interface, "Diagnostics Back did not return to Interface")
+        _ = flow.advance(diagnostics: controller, shareDiagnostics: false)
+        try require(!flow.advance(diagnostics: controller, shareDiagnostics: false), "Diagnostics skipped Support")
+        try require(consentPreferences.consent == .disabled, "New user default did not remain OFF")
+        try require(consentPreferences.consentRevision == revision + 1, "New choice not recorded once")
+        flow.back()
+        try require(flow.page == .diagnostics, "New-user Support Back lost Diagnostics after saving choice")
+        _ = flow.advance(diagnostics: controller, shareDiagnostics: false)
+        try require(consentPreferences.consentRevision == revision + 1, "Unchanged choice incremented revision")
+      } else {
+        try require(flow.page == .support, "Replay re-prompted diagnostics")
+        flow.back()
+        try require(flow.page == .interface, "Replay Support Back re-prompted diagnostics")
+        _ = flow.advance(diagnostics: controller, shareDiagnostics: false)
+        try require(consentPreferences.consent == consent, "Replay overwrote consent")
+        try require(consentPreferences.consentRevision == revision, "Replay changed consent revision")
+        try require(consentPreferences.nextEligibleTime == originalSchedule, "Replay changed diagnostics scheduling")
+      }
+      try require(flow.page == .support, "Support page missing")
+      try require(flow.advance(diagnostics: controller, shareDiagnostics: false), "Finish required donation")
     }
-    try require(
-      onboardingImage.width == 1440 && onboardingImage.height == 1120,
-      "Next23 onboarding outer geometry changed")
-    try onboardingPNG.write(to: directory.appendingPathComponent("next23-onboarding-dark.png"))
-    print("PASS Next23 first-run onboarding renders as a fixed 720x560 native setup window")
+    print("PASS undecided/OFF/ON onboarding transitions, Back paths, unchanged consent and donation-free Finish")
+
+    for (name, enabled, approval, busy, message) in [
+      ("off", false, false, false, Optional<String>.none),
+      ("on", true, false, false, nil),
+      ("approval", false, true, false, nil),
+      ("busy", false, false, true, nil),
+      ("failure", false, false, false, "Startup setting could not be changed. Please try again.")]
+    {
+      let startup = Form {
+        Section("Startup") {
+          HeliosLaunchAtLoginView(enabled: enabled, requiresApproval: approval,
+            busy: busy, message: message, setEnabled: { _ in }, openSettings: {})
+        }
+      }
+      .formStyle(.grouped)
+      .frame(width: 600, height: 300)
+      guard let rendered = nativeImage(startup, width: 600),
+        let png = NSBitmapImageRep(cgImage: rendered).representation(using: .png, properties: [:])
+      else { throw PresentationCheckFailure(message: "Launch at Login \(name) render failed") }
+      try require(rendered.width == 1200 && rendered.height == 600, "Startup state escaped bounds")
+      try png.write(to: directory.appendingPathComponent("launch-at-login-\(name).png"))
+    }
+    print("PASS Launch at Login OFF/ON/approval/busy/failure presentation fixtures")
+
+    for page in HeliosOnboardingView.Page.allCases {
+      for size in [CGSize(width: 600, height: 440), CGSize(width: 720, height: 560),
+        CGSize(width: 900, height: 680)]
+      {
+        for dark in [false, true] {
+          let onboarding = HeliosOnboardingView(
+            preferences: onboardingPreferences, diagnostics: onboardingDiagnostics,
+            initialPage: page, onFinish: {})
+            .frame(width: size.width, height: size.height)
+            .environment(\.colorScheme, dark ? .dark : .light)
+          guard let rendered = nativeImage(onboarding, width: size.width),
+            let png = NSBitmapImageRep(cgImage: rendered).representation(using: .png, properties: [:])
+          else { throw PresentationCheckFailure(message: "Onboarding \(page) render failed") }
+          try require(rendered.width == Int(size.width * 2) && rendered.height == Int(size.height * 2),
+            "Onboarding \(page) escaped its window bounds")
+          try png.write(to: directory.appendingPathComponent(
+            "onboarding-\(page.rawValue)-\(Int(size.width))-\(dark ? "dark" : "light").png"))
+        }
+      }
+    }
+    try require(!onboardingDiagnosticsPreferences.automaticEnabled,
+      "Rendering onboarding must not enable diagnostics")
+    try require(!onboardingPreferences.onboardingCompleted,
+      "Rendering support must not complete onboarding")
+    print("PASS three onboarding pages at small/default/large sizes in light/dark; diagnostics remain off")
 
     for metric in [HeliosMenuBarMetric.cpu, .memory, .temperature, .battery] {
       let popup = HeliosMetricPopoverView(

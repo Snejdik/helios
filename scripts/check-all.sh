@@ -12,6 +12,7 @@ cd "$(dirname "$0")/.."
 ./scripts/check-detailed-ui-coverage.sh
 ./scripts/check-ui8-portable.sh
 ./scripts/check-diagnostics.sh
+./scripts/check-updates.sh
 
 # Fail fast on Next23 UI warnings/type errors and native render regressions.
 ./scripts/check-presentation.sh

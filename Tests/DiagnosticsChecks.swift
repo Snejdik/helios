@@ -306,10 +306,10 @@ private func transportChecks() async throws {
   let preferences = DiagnosticsPreferences(defaults: defaults)
   let mock = MockDiagnosticsTransport()
   var factoryCount = 0
-  let controller = DiagnosticsController(preferences: preferences) {
+  let controller = DiagnosticsController(preferences: preferences, transportFactory: {
     factoryCount += 1
     return mock
-  }
+  })
   controller.start()
   await Task.yield()
   try require(factoryCount == 0, "transport was created before automatic consent")
@@ -683,10 +683,230 @@ private func compatibilityChecks() async throws {
   try require(!preferences.automaticEnabled, "compatibility preview enabled automatic diagnostics")
 }
 
+// Foundation owns URLProtocol's synchronization; this fixture adds no mutable shared state.
+private class DiagnosticsHTTPFixture: URLProtocol, @unchecked Sendable {
+  override class func canInit(with request: URLRequest) -> Bool { true }
+  override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+  var status: Int { 200 }
+  override func startLoading() {
+    var body = request.httpBody
+    if body == nil, let stream = request.httpBodyStream {
+      stream.open()
+      defer { stream.close() }
+      var bytes = Data()
+      var buffer = [UInt8](repeating: 0, count: 4096)
+      while true {
+        let count = stream.read(&buffer, maxLength: buffer.count)
+        if count <= 0 { break }
+        bytes.append(contentsOf: buffer.prefix(count))
+      }
+      body = bytes
+    }
+    let expected = try? DiagnosticsPayloadEncoder.freeze(
+      health(type: .manualHealth, reason: .userInitiated), reportType: .manualHealth)
+    guard body == expected?.data,
+      request.value(forHTTPHeaderField: "X-Private-Fixture") == nil,
+      request.value(forHTTPHeaderField: "Authorization") == nil,
+      request.value(forHTTPHeaderField: "Cookie") == nil
+    else {
+      client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+      return
+    }
+    let response = HTTPURLResponse(url: request.url!, statusCode: status,
+      httpVersion: "HTTP/1.1", headerFields: ["Retry-After": "600"])!
+    client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+    client?.urlProtocol(self, didLoad: Data(#"{"status":"accepted"}"#.utf8))
+    client?.urlProtocolDidFinishLoading(self)
+  }
+  override func stopLoading() {}
+}
+private final class DiagnosticsRejectedFixture: DiagnosticsHTTPFixture, @unchecked Sendable {
+  override var status: Int { 400 }
+}
+private final class DiagnosticsRetryFixture: DiagnosticsHTTPFixture, @unchecked Sendable {
+  override var status: Int { 429 }
+}
+
+@MainActor
+private func urlSessionChecks() async throws {
+  let payload = try DiagnosticsPayloadEncoder.freeze(
+    health(type: .manualHealth, reason: .userInitiated), reportType: .manualHealth)
+  for (fixture, expected) in [
+    (DiagnosticsHTTPFixture.self, DiagnosticsTransportResult.accepted),
+    (DiagnosticsRejectedFixture.self, .rejected),
+    (DiagnosticsRetryFixture.self, .retryable(retryAfter: 600))]
+  {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [fixture]
+    configuration.httpAdditionalHeaders = ["X-Private-Fixture": "must be removed"]
+    let transport = DiagnosticsURLSessionTransport(configuration: configuration)
+    let result = await transport.send(payload)
+    try require(result == expected, "URLSession bytes/headers/status mapping: \(expected)")
+  }
+  let session = URLSession(configuration: .ephemeral)
+  defer { session.invalidateAndCancel() }
+  let task = session.dataTask(with: DiagnosticsURLSessionTransport.endpoint)
+  var redirected: URLRequest? = URLRequest(url: URL(string: "https://example.invalid")!)
+  DiagnosticsRedirectDelegate().urlSession(session, task: task,
+    willPerformHTTPRedirection: HTTPURLResponse(url: DiagnosticsURLSessionTransport.endpoint,
+      statusCode: 302, httpVersion: nil, headerFields: nil)!, newRequest: redirected!) {
+      redirected = $0
+    }
+  try require(redirected == nil, "redirect could forward diagnostics")
+}
+
+@MainActor
+private func runtimeAndLifecycleChecks() throws {
+  let now = Date(timeIntervalSince1970: 50_000)
+  let tracker = DiagnosticsSessionTracker(launchStartedAt: now.addingTimeInterval(-600))
+  let own = ProcessActivity(pid: ProcessInfo.processInfo.processIdentifier,
+    name: "FORBIDDEN_PROCESS_NAME", executablePath: "/Users/FORBIDDEN/path",
+    physicalFootprintBytes: 80 * 1_048_576, neuralFootprintBytes: 0, cpuPercent: 2,
+    powerWatts: nil, performanceCorePowerWatts: nil, diskReadBytesPerSecond: nil,
+    diskWriteBytesPerSecond: nil, wakeupsPerSecond: nil, instructionsPerSecond: nil,
+    cyclesPerSecond: nil, instructionsPerCycle: nil)
+  var snapshot = TelemetrySnapshot()
+  snapshot.processes = MetricSample(.success(ProcessMetrics(accessibleProcessCount: 1,
+    topByCPU: [], topByEnergy: [], topByMemory: [], heliosActivity: own)),
+    capturedAt: now, capturedTicks: 1)
+  tracker.accept(snapshot)
+  tracker.updateHelper(DiagnosticsHelperObservation(connectionState: .signingRequired))
+  let report = try tracker.buildHealth(type: .automaticHealth, reason: .daily, generatedAt: now)
+  try require(report.runtime.memoryFootprintMiB == .sixtyFiveToOneTwentyEight, "self memory bucket")
+  try require(report.runtime.cpuPercent == .oneToFive, "self CPU bucket")
+  try require(report.helper.failureCategory == .signing, "helper signing category")
+  let frozen = try DiagnosticsPayloadEncoder.freeze(report, reportType: .automaticHealth)
+  try require(!frozen.preview.contains("FORBIDDEN"), "self process identity leaked")
+  let stale = try tracker.buildHealth(type: .automaticHealth, reason: .daily, generatedAt: now.addingTimeInterval(16))
+  try require(stale.runtime.cpuPercent == .unknown && stale.runtime.memoryFootprintMiB == .unknown, "stale runtime was uploaded")
+  try require(DiagnosticsFieldRules.runtimeCPU(.nan) == .unknown, "NaN CPU")
+  try require(DiagnosticsFieldRules.runtimeCPU(-1) == .unknown, "negative CPU")
+  try require(DiagnosticsFieldRules.runtimeCPU(0.2) == .pointTwoToOne, "CPU 0.2 boundary")
+  try require(DiagnosticsFieldRules.runtimeCPU(1) == .pointTwoToOne, "CPU 1 boundary")
+  try require(DiagnosticsFieldRules.runtimeCPU(20.1) == .overTwenty, "multicore CPU")
+  try require(DiagnosticsFieldRules.runtimeMemory(bytes: 0) == .unknown, "missing memory")
+  try require(DiagnosticsFieldRules.runtimeMemory(bytes: 16 * 1_048_576) == .upToSixteen, "memory boundary")
+  snapshot.cpu = MetricSample(.failure(.invalidData("private")), capturedTicks: 2)
+  tracker.accept(snapshot)
+  snapshot.cpu = MetricSample(.failure(.warmingUp), capturedTicks: 3)
+  tracker.accept(snapshot)
+  _ = try DiagnosticsPayloadEncoder.freeze(
+    tracker.buildHealth(type: .automaticHealth, reason: .daily), reportType: .automaticHealth)
+
+  let suite = "Helios.LifecycleChecks.\(UUID().uuidString)"
+  let defaults = UserDefaults(suiteName: suite)!
+  defer { defaults.removePersistentDomain(forName: suite) }
+  let identity = DiagnosticsHelios(version: "0.1.0", build: "1")
+  let first = DiagnosticsLifecycleStore(defaults: defaults)
+  try require(defaults.data(forKey: DiagnosticsLifecycleStore.key) == nil, "constructing marker wrote before consent")
+  first.begin(helios: identity, macOSBuild: "25G83")
+  try require(first.summary.lifecycleCategory == .firstLaunch, "first tracked launch")
+  first.update(duration: .oneToSixHours, macOSBuild: "25G83")
+  let unclean = DiagnosticsLifecycleStore(defaults: defaults)
+  unclean.begin(helios: identity, macOSBuild: "25G83")
+  try require(unclean.summary.previousSessionEndedUncleanly, "unclean marker lost")
+  try require(unclean.summary.previousSessionDuration == .oneToSixHours, "coarse previous duration")
+  try require(unclean.summary.lifecycleCategory == .afterUncleanExit, "unclean category")
+  unclean.end()
+  let normal = DiagnosticsLifecycleStore(defaults: defaults)
+  normal.begin(helios: identity, macOSBuild: "25G83")
+  try require(!normal.summary.previousSessionEndedUncleanly, "clean exit marked unclean")
+  try require(normal.summary.lifecycleCategory == .normalLaunch, "normal lifecycle")
+  normal.end()
+  let update = DiagnosticsLifecycleStore(defaults: defaults)
+  update.begin(helios: DiagnosticsHelios(version: "0.1.0", build: "2"), macOSBuild: "25G83")
+  try require(update.summary.lifecycleCategory == .afterUpdate, "app build lifecycle")
+  update.clear()
+  try require(defaults.data(forKey: DiagnosticsLifecycleStore.key) == nil, "opt-out retained marker")
+  try require(update.summary.lifecycleCategory == .unknown, "opt-out retained lifecycle summary")
+  let preferences = DiagnosticsPreferences(defaults: defaults)
+  preferences.setConsent(.enabled)
+  let controller = DiagnosticsController(preferences: preferences)
+  controller.start()
+  try require(controller.session.stability.lifecycleCategory == .firstLaunch, "opt-in marker not started")
+  preferences.eraseAllDiagnosticsPreferences()
+  try require(controller.session.stability.lifecycleCategory == .unknown, "erase-all retained in-memory stability")
+  try require(defaults.data(forKey: DiagnosticsLifecycleStore.key) == nil, "erase-all retained local marker")
+  controller.shutdown()
+}
+
+private func exactScheduleChecks() throws {
+  let launch = Date(timeIntervalSince1970: 100_000)
+  func decision(success: Date? = nil, chain: Date? = nil, next: Date? = nil,
+    version: String = "0.1.0", build: String = "1", os: String = "25G83") -> DiagnosticsScheduleDecision {
+    DiagnosticsSchedulePolicy.decision(DiagnosticsScheduleInput(now: launch,
+      launchStartedAt: launch, lastSuccessfulSend: success, lastChainStartedAt: chain,
+      persistedNextEligible: next, lastVersion: "0.1.0", lastBuild: "1", lastMacOSBuild: "25G83",
+      currentVersion: version, currentBuild: build, currentMacOSBuild: os))
+  }
+  try require(decision().eligibleAt == launch.addingTimeInterval(300), "initial five-minute eligibility")
+  try require(decision(success: launch).eligibleAt == launch.addingTimeInterval(86400), "daily cadence")
+  let daily = launch.addingTimeInterval(86400)
+  try require(decision(success: launch, next: daily, build: "2").eligibleAt == launch.addingTimeInterval(3600), "persisted daily deadline hid app update")
+  try require(decision(success: launch, next: daily, os: "26A1").eligibleAt == launch.addingTimeInterval(3600), "macOS update floor")
+  try require(decision(success: launch, os: "unknown").reason == .daily, "unknown OS invented an update")
+  try require(decision(success: launch, chain: launch.addingTimeInterval(30), build: "2").eligibleAt == launch.addingTimeInterval(86430), "failed-chain floor")
+  try require(DiagnosticsSchedulePolicy.retryDelay(index: 0, jitter: 0, retryAfter: nil) == 720, "first retry lower jitter")
+  try require(DiagnosticsSchedulePolicy.retryDelay(index: 1, jitter: 2, retryAfter: nil) == 8640, "second retry upper jitter")
+  try require(DiagnosticsSchedulePolicy.retryDelay(index: 0, jitter: 1, retryAfter: 999999) == 21600, "Retry-After maximum")
+}
+
+@MainActor
+private final class SuspendedDiagnosticsTransport: DiagnosticsTransporting {
+  var received = 0
+  var cancellations = 0
+  var continuation: CheckedContinuation<DiagnosticsTransportResult, Never>?
+  func send(_ payload: FrozenDiagnosticsPayload) async -> DiagnosticsTransportResult {
+    received += 1
+    return await withCheckedContinuation { continuation = $0 }
+  }
+  func cancel() { cancellations += 1 }
+  func finish(_ result: DiagnosticsTransportResult) {
+    continuation?.resume(returning: result)
+    continuation = nil
+  }
+}
+
+@MainActor
+private func cancellationChecks() async throws {
+  for shutdown in [false, true] {
+    let suite = "Helios.ConsentRace.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let preferences = DiagnosticsPreferences(defaults: defaults)
+    preferences.setConsent(.enabled)
+    let transport = SuspendedDiagnosticsTransport()
+    let now = Date()
+    let controller = DiagnosticsController(preferences: preferences,
+      session: DiagnosticsSessionTracker(launchStartedAt: now.addingTimeInterval(-301)),
+      now: { now }, transportFactory: { transport })
+    controller.start()
+    for _ in 0..<1000 where transport.received == 0 { await Task.yield() }
+    try require(transport.received == 1, "automatic request never reached suspension")
+    if shutdown { controller.shutdown() } else { controller.setAutomaticEnabled(false) }
+    transport.finish(.accepted) // Simulate a late reply despite cancellation.
+    for _ in 0..<1000 where controller.sending { await Task.yield() }
+    try require(!controller.sending, "cancelled request never settled")
+    try require(preferences.lastSuccessfulAutomaticSend == nil, "late reply changed automatic history")
+    if !shutdown {
+      try require(preferences.nextEligibleTime == nil, "opt-out was rescheduled by late reply")
+      try require(defaults.data(forKey: DiagnosticsLifecycleStore.key) == nil, "opt-out kept marker")
+    }
+    try require(transport.cancellations == 1, "active automatic transport not cancelled exactly once")
+    controller.shutdown()
+  }
+}
+
 @main
 @MainActor
 struct DiagnosticsChecks {
   static func main() async throws {
+    try await urlSessionChecks()
+    print("PASS real URLSession interception: exact preview bytes, no extra headers, status mapping, redirects refused")
+    try runtimeAndLifecycleChecks()
+    try exactScheduleChecks()
+    try await cancellationChecks()
+    print("PASS runtime buckets, lifecycle markers, exact schedule and late-reply cancellation")
     try schemaChecks()
     print("PASS diagnostics v1 closed DTOs, model grammar, omission, enums and strict validation")
     try preferencesChecks()

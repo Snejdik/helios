@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		000000000000000000000D21 /* DiagnosticsLifecycleStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000D20 /* DiagnosticsLifecycleStore.swift */; };
+		000000000000000000000D11 /* HeliosUpdatePresenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000D10 /* HeliosUpdatePresenter.swift */; };
+		000000000000000000000D01 /* HeliosUpdateChecker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000D00 /* HeliosUpdateChecker.swift */; };
 		00000000000000000000001C /* HeliosApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000009 /* HeliosApp.swift */; };
 		00000000000000000000001D /* StatusItemController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000000A /* StatusItemController.swift */; };
 		00000000000000000000001E /* OverviewViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000000B /* OverviewViewController.swift */; };
@@ -139,6 +142,9 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		000000000000000000000D20 /* DiagnosticsLifecycleStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsLifecycleStore.swift; sourceTree = "<group>"; };
+		000000000000000000000D10 /* HeliosUpdatePresenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeliosUpdatePresenter.swift; sourceTree = "<group>"; };
+		000000000000000000000D00 /* HeliosUpdateChecker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeliosUpdateChecker.swift; sourceTree = "<group>"; };
 		000000000000000000000009 /* HeliosApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeliosApp.swift; sourceTree = "<group>"; };
 		00000000000000000000000A /* StatusItemController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusItemController.swift; sourceTree = "<group>"; };
 		00000000000000000000000B /* OverviewViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverviewViewController.swift; sourceTree = "<group>"; };
@@ -330,6 +336,8 @@
 			children = (
 				000000000000000000000A00 /* Diagnostics */,
 				000000000000000000000700 /* HeliosPreferences.swift */,
+				000000000000000000000D10 /* HeliosUpdatePresenter.swift */,
+				000000000000000000000D00 /* HeliosUpdateChecker.swift */,
 				000000000000000000000701 /* HeliosDashboardView.swift */,
 				000000000000000000000702 /* HeliosWindows.swift */,
 				000000000000000000000703 /* HeliosBrand.swift */,
@@ -436,6 +444,7 @@
 				000000000000000000000A01 /* DiagnosticsModels.swift */,
 				000000000000000000000A02 /* DiagnosticsPreferences.swift */,
 				000000000000000000000A03 /* DiagnosticsBuilder.swift */,
+				000000000000000000000D20 /* DiagnosticsLifecycleStore.swift */,
 				000000000000000000000A04 /* DiagnosticsPayloadView.swift */,
 				000000000000000000000A05 /* DiagnosticsTransport.swift */,
 				000000000000000000000A06 /* DiagnosticsCompatibilityProbe.swift */,
@@ -540,10 +549,13 @@
 				000000000000000000000B01 /* DiagnosticsModels.swift in Sources */,
 				000000000000000000000B02 /* DiagnosticsPreferences.swift in Sources */,
 				000000000000000000000B03 /* DiagnosticsBuilder.swift in Sources */,
+				000000000000000000000D21 /* DiagnosticsLifecycleStore.swift in Sources */,
 				000000000000000000000B04 /* DiagnosticsPayloadView.swift in Sources */,
 				000000000000000000000B05 /* DiagnosticsTransport.swift in Sources */,
 				000000000000000000000B06 /* DiagnosticsCompatibilityProbe.swift in Sources */,
 				000000000000000000000710 /* HeliosPreferences.swift in Sources */,
+				000000000000000000000D11 /* HeliosUpdatePresenter.swift in Sources */,
+				000000000000000000000D01 /* HeliosUpdateChecker.swift in Sources */,
 				000000000000000000000711 /* HeliosDashboardView.swift in Sources */,
 				000000000000000000000712 /* HeliosWindows.swift in Sources */,
 				000000000000000000000713 /* HeliosBrand.swift in Sources */,

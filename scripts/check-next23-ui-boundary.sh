@@ -344,8 +344,9 @@ if grep -Fq 'clock.arrow.circlepath' Sources/HeliosApp/HeliosMetricPopovers.swif
   exit 1
 fi
 if ! grep -Fq 'window.setContentSize(NSSize(width: 720, height: 560))' Sources/HeliosApp/HeliosWindows.swift || \
-   ! grep -Fq '.frame(width: 720, height: 560)' Sources/HeliosApp/HeliosWindows.swift; then
-  echo "FAIL: UI9 four-choice onboarding does not use the expanded fixed geometry" >&2
+   ! grep -Fq '.frame(minWidth: 600, idealWidth: 720, minHeight: 440, idealHeight: 560)' Sources/HeliosApp/HeliosWindows.swift || \
+   ! grep -Fq 'window.contentMinSize = NSSize(width: 600, height: 440)' Sources/HeliosApp/HeliosWindows.swift; then
+  echo "FAIL: Onboarding must retain its default size and bounded resizing geometry" >&2
   exit 1
 fi
 
@@ -553,7 +554,7 @@ for required in \
   'Process sampler' \
   'Raw SMC numeric inventory' \
   'Temperature & Fan' \
-  'Launch Helios at login' \
+  'Launch Helios at Login' \
   'func setLaunchAtLogin(_ enabled: Bool) async -> Bool' \
   'Boot registration' \
   'Prepare Helios for Removal' \

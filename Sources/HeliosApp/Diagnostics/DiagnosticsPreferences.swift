@@ -61,6 +61,7 @@ final class DiagnosticsPreferences: ObservableObject {
       consent, consentRevision, lastSuccessfulReport, lastSuccessfulSend, lastStatus,
       lastStatusCategory, lastVersion,
       lastBuild, lastMacOSBuild, chainStartedAt, retryCount, nextEligible,
+      DiagnosticsLifecycleStore.key,
     ]
   }
 
@@ -85,6 +86,8 @@ final class DiagnosticsPreferences: ObservableObject {
     nextEligibleTime = Self.safeDate(defaults.object(forKey: Key.nextEligible))
   }
 
+  func makeLifecycleStore() -> DiagnosticsLifecycleStore { DiagnosticsLifecycleStore(defaults: defaults) }
+
   func setConsent(_ state: DiagnosticsConsentState) {
     guard state != .notDecided else {
       consent = .notDecided
@@ -102,6 +105,11 @@ final class DiagnosticsPreferences: ObservableObject {
       clearPendingAutomaticWork()
       automaticWorkCancellation?()
     }
+  }
+
+  func recordScheduledCheck(at date: Date) {
+    nextEligibleTime = date
+    defaults.set(date, forKey: Key.nextEligible)
   }
 
   func recordAutomaticChainStart(at date: Date, nextEligible: Date?) {
@@ -174,6 +182,8 @@ final class DiagnosticsPreferences: ObservableObject {
   }
 
   func eraseAllDiagnosticsPreferences() {
+    // Cancellation must observe opt-out so it also clears in-memory lifecycle data.
+    consent = .notDecided
     automaticWorkCancellation?()
     for key in Key.all { defaults.removeObject(forKey: key) }
     consent = .notDecided

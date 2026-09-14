@@ -647,9 +647,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     monitor.start()
     diagnostics.start()
     controller.showOnboardingIfNeeded()
+    if preferences.onboardingCompleted {
+      HeliosUpdatePresenter.shared.check(manual: false)
+    }
   }
 
   func applicationWillTerminate(_ notification: Notification) {
+    HeliosUpdatePresenter.shared.shutdown()
     telemetry?.shutdown()
     diagnostics?.shutdown()
     service?.shutdown()

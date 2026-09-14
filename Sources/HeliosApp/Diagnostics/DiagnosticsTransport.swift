@@ -39,6 +39,7 @@ final class DiagnosticsURLSessionTransport: DiagnosticsTransporting {
     configuration.timeoutIntervalForResource = Self.timeout
     configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
     configuration.urlCache = nil
+    configuration.urlCredentialStorage = nil
     configuration.httpCookieStorage = nil
     configuration.httpShouldSetCookies = false
     configuration.httpAdditionalHeaders = nil
@@ -63,12 +64,17 @@ final class DiagnosticsURLSessionTransport: DiagnosticsTransporting {
   }
 
   func send(_ payload: FrozenDiagnosticsPayload) async -> DiagnosticsTransportResult {
-    guard activeTask == nil, let request = try? Self.makeRequest(payload) else { return .rejected }
+    guard !Task.isCancelled, activeTask == nil, let request = try? Self.makeRequest(payload) else { return .rejected }
     let operation = Task { try await session.data(for: request) }
     activeTask = operation
     defer { activeTask = nil }
     do {
-      let (data, response) = try await operation.value
+      let (data, response) = try await withTaskCancellationHandler {
+        try await operation.value
+      } onCancel: {
+        operation.cancel()
+      }
+      guard !Task.isCancelled else { return .cancelled }
       guard let response = response as? HTTPURLResponse,
         response.url == Self.endpoint,
         data.count <= 1_024
@@ -135,7 +141,8 @@ enum DiagnosticsSchedulePolicy {
       if input.lastVersion != input.currentVersion || input.lastBuild != input.currentBuild {
         reason = .heliosVersionChanged
         base = success.addingTimeInterval(updateFloor)
-      } else if input.lastMacOSBuild != input.currentMacOSBuild {
+      } else if input.currentMacOSBuild != "unknown", input.lastMacOSBuild != "unknown",
+        input.lastMacOSBuild != input.currentMacOSBuild {
         reason = .macOSBuildChanged
         base = success.addingTimeInterval(updateFloor)
       } else {
@@ -153,7 +160,14 @@ enum DiagnosticsSchedulePolicy {
     {
       eligible = max(eligible, chain.addingTimeInterval(baseCooldown))
     }
-    if let persisted = input.persistedNextEligible { eligible = max(eligible, persisted) }
+    // A daily deadline saved after success must not erase the one-hour update window.
+    // Persisted retries/failed chains retain their stricter cooldown above.
+    let successfulUpdate = input.lastSuccessfulSend != nil
+      && (reason == .heliosVersionChanged || reason == .macOSBuildChanged)
+      && (input.lastChainStartedAt == nil || input.lastChainStartedAt! <= input.lastSuccessfulSend!)
+    if let persisted = input.persistedNextEligible, !successfulUpdate {
+      eligible = max(eligible, persisted)
+    }
     return DiagnosticsScheduleDecision(eligibleAt: eligible, reason: reason)
   }
 
@@ -176,11 +190,20 @@ final class DiagnosticsController: ObservableObject {
   private var compatibilityProbe: DiagnosticsCompatibilityProbe?
   private var automaticTask: Task<Void, Never>?
   private var started = false
+  private var stopped = false
+  private var automaticRequestInFlight = false
+  private let now: () -> Date
+  private let sleep: @Sendable (TimeInterval) async throws -> Void
+  private let lifecycle: DiagnosticsLifecycleStore
   private var generation: UInt64 = 0
 
   init(
     preferences: DiagnosticsPreferences,
     session: DiagnosticsSessionTracker = DiagnosticsSessionTracker(),
+    now: @escaping () -> Date = Date.init,
+    sleep: @escaping @Sendable (TimeInterval) async throws -> Void = {
+      try await Task.sleep(for: .seconds(max(0, $0)), tolerance: .seconds(5))
+    },
     transportFactory: @escaping @MainActor () -> any DiagnosticsTransporting = {
       DiagnosticsURLSessionTransport()
     },
@@ -190,37 +213,71 @@ final class DiagnosticsController: ObservableObject {
   ) {
     self.preferences = preferences
     self.session = session
+    self.now = now
+    self.sleep = sleep
+    lifecycle = preferences.makeLifecycleStore()
     self.transportFactory = transportFactory
     self.compatibilityProbeFactory = compatibilityProbeFactory
     preferences.automaticWorkCancellation = { [weak self] in self?.cancelAutomaticWork() }
   }
 
   func start() {
-    guard !started else { return }
+    guard !started, !stopped else { return }
     started = true
     // DiagnosticsPreferences has already read persisted state for this launch.
     // Missing/corrupt values are not enabled and create no scheduler or session.
-    if preferences.automaticEnabled { scheduleNextAutomatic() }
+    if preferences.automaticEnabled {
+      beginLifecycle()
+      scheduleNextAutomatic()
+    } else {
+      lifecycle.clear()
+      session.stability = lifecycle.summary
+    }
   }
 
   func shutdown() {
+    stopped = true
+    updateLifecycle()
+    lifecycle.end()
     automaticTask?.cancel()
     automaticTask = nil
     transport?.cancel()
   }
 
   func accept(_ snapshot: TelemetrySnapshot, helper: DiagnosticsHelperObservation) {
+    let oldBuild = session.observedMacOSBuild
     session.accept(snapshot)
     session.updateHelper(helper)
+    updateLifecycle()
+    let newBuild = session.observedMacOSBuild
+    if started, preferences.automaticEnabled, !sending, oldBuild != newBuild, newBuild != "unknown" {
+      scheduleNextAutomatic()
+    }
   }
 
   func setAutomaticEnabled(_ enabled: Bool) {
-    preferences.setConsent(enabled ? .enabled : .disabled)
-    guard preferences.automaticEnabled else {
-      cancelAutomaticWork()
-      return
-    }
+    guard !stopped else { return }
+    let decision: DiagnosticsConsentState = enabled ? .enabled : .disabled
+    guard preferences.consent != decision else { return }
+    preferences.setConsent(decision)
+    // The preferences callback already cancels work synchronously on opt-out.
+    guard preferences.automaticEnabled else { return }
+    beginLifecycle()
     scheduleNextAutomatic()
+  }
+
+  private func beginLifecycle() {
+    let common = session.commonFields(generatedAt: now())
+    lifecycle.begin(helios: common.helios, macOSBuild: common.system.macOSBuild)
+    updateLifecycle()
+  }
+
+  private func updateLifecycle() {
+    guard preferences.automaticEnabled else { return }
+    lifecycle.update(
+      duration: DiagnosticsFieldRules.duration(now().timeIntervalSince(session.launchStartedAt)),
+      macOSBuild: session.observedMacOSBuild)
+    session.stability = lifecycle.summary
   }
 
   func makeHealthPayload(
@@ -244,25 +301,33 @@ final class DiagnosticsController: ObservableObject {
   }
 
   func sendManual(_ payload: FrozenDiagnosticsPayload) async -> DiagnosticsTransportResult {
-    guard payload.reportType == .manualHealth || payload.reportType == .manualCompatibility,
-      !payload.isExpired()
+    guard !stopped, !Task.isCancelled,
+      payload.reportType == .manualHealth || payload.reportType == .manualCompatibility,
+      !payload.isExpired(at: now())
     else { return .rejected }
+    guard !sending else { return .retryable(retryAfter: nil) }
     sending = true
     defer { sending = false }
     let result = await resolvedTransport().send(payload)
+    guard !stopped, !Task.isCancelled else { return .cancelled }
     switch result {
     case .accepted: preferences.recordLocalStatus(.success, category: .none)
-    case .rejected: preferences.recordLocalStatus(.failed, category: .serverRejected)
-    case .retryable: preferences.recordLocalStatus(.failed, category: .transport)
+    case .rejected:
+      session.recordDiagnosticsError(.serverRejected)
+      preferences.recordLocalStatus(.failed, category: .serverRejected, at: now())
+    case .retryable:
+      session.recordDiagnosticsError(.transport)
+      preferences.recordLocalStatus(.failed, category: .transport, at: now())
     case .cancelled: break
     }
     return result
   }
 
-  private func scheduleNextAutomatic(now: Date = Date()) {
+  private func scheduleNextAutomatic() {
+    let now = now()
     automaticTask?.cancel()
     automaticTask = nil
-    guard preferences.automaticEnabled else { return }
+    guard !stopped, preferences.automaticEnabled else { return }
     let common = session.commonFields(generatedAt: now)
     let decision = DiagnosticsSchedulePolicy.decision(
       DiagnosticsScheduleInput(
@@ -275,13 +340,15 @@ final class DiagnosticsController: ObservableObject {
         lastMacOSBuild: preferences.lastReportedMacOSBuild,
         currentVersion: common.helios.version, currentBuild: common.helios.build,
         currentMacOSBuild: common.system.macOSBuild))
+    preferences.recordScheduledCheck(at: decision.eligibleAt)
     let revision = preferences.consentRevision
-    automaticTask = Task { [weak self] in
-      let delay = decision.eligibleAt.timeIntervalSinceNow
+    let delay = max(0, decision.eligibleAt.timeIntervalSince(now))
+    let sleep = self.sleep
+    automaticTask = Task(priority: .utility) { [weak self] in
       if delay > 0 {
-        do { try await Task.sleep(for: .seconds(delay), tolerance: .seconds(5)) } catch { return }
+        do { try await sleep(delay) } catch { return }
       }
-      guard let self, !Task.isCancelled, self.preferences.automaticEnabled,
+      guard let self, !self.stopped, !Task.isCancelled, self.preferences.automaticEnabled,
         self.preferences.consentRevision == revision
       else { return }
       await self.runAutomaticChain(reason: decision.reason)
@@ -289,18 +356,23 @@ final class DiagnosticsController: ObservableObject {
   }
 
   private func runAutomaticChain(reason: DiagnosticsReportReason) async {
-    let baseAttempt = Date()
+    let baseAttempt = now()
     preferences.recordAutomaticChainStart(
       at: baseAttempt, nextEligible: baseAttempt.addingTimeInterval(DiagnosticsSchedulePolicy.baseCooldown))
     let revision = preferences.consentRevision
     for attempt in 0...2 {
-      guard preferences.automaticEnabled, preferences.consentRevision == revision,
+      // Manual and automatic work share one request slot. A manual send must not
+      // cause a spurious server-rejection/cooldown in the automatic chain.
+      while sending && !Task.isCancelled {
+        do { try await sleep(1) } catch { return }
+      }
+      guard !stopped, preferences.automaticEnabled, preferences.consentRevision == revision,
         !Task.isCancelled
       else { return }
 
       let payload: FrozenDiagnosticsPayload
       do {
-        payload = try makeHealthPayload(type: .automaticHealth, reason: reason)
+        payload = try makeHealthPayload(type: .automaticHealth, reason: reason, now: now())
       } catch {
         session.recordDiagnosticsError(.build)
         preferences.recordLocalStatus(.failed, category: .build)
@@ -309,23 +381,30 @@ final class DiagnosticsController: ObservableObject {
         return
       }
       sending = true
+      automaticRequestInFlight = true
       let result = await resolvedTransport().send(payload)
+      automaticRequestInFlight = false
       sending = false
+      guard !stopped, !Task.isCancelled, preferences.automaticEnabled,
+        preferences.consentRevision == revision else { return }
       switch result {
       case .accepted:
-        let common = session.commonFields()
+        // Record exactly the accepted report's build tuple, not a newer snapshot.
+        guard let accepted = try? JSONDecoder().decode(DiagnosticsHealthReport.self, from: payload.data)
+        else { return }
         preferences.recordAutomaticSuccess(
-          at: Date(), heliosVersion: common.helios.version, heliosBuild: common.helios.build,
-          macOSBuild: common.system.macOSBuild)
+          at: now(), heliosVersion: accepted.helios.version, heliosBuild: accepted.helios.build,
+          macOSBuild: accepted.system.macOSBuild)
         scheduleNextAutomatic()
         return
       case .retryable(let retryAfter):
+        session.recordDiagnosticsError(.transport)
         if attempt < 2, let delay = DiagnosticsSchedulePolicy.retryDelay(
           index: attempt, jitter: Double.random(in: DiagnosticsSchedulePolicy.jitterRange),
           retryAfter: retryAfter)
         {
-          preferences.recordRetry(attempt + 1, nextEligible: Date().addingTimeInterval(delay))
-          do { try await Task.sleep(for: .seconds(delay), tolerance: .seconds(30)) } catch { return }
+          preferences.recordRetry(attempt + 1, nextEligible: now().addingTimeInterval(delay))
+          do { try await sleep(delay) } catch { return }
         } else {
           preferences.recordLocalStatus(.failed, category: .transport)
           preferences.finishFailedAutomaticChain(baseAttempt: baseAttempt)
@@ -333,6 +412,7 @@ final class DiagnosticsController: ObservableObject {
           return
         }
       case .rejected:
+        session.recordDiagnosticsError(.serverRejected)
         preferences.recordLocalStatus(.failed, category: .serverRejected)
         preferences.finishFailedAutomaticChain(baseAttempt: baseAttempt)
         scheduleNextAutomatic()
@@ -347,7 +427,11 @@ final class DiagnosticsController: ObservableObject {
   private func cancelAutomaticWork() {
     automaticTask?.cancel()
     automaticTask = nil
-    transport?.cancel()
+    if automaticRequestInFlight { transport?.cancel() }
+    if !preferences.automaticEnabled {
+      lifecycle.clear()
+      session.stability = lifecycle.summary
+    }
   }
 
   private func resolvedTransport() -> any DiagnosticsTransporting {
