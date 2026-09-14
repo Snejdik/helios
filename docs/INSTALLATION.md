@@ -1,7 +1,7 @@
 # Install Helios — guide for first-time testers
 
 You do not need Terminal or Xcode to install a Helios test build.
-Helios 0.1.0 Pre-beta 1 is publicly available from GitHub Releases as a DMG
+Helios 0.1.0 Pre-beta 2 is publicly available from GitHub Releases as a DMG
 and ZIP test build. It is Apple Development signed and not notarized; a
 Developer ID signed, notarized public-beta distribution is still pending.
 

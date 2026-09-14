@@ -9,7 +9,7 @@
 Native menu-bar monitoring for Apple Silicon: system activity, temperatures,
 battery and energy history, with carefully gated fan controls.
 
-**[⬇ Download Helios 0.1.0 Pre-beta 1](https://github.com/Snejdik/helios/releases/tag/v0.1.0-prebeta.1)**
+**[⬇ Download Helios 0.1.0 Pre-beta 2](https://github.com/Snejdik/helios/releases/tag/v0.1.0-prebeta.2)**
 
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-111111?logo=apple&logoColor=white)
 ![Apple Silicon / arm64](https://img.shields.io/badge/Apple%20Silicon-arm64-111111)
@@ -104,8 +104,8 @@ The official application icon, version and project links.
 ## Install a test build
 
 Start with the [step-by-step installation guide](docs/INSTALLATION.md).
-The recommended download is **Helios-0.1.0-prebeta.dmg** from
-[GitHub Releases](https://github.com/Snejdik/helios/releases/tag/v0.1.0-prebeta.1).
+The recommended download is **Helios-0.1.0-prebeta.2.dmg** from
+[GitHub Releases](https://github.com/Snejdik/helios/releases/tag/v0.1.0-prebeta.2).
 Open the DMG, drag **Helios.app** to Applications, then eject the disk image.
 Launch the Applications copy and look for Helios in the menu bar.
 If you use a **ZIP** test build, extract it and copy **Helios.app** to Applications.
