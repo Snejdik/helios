@@ -54,7 +54,47 @@ private func health(
       lifecycleCategory: .normalLaunch))
 }
 
+@MainActor
+private func systemSnapshotChecks() throws {
+  let tracker = DiagnosticsSessionTracker()
+  let unknown = DiagnosticsSystemSnapshot.text(tracker.commonFields())
+  try require(unknown.contains("Model: unknown") && unknown.contains("Fan count: unknown"),
+    "Pending identity fabricated a system snapshot")
+  var snapshot = TelemetrySnapshot()
+  snapshot.system = MetricSample(.success(SystemMetrics(
+    modelIdentifier: .success("private-hostname"), chipName: .success("Apple M4"),
+    osVersion: "Version 26.6.2 (Build 25G83)", osBuild: .success("25G83"),
+    uptimeSeconds: 100, logicalProcessorCount: 8, physicalMemoryBytes: 16 * 1_073_741_824,
+    loadAverage1: .success(1), loadAverage5: .success(1), loadAverage15: .success(1),
+    thermalState: .nominal, lowPowerModeEnabled: false)))
+  snapshot.network = MetricSample(.failure(.unavailable("secret-network-address")))
+  snapshot.processes = MetricSample(.failure(.kernel("/Users/private-user/secret", 5)))
+  tracker.accept(snapshot)
+  let text = DiagnosticsSystemSnapshot.text(tracker.commonFields())
+  try require(text.contains("Apple Silicon family: M4") && text.contains("Memory bucket: 9-16 GiB")
+    && text.contains("macOS 26.6.2 (build 25G83)"), "Snapshot lost sanitized support identity")
+  for forbidden in ["private-hostname", "secret-network-address", "private-user", "/Users/", "secret"] {
+    try require(!text.contains(forbidden), "System snapshot leaked raw private evidence: \(forbidden)")
+  }
+  try require(text.contains("energy_process: failed / io_error"), "Snapshot lost coarse provider state")
+  try require(text.contains("capability failed") && unknown.contains("capability unknown"),
+    "Snapshot must distinguish observed capability from pending data")
+}
+
 private func schemaChecks() throws {
+  try require(DiagnosticsFieldRules.appleSiliconFamily("Apple M4 Pro") == "M4",
+    "A recognized complete Apple Silicon family token was lost")
+  try require(DiagnosticsFieldRules.appleSiliconFamily("Apple M10") == "future"
+    && DiagnosticsFieldRules.appleSiliconFamily("Apple M50 Ultra") == "future"
+    && DiagnosticsFieldRules.appleSiliconFamily("unrecognized") == "unknown",
+    "Substring matching invented a known mapping for a future Silicon family")
+  for version in ["0.1.0", "0.1.0-prebeta.3", "0.1.0-prebeta.3+offline"] {
+    try require(DiagnosticsFieldRules.validVersion(version), "Server-compatible version rejected")
+  }
+  for version in ["0.1", "0.1.0.3", "0.1.0+meta-prebeta+extra"] {
+    try require(!DiagnosticsFieldRules.validVersion(version), "Server-incompatible version accepted")
+  }
+
   for model in [
     "MacBookAir10,1", "MacBookPro17,1", "Macmini9,1", "iMac21,1", "Mac14,2",
     "Mac16,1", "MacFuture42,7",
@@ -74,6 +114,16 @@ private func schemaChecks() throws {
   try require(manual.preview.contains(#""report_type" : "manual_health""#), "manual type missing")
 
   var object = try JSONSerialization.jsonObject(with: automatic.data) as! [String: Any]
+  for version in ["0.1", "0.1.0.3"] {
+    var changed = object
+    var identity = changed["helios"] as! [String: Any]
+    identity["version"] = version
+    changed["helios"] = identity
+    do {
+      try DiagnosticsPayloadValidator.validate(JSONSerialization.data(withJSONObject: changed))
+      throw CheckFailure(description: "Closed client validator accepted server-incompatible version")
+    } catch DiagnosticsPayloadError.invalid { }
+  }
   object["device_id"] = "forbidden"
   let unknown = try JSONSerialization.data(withJSONObject: object)
   do {
@@ -218,6 +268,73 @@ private func builderChecks() throws {
   try require(!frozen.preview.contains("secret operation"), "raw error text leaked")
   try require(!frozen.preview.contains("must never be transmitted"), "invalid-data text leaked")
 
+  for tick in 15...50 {
+    snapshot.cpu = MetricSample(.failure(.ioKit("private", -1)), capturedTicks: UInt64(tick))
+    tracker.accept(snapshot)
+  }
+  report = try tracker.buildHealth(type: .automaticHealth, reason: .daily, generatedAt: launch)
+  try require(report.providers.cpu.failureCount == .twoToFive, "Persistent source inflated failure episodes")
+
+  let thermalTracker = DiagnosticsSessionTracker(launchStartedAt: launch)
+  var thermalSnapshot = TelemetrySnapshot()
+  let identified = ThermalReading(key: "Tp01", group: .performanceCPU, celsius: 60)
+  for tick in 1...30 {
+    thermalSnapshot.thermals = MetricSample(.success(ThermalMetrics(
+      readings: [identified], failures: ["Traw": .invalidData("optional")], trustedFailures: [:])),
+      capturedTicks: UInt64(tick))
+    thermalTracker.accept(thermalSnapshot)
+  }
+  var thermalReport = try thermalTracker.buildHealth(type: .manualHealth, reason: .userInitiated)
+  try require(thermalReport.providers.thermal.state == .available
+    && thermalReport.providers.thermal.failureCount == .zero, "Optional failures became core degradation")
+  thermalSnapshot.thermals = MetricSample(.success(ThermalMetrics(
+    readings: [ThermalReading(key: "Traw", group: .unclassified, celsius: 60)],
+    failures: [:], trustedFailures: [:])), capturedTicks: 31)
+  thermalTracker.accept(thermalSnapshot)
+  thermalReport = try thermalTracker.buildHealth(type: .manualHealth, reason: .userInitiated)
+  try require(thermalReport.providers.thermal.state == .partial
+    && thermalReport.providers.thermal.failureCategory == .noData,
+    "Raw-only data must not claim main temperature availability")
+  for tick in 32...70 {
+    thermalSnapshot.thermals = MetricSample(.success(ThermalMetrics(readings: [identified],
+      failures: ["Te05": .ioKit("private", -1)], trustedFailures: ["Te05": .ioKit("private", -1)])),
+      capturedTicks: UInt64(tick))
+    thermalTracker.accept(thermalSnapshot)
+  }
+  thermalReport = try thermalTracker.buildHealth(type: .manualHealth, reason: .userInitiated)
+  try require(thermalReport.providers.thermal.failureCategory == .ioError
+    && thermalReport.providers.thermal.failureCount == .one, "Trusted I/O category/episode semantics")
+  for (tick, error) in [(UInt64(71), TelemetryError.warmingUp),
+    (72, .unavailable("Capability only")), (73, .ioKit("private", -1))] {
+    thermalSnapshot.thermals = MetricSample(.success(ThermalMetrics(readings: [identified],
+      failures: ["Te05": error], trustedFailures: ["Te05": error])), capturedTicks: tick)
+    thermalTracker.accept(thermalSnapshot)
+  }
+  thermalReport = try thermalTracker.buildHealth(type: .manualHealth, reason: .userInitiated)
+  try require(thermalReport.providers.thermal.failureCount == .one,
+    "Capability-only trusted-key observations inflated or reset an active episode")
+  thermalSnapshot.thermals = MetricSample(.success(ThermalMetrics(readings: [identified],
+    failures: [:], trustedFailures: [:])), capturedTicks: 74)
+  thermalTracker.accept(thermalSnapshot)
+  thermalSnapshot.thermals = MetricSample(.success(ThermalMetrics(readings: [identified],
+    failures: ["Te05": .ioKit("private", -1)], trustedFailures: ["Te05": .ioKit("private", -1)])),
+    capturedTicks: 75)
+  thermalTracker.accept(thermalSnapshot)
+  thermalReport = try thermalTracker.buildHealth(type: .manualHealth, reason: .userInitiated)
+  try require(thermalReport.providers.thermal.failureCount == .twoToFive,
+    "Trusted key did not begin a new episode after an observed recovery")
+  let capabilityTracker = DiagnosticsSessionTracker(launchStartedAt: launch)
+  thermalSnapshot.thermals = MetricSample(.success(ThermalMetrics(readings: [identified],
+    failures: ["Te05": .warmingUp], trustedFailures: ["Te05": .warmingUp])), capturedTicks: 76)
+  capabilityTracker.accept(thermalSnapshot)
+  let capabilityReport = try capabilityTracker.buildHealth(type: .manualHealth, reason: .userInitiated)
+  try require(capabilityReport.providers.thermal.failureCount == .zero,
+    "Trusted-key warm-up became an actual failure episode")
+  thermalTracker.recordDiagnosticsError(.transport)
+  thermalTracker.recordDiagnosticsError(.none)
+  thermalReport = try thermalTracker.buildHealth(type: .manualHealth, reason: .userInitiated)
+  try require(thermalReport.runtime.diagnosticsErrorCategory == .none, "Recovered transport remained sticky")
+
   let nextLaunch = DiagnosticsSessionTracker(launchStartedAt: launch.addingTimeInterval(3_600))
   nextLaunch.accept(pending)
   let reset = try nextLaunch.buildHealth(
@@ -338,8 +455,17 @@ private final class MockSMCReadTransport: SMCReadTransport, @unchecked Sendable 
   private let values: [String: MockSMCValue]
   private let keys: [String]
   private let unavailableKeys: Set<String>
+  private let ioErrorKeys: Set<String>
+  private let readCountLock = NSLock()
+  private var byteReadCounts: [String: Int] = [:]
+  private var keyInfoFailuresRemaining: [String: Int]
 
-  init(values: [String: MockSMCValue], unavailableKeys: Set<String> = []) {
+  func byteReadCount(_ key: String) -> Int {
+    readCountLock.withLock { byteReadCounts[key, default: 0] }
+  }
+
+  init(values: [String: MockSMCValue], unavailableKeys: Set<String> = [],
+    ioErrorKeys: Set<String> = [], keyInfoFailuresRemaining: [String: Int] = [:]) {
     var complete = values
     let discoveredKeys = Array(Set(values.keys).union(["#KEY"])).sorted()
     let count = UInt32(discoveredKeys.count)
@@ -352,9 +478,23 @@ private final class MockSMCReadTransport: SMCReadTransport, @unchecked Sendable 
     self.values = complete
     self.keys = discoveredKeys
     self.unavailableKeys = unavailableKeys
+    self.ioErrorKeys = ioErrorKeys
+    self.keyInfoFailuresRemaining = keyInfoFailuresRemaining
   }
 
   func exchange(_ request: SMCReadRequest) throws -> [UInt8] {
+    if request.command == .keyInfo {
+      let fail = readCountLock.withLock {
+        guard keyInfoFailuresRemaining[request.key, default: 0] > 0 else { return false }
+        keyInfoFailuresRemaining[request.key, default: 0] -= 1
+        return true
+      }
+      if fail { throw TelemetryError.smc(request.key, 0x84) }
+    }
+    if request.command == .bytes {
+      readCountLock.withLock { byteReadCounts[request.key, default: 0] += 1 }
+      if ioErrorKeys.contains(request.key) { throw TelemetryError.smc(request.key, 0x84) }
+    }
     if unavailableKeys.contains(request.key) {
       throw TelemetryError.unavailable("Unavailable in compatibility fixture")
     }
@@ -466,6 +606,78 @@ private func fixtureProbe(
     classifierFactory: {
       ThermalClassifier(cpuBrand: cpuBrand, machineModel: machineModel, osBuild: osBuild)
     })
+}
+
+@MainActor
+private func thermalFailureEvidenceChecks() throws {
+  let mixed = SMCThermalReader(client: SMCClient(transport: MockSMCReadTransport(
+    values: ["Tp01": sp78(42), "Tbad": sp78(0)], ioErrorKeys: ["Tp01"])),
+    classifier: ThermalClassifier(cpuBrand: "Apple M4"))
+  let batch = try mixed.read(rawDetailsVisible: false)
+  try require(batch.readings.isEmpty && batch.failures["Tbad"] != nil
+    && batch.trustedFailures["Tp01"] != nil,
+    "Empty thermal batches must retain optional and trusted evidence separately")
+  try require({ if case .failure = batch.maximumSoCCelsius { true } else { false } }(),
+    "An empty decoded batch fabricated a safe maximum")
+  let tracker = DiagnosticsSessionTracker()
+  var snapshot = TelemetrySnapshot()
+  snapshot.thermals = MetricSample(.success(batch), capturedTicks: 1)
+  tracker.accept(snapshot)
+  let mixedReport = try tracker.buildHealth(type: .automaticHealth, reason: .daily)
+  try require(mixedReport.providers.thermal.state == .partial
+    && mixedReport.providers.thermal.failureCategory == .ioError
+    && mixedReport.providers.thermal.failureCount == .one,
+    "An optional alphabetically earlier decode error masked trusted I/O failure")
+
+  let optionalOnly = SMCThermalReader(client: SMCClient(transport: MockSMCReadTransport(
+    values: ["Tbad": sp78(0)])), classifier: ThermalClassifier(cpuBrand: ""))
+  let rawBatch = try optionalOnly.read(rawDetailsVisible: false)
+  try require(rawBatch.readings.isEmpty && rawBatch.failures["Tbad"] != nil
+    && rawBatch.trustedFailures.isEmpty,
+    "Optional-only invalid readings disappeared or became trusted failures")
+  let rawTracker = DiagnosticsSessionTracker()
+  snapshot.thermals = MetricSample(.success(rawBatch), capturedTicks: 1)
+  rawTracker.accept(snapshot)
+  let rawReport = try rawTracker.buildHealth(type: .automaticHealth, reason: .daily)
+  try require(rawReport.providers.thermal.state == .partial
+    && rawReport.providers.thermal.failureCategory == .noData
+    && rawReport.providers.thermal.failureCount == .zero,
+    "Optional-only absence invented a trusted provider failure episode")
+
+  let metadataFailure = SMCThermalReader(client: SMCClient(transport: MockSMCReadTransport(
+    values: ["Tp01": MockSMCValue(type: "x!  ", bytes: [1, 2])])),
+    classifier: ThermalClassifier(cpuBrand: "Apple M4"))
+  let metadataBatch = try metadataFailure.read()
+  try require(metadataBatch.readings.isEmpty && metadataBatch.trustedFailures["Tp01"] != nil,
+    "Trusted metadata failure disappeared when no valid temperature keys remained")
+
+  // Do not slow the legacy frozen fan-readiness prefix evidence while hidden.
+  let legacyTransport = MockSMCReadTransport(
+    values: ["Tp01": sp78(42), "TpZZ": sp78(0)])
+  let legacy = SMCThermalReader(client: SMCClient(transport: legacyTransport),
+    classifier: ThermalClassifier(cpuBrand: "Apple M4"))
+  let now = ContinuousClock.now
+  _ = try legacy.read(rawDetailsVisible: false, now: now)
+  _ = try legacy.read(rawDetailsVisible: false, now: now.advanced(by: .seconds(10)))
+  try require(legacyTransport.byteReadCount("TpZZ") == 1,
+    "Legacy advisory guard needlessly repeated a raw read inside its existing cadence")
+  let repeated = try legacy.read(rawDetailsVisible: false, now: now.advanced(by: .seconds(16)))
+  try require(legacyTransport.byteReadCount("TpZZ") == 2,
+    "Hidden detail demand reduced the frozen fan-readiness evidence cadence")
+  try require(repeated.trustedFailures["TpZZ"] == nil,
+    "Preserving a conservative legacy fan guard invented an unknown sensor identity")
+
+  let transientTransport = MockSMCReadTransport(values: ["Tp01": sp78(42)],
+    keyInfoFailuresRemaining: ["Tp01": 1])
+  let transient = SMCThermalReader(client: SMCClient(transport: transientTransport),
+    classifier: ThermalClassifier(cpuBrand: "Apple M4"))
+  let failed = try transient.read(rawDetailsVisible: false, now: now)
+  let stillWaiting = try transient.read(rawDetailsVisible: false, now: now.advanced(by: .seconds(10)))
+  try require(failed.trustedFailures["Tp01"] != nil && stillWaiting.readings.isEmpty,
+    "Transient metadata failure vanished or caused unbounded immediate discovery retries")
+  let recovered = try transient.read(rawDetailsVisible: false, now: now.advanced(by: .seconds(31)))
+  try require(recovered.trustedFailures.isEmpty && (try recovered.maximumSoCCelsius.get()) == 42,
+    "Bounded rediscovery did not recover from transient trusted metadata failure")
 }
 
 @MainActor
@@ -821,13 +1033,16 @@ private func runtimeAndLifecycleChecks() throws {
   try require(update.summary.lifecycleCategory == .unknown, "opt-out retained lifecycle summary")
   let preferences = DiagnosticsPreferences(defaults: defaults)
   preferences.setConsent(.enabled)
-  let controller = DiagnosticsController(preferences: preferences)
+  let transport = MockDiagnosticsTransport()
+  let controller = DiagnosticsController(preferences: preferences,
+    sleep: { _ in throw CancellationError() }, transportFactory: { transport })
   controller.start()
   try require(controller.session.stability.lifecycleCategory == .firstLaunch, "opt-in marker not started")
   preferences.eraseAllDiagnosticsPreferences()
   try require(controller.session.stability.lifecycleCategory == .unknown, "erase-all retained in-memory stability")
   try require(defaults.data(forKey: DiagnosticsLifecycleStore.key) == nil, "erase-all retained local marker")
   controller.shutdown()
+  try require(transport.received.isEmpty, "Lifecycle-only fixture attempted diagnostics delivery")
 }
 
 private func exactScheduleChecks() throws {
@@ -897,6 +1112,226 @@ private func cancellationChecks() async throws {
   }
 }
 
+/// Optional offline native-to-server contract artifacts. These are controlled
+/// fixtures, not hardware captures; only fake providers and a metadata-only
+/// bundle feed the production builder, assembler and frozen encoder.
+@MainActor
+private func exportNativeContractFixturesIfRequested() async throws {
+  guard let path = ProcessInfo.processInfo.environment["HELIOS_NATIVE_CONTRACT_FIXTURES"] else { return }
+  try require(!path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+    "Contract fixture export directory must not be empty")
+  let directory = URL(fileURLWithPath: path, isDirectory: true)
+  let manager = FileManager.default
+  try manager.createDirectory(at: directory, withIntermediateDirectories: true)
+  try require(try manager.contentsOfDirectory(atPath: directory.path).isEmpty,
+    "Contract fixture export refuses to overwrite a nonempty directory")
+  let identityURL = directory.appendingPathComponent(".contract-identity.bundle", isDirectory: true)
+  let contents = identityURL.appendingPathComponent("Contents", isDirectory: true)
+  try manager.createDirectory(at: contents, withIntermediateDirectories: true)
+  let metadata: [String: String] = [
+    "CFBundleIdentifier": "invalid.helios.contractfixture",
+    "CFBundlePackageType": "BNDL",
+    "CFBundleShortVersionString": "0.2.0", "CFBundleVersion": "4",
+  ]
+  try PropertyListSerialization.data(fromPropertyList: metadata, format: .xml, options: 0)
+    .write(to: contents.appendingPathComponent("Info.plist"), options: .atomic)
+  guard let bundle = Bundle(url: identityURL) else {
+    throw CheckFailure(description: "Could not read controlled contract identity metadata")
+  }
+  let generatedAt = Date(timeIntervalSince1970: 1_790_985_600)
+  let tracker = DiagnosticsSessionTracker(launchStartedAt: generatedAt.addingTimeInterval(-600))
+  var snapshot = TelemetrySnapshot()
+  snapshot.system = MetricSample(.success(SystemMetrics(
+    modelIdentifier: .success("Mac16,1"), chipName: .success("Apple M4"),
+    osVersion: "Version 26.6.2 (Build 25G83)", osBuild: .success("25G83"),
+    uptimeSeconds: 600, logicalProcessorCount: 8,
+    physicalMemoryBytes: 16 * 1_073_741_824,
+    loadAverage1: .success(0), loadAverage5: .success(0), loadAverage15: .success(0),
+    thermalState: .nominal, lowPowerModeEnabled: false)))
+  snapshot.cpu = MetricSample(.failure(.invalidData("controlled fixture")), capturedTicks: 1)
+  tracker.accept(snapshot)
+  snapshot.cpu = MetricSample(.success(CPUMetrics(
+    userPercent: 2, systemPercent: 1, nicePercent: 0, idlePercent: 97)), capturedTicks: 2)
+  snapshot.thermals = MetricSample(.success(ThermalMetrics(
+    readings: [ThermalReading(key: "Tp01", group: .performanceCPU, celsius: 42)],
+    failures: ["T! x": .invalidData("controlled raw fixture")], trustedFailures: [:])),
+    capturedTicks: 2)
+  tracker.accept(snapshot)
+  let automatic = try tracker.buildHealth(
+    type: .automaticHealth, reason: .daily, generatedAt: generatedAt, bundle: bundle)
+  try require(automatic.helios.version == "0.2.0" && automatic.helios.build == "4",
+    "Native contract fixture identity must represent 0.2.0 beta 1/build 4")
+  try require(automatic.providers.cpu.state == .available
+    && automatic.providers.cpu.failureCount == .one
+    && automatic.providers.thermal.state == .available,
+    "Recovered episode/raw-only failure fixture lost its intended semantics")
+  let automaticBytes = try DiagnosticsPayloadEncoder.freeze(
+    automatic, reportType: .automaticHealth, now: generatedAt)
+
+  snapshot.thermals = MetricSample(.success(ThermalMetrics(
+    readings: [ThermalReading(key: "Tzzz", group: .unclassified, celsius: 141)],
+    failures: [:], trustedFailures: [:])), capturedTicks: 3)
+  tracker.accept(snapshot)
+  let manual = try tracker.buildHealth(
+    type: .manualHealth, reason: .userInitiated, generatedAt: generatedAt, bundle: bundle)
+  try require(manual.providers.thermal.state == .partial
+    && manual.providers.thermal.failureCategory == .noData
+    && manual.providers.thermal.failureCount == .zero,
+    "Raw-only manual fixture must preserve no_data without inventing failure episodes")
+  let manualBytes = try DiagnosticsPayloadEncoder.freeze(
+    manual, reportType: .manualHealth, now: generatedAt)
+
+  var values = fanValues(count: 1)
+  values["Tp01"] = sp78(42)
+  values["Tzzz"] = flt(141)
+  values["T! x"] = MockSMCValue(type: "x!  ", bytes: [1, 2])
+  let evidence = await fixtureProbe(values: values, classifier: ThermalClassifier(
+    cpuBrand: "Apple M4", machineModel: "Mac16,1", osBuild: "25G83")).gather()
+  let compatibility = DiagnosticsCompatibilityAssembler.report(
+    common: tracker.commonFields(generatedAt: generatedAt, bundle: bundle),
+    evidence: evidence, generatedAt: generatedAt)
+  let compatibilityBytes = try DiagnosticsPayloadEncoder.freeze(
+    compatibility, reportType: .manualCompatibility, now: generatedAt)
+  tracker.fanLayerSource = { sampleFanLayer() }
+  let withFanLayer = try tracker.buildHealth(
+    type: .automaticHealth, reason: .daily, generatedAt: generatedAt, bundle: bundle)
+  let fanLayerBytes = try DiagnosticsPayloadEncoder.freeze(
+    withFanLayer, reportType: .automaticHealth, now: generatedAt)
+  try require(Data(fanLayerBytes.preview.utf8) == fanLayerBytes.data,
+    "Native contract export must preserve exact frozen preview bytes")
+  try fanLayerBytes.data.write(
+    to: directory.appendingPathComponent("automatic_health_fan_layer.json"), options: .atomic)
+  for payload in [automaticBytes, manualBytes, compatibilityBytes] {
+    try require(Data(payload.preview.utf8) == payload.data,
+      "Native contract export must preserve exact frozen preview bytes")
+    try payload.data.write(
+      to: directory.appendingPathComponent("\(payload.reportType.rawValue).json"), options: .atomic)
+  }
+  print("PASS exported all three native-frozen contract fixture types (fake evidence, no network/hardware)")
+}
+
+
+/// A fixed fan-layer section used by the grammar checks and the contract fixture.
+private func sampleFanLayer() -> DiagnosticsFanLayer {
+  var data = FanDiagnosticsData()
+  for seconds in [6.2, 7.1, 8.0] { data.append(FanDiagnosticRecord(event: .takeoverHeld, seconds: seconds)) }
+  data.append(FanDiagnosticRecord(event: .takeoverRefused, onBattery: true, lowPowerMode: true))
+  data.append(FanDiagnosticRecord(event: .takeoverRefused, onBattery: false))
+  data.append(FanDiagnosticRecord(event: .handbackOverLimit))
+  data.append(FanDiagnosticRecord(event: .mode(.auto)))
+  data.append(FanDiagnosticRecord(event: .mode(.boost)))
+  data.observe(temperatureCelsius: 99.4, fanSharePercent: 71)
+  data.observe(temperatureCelsius: 80, fanSharePercent: 95)
+  return FanDiagnosticsSummary.report(
+    data: data,
+    settings: FanDiagnosticsSettings(
+      tier: .experimental, controlEnabled: true, speedLimitUnlocked: false, autoUsesCurve: true,
+      restoreAuto: false))
+}
+
+@MainActor
+private func fanLayerChecks() throws {
+  try require(
+    DiagnosticsTakeoverDuration(seconds: nil) == .none
+      && DiagnosticsTakeoverDuration(seconds: 2.9) == .underThree
+      && DiagnosticsTakeoverDuration(seconds: 6) == .sixToTen
+      && DiagnosticsTakeoverDuration(seconds: 15) == .overFifteen
+      && DiagnosticsPeakTemperature(celsius: 94.9) == .from85
+      && DiagnosticsPeakTemperature(celsius: 105) == .from105
+      && DiagnosticsPeakTemperature(celsius: nil) == .unknown
+      && DiagnosticsFanShare(percent: 89.9) == .from75
+      && DiagnosticsFanShare(percent: 90) == .from90,
+    "Fan-layer bucket edges")
+
+  let layer = sampleFanLayer()
+  try require(
+    layer.takeovers.held == .twoToFive && layer.takeovers.refused == .twoToFive
+      && layer.takeovers.timedOut == .zero && layer.takeoverDuration == .sixToTen
+      && layer.refusalsOnBattery == .one && layer.refusalsInLowPowerMode == .one
+      && layer.handbacks.overLimit == .one && layer.modesUsed == [.auto, .boost]
+      && layer.peakTemperatureC == .from95 && layer.peakFanShare == .from90,
+    "Fan-layer summary buckets, medians, refusal context and peaks")
+  try require(
+    FanDiagnosticsSummary.failureEvent(forDetail: "Fan control did not reply within 13 seconds; closed") == .takeoverTimedOut
+      && FanDiagnosticsSummary.failureEvent(forDetail: "Fan 0 did not reach manual mode before the bounded deadline") == .takeoverRefused
+      && FanDiagnosticsSummary.failureEvent(forDetail: "macOS did not hand over the fan this time") == .takeoverRefused
+      && FanDiagnosticsSummary.failureEvent(forDetail: "anything else") == .takeoverFailed,
+    "Takeover failures are classified by message")
+  var capped = FanDiagnosticsData()
+  capped.append(FanDiagnosticRecord(event: .mode(.manual)))
+  for _ in 0..<(FanDiagnosticsData.maximumRecordsPerEvent + 25) { capped.append(FanDiagnosticRecord(event: .cooldownWait)) }
+  try require(
+    capped.records.filter { $0.event == .cooldownWait }.count == FanDiagnosticsData.maximumRecordsPerEvent
+      && capped.records.contains { $0.event == .mode(.manual) },
+    "Fan-layer records are bounded per kind and never forget a kind")
+
+  let now = Date(timeIntervalSince1970: 1_790_985_600)
+  let tracker = DiagnosticsSessionTracker(launchStartedAt: now.addingTimeInterval(-600))
+  let plain = try tracker.buildHealth(type: .manualHealth, reason: .userInitiated, generatedAt: now)
+  let plainPayload = try DiagnosticsPayloadEncoder.freeze(plain, reportType: .manualHealth, now: now)
+  try require(plain.fanLayer == nil && !plainPayload.preview.contains("fan_layer"),
+    "Without the opt-in the report must not mention the fan layer")
+  tracker.fanLayerSource = { layer }
+  let health = try tracker.buildHealth(type: .manualHealth, reason: .userInitiated, generatedAt: now)
+  let payload = try DiagnosticsPayloadEncoder.freeze(health, reportType: .manualHealth, now: now)
+  try require(payload.preview.contains("\"fan_layer\"") && payload.preview.contains("\"refusals_in_low_power_mode\""),
+    "Opted-in report must contain the exact fan_layer section")
+
+  // The validator refuses contradictory or open-ended sections.
+  func expectInvalid(_ name: String, _ change: (inout [String: Any]) -> Void) throws {
+    guard var root = try JSONSerialization.jsonObject(with: payload.data) as? [String: Any],
+      var section = root["fan_layer"] as? [String: Any]
+    else { throw CheckFailure(description: "fan_layer missing from the frozen payload") }
+    change(&section)
+    root["fan_layer"] = section
+    let data = try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
+    do {
+      try DiagnosticsPayloadValidator.validate(data, expectedType: .manualHealth)
+      throw CheckFailure(description: "Fan-layer validation accepted: \(name)")
+    } catch is DiagnosticsPayloadError {}
+  }
+  try expectInvalid("no duration although takeovers were held") { $0["takeover_duration"] = "none" }
+  try expectInvalid("a duration without any held takeover") {
+    var takeovers = $0["takeovers"] as? [String: Any] ?? [:]
+    takeovers["held"] = "0"
+    $0["takeovers"] = takeovers
+  }
+  try expectInvalid("more refusals on battery than refusals") { $0["refusals_on_battery"] = "21+" }
+  try expectInvalid("an unsupported Mac that controls fans") { $0["tier"] = "unsupported" }
+  try expectInvalid("unsorted modes") { $0["modes_used"] = ["boost", "auto"] }
+  try expectInvalid("repeated modes") { $0["modes_used"] = ["auto", "auto"] }
+  try expectInvalid("an unknown property") { $0["note"] = "free text" }
+  try expectInvalid("an unknown bucket") { $0["peak_temperature_c"] = "95" }
+  try expectInvalid("a missing property") { $0.removeValue(forKey: "peak_fan_share") }
+
+  // The compatibility report has no fan_layer section.
+  var compat: [String: Any] = try JSONSerialization.jsonObject(with: payload.data) as? [String: Any] ?? [:]
+  compat["report_type"] = "manual_compatibility"
+  compat["report_reason"] = "user_initiated_compatibility"
+  let compatData = try JSONSerialization.data(withJSONObject: compat, options: [.sortedKeys])
+  do {
+    try DiagnosticsPayloadValidator.validate(compatData, expectedType: .manualCompatibility)
+    throw CheckFailure(description: "fan_layer accepted in a compatibility report")
+  } catch is DiagnosticsPayloadError {}
+
+  // Statistics are an independent preference, off until the user turns them on.
+  let suite = "Helios.DiagnosticsFanStats.\(UUID().uuidString)"
+  guard let defaults = UserDefaults(suiteName: suite) else { throw CheckFailure(description: "defaults") }
+  defer { defaults.removePersistentDomain(forName: suite) }
+  let preferences = DiagnosticsPreferences(defaults: defaults)
+  var discarded = 0
+  preferences.fanStatisticsDiscarded = { discarded += 1 }
+  try require(!preferences.fanStatisticsEnabled && !preferences.automaticEnabled,
+    "Fan statistics must default to off")
+  preferences.setFanStatisticsEnabled(true)
+  try require(preferences.fanStatisticsEnabled && !preferences.automaticEnabled
+    && DiagnosticsPreferences(defaults: defaults).fanStatisticsEnabled,
+    "Fan statistics persist and never turn on automatic reports")
+  preferences.setFanStatisticsEnabled(false)
+  try require(discarded == 1 && !DiagnosticsPreferences(defaults: defaults).fanStatisticsEnabled,
+    "Turning fan statistics off discards what was recorded")
+}
+
 @main
 @MainActor
 struct DiagnosticsChecks {
@@ -912,6 +1347,8 @@ struct DiagnosticsChecks {
     try preferencesChecks()
     print("PASS diagnostics consent defaults OFF, survives relaunch, fails safe and stays independent")
     try builderChecks()
+    try systemSnapshotChecks()
+    try thermalFailureEvidenceChecks()
     print("PASS diagnostics allowlist builder is preference-blind and launch-scoped")
     try frozenPayloadChecks()
     print("PASS diagnostics preview is one frozen buffer with expiring generation-bound approval")
@@ -919,5 +1356,8 @@ struct DiagnosticsChecks {
     print("PASS diagnostics transport endpoint, body, consent gate, retry and cooldown contract")
     try await compatibilityChecks()
     print("PASS manual compatibility probe, topology, raw-SMC bounds, provenance and zero-network preview")
+    try fanLayerChecks()
+    print("PASS optional fan_layer section: opt-in only, closed enums and buckets, consistency rules, no free text")
+    try await exportNativeContractFixturesIfRequested()
   }
 }

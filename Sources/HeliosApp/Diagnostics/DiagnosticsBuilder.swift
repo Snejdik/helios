@@ -37,9 +37,15 @@ final class DiagnosticsSessionTracker {
   var stability = DiagnosticsStability(
     previousSessionEndedUncleanly: false, previousSessionDuration: nil, lifecycleCategory: .unknown)
 
+  /// Supplies the optional `fan_layer` section. Nil (the default) leaves it out.
+  var fanLayerSource: (@MainActor () -> DiagnosticsFanLayer?)?
+
   private var lastTicks: [DiagnosticsProviderName: UInt64] = [:]
   private var hasObservation: Set<DiagnosticsProviderName> = []
+  // Launch-scoped failure episodes, not polling counts. A source/category
+  // contributes again only after recovery or a different failure category.
   private var failureCounts: [DiagnosticsProviderName: Int] = [:]
+  private var activeFailures: [DiagnosticsProviderName: Set<String>] = [:]
 
   init(launchStartedAt: Date = Date()) {
     self.launchStartedAt = launchStartedAt
@@ -51,9 +57,7 @@ final class DiagnosticsSessionTracker {
     observe(.memory, sample: snapshot.memory)
     observe(.gpu, sample: snapshot.gpu)
     observe(.thermal, sample: snapshot.thermals) { metrics in
-      metrics.trustedFailures.isEmpty
-        ? nil
-        : (.invalidData, metrics.trustedFailures.count)
+      self.thermalFailureIdentities(metrics)
     }
     observe(.fanTelemetry, sample: snapshot.fans)
     observe(.battery, sample: snapshot.battery)
@@ -75,7 +79,6 @@ final class DiagnosticsSessionTracker {
   func updateHelper(_ observation: DiagnosticsHelperObservation) { helper = observation }
 
   func recordDiagnosticsError(_ category: DiagnosticsErrorCategory) {
-    guard category != .none else { return }
     diagnosticsErrorCategory = category
   }
 
@@ -94,7 +97,7 @@ final class DiagnosticsSessionTracker {
       generatedAt: DiagnosticsTimestamp.minuteUTC(generatedAt), reportReason: reason,
       helios: common.helios, system: common.system, capabilities: common.capabilities,
       providers: common.providers, helper: common.helper, runtime: common.runtime,
-      stability: common.stability)
+      stability: common.stability, fanLayer: fanLayerSource?())
   }
 
   func commonFields(generatedAt: Date = Date(), bundle: Bundle = .main) -> DiagnosticsCommonFields {
@@ -104,7 +107,7 @@ final class DiagnosticsSessionTracker {
   private func observe<Value: Sendable>(
     _ name: DiagnosticsProviderName,
     sample: MetricSample<Value>,
-    partial: (Value) -> (DiagnosticsFailureCategory, Int)? = { _ in nil }
+    partial: (Value) -> Set<String> = { _ in [] }
   ) {
     let previous = lastTicks[name]
     let changed = previous != sample.capturedTicks
@@ -121,11 +124,43 @@ final class DiagnosticsSessionTracker {
     }
     guard changed, hasObservation.contains(name) else { return }
     switch sample.result {
-    case .success(let value):
-      if let (_, count) = partial(value) { failureCounts[name] = min(21, failureCounts[name, default: 0] + min(21, max(1, count))) }
+    case .success(let value): recordFailureEpisodes(name, current: partial(value))
     case .failure(let error):
-      if isActualFailure(error) { failureCounts[name] = min(21, failureCounts[name, default: 0] + 1) }
+      // Absence/warm-up is not evidence that a previously failing source recovered.
+      if let failures = failureIdentity(error) { recordFailureEpisodes(name, current: failures) }
     }
+  }
+
+  private func failureIdentity(_ error: TelemetryError) -> Set<String>? {
+    // Missing/unsupported data and warm-up are capability states. Sleep and
+    // collection opt-out therefore cannot inflate failure totals.
+    switch error {
+    case .warmingUp, .unavailable: return nil
+    case .invalidData: return ["invalid_data"]
+    case .kernel, .ioKit, .smc: return ["io_error"]
+    }
+  }
+
+  private func recordFailureEpisodes(_ name: DiagnosticsProviderName, current: Set<String>) {
+    let newlyFailed = current.subtracting(activeFailures[name, default: []])
+    failureCounts[name] = min(21, failureCounts[name, default: 0] + newlyFailed.count)
+    activeFailures[name] = current
+  }
+
+  private func thermalFailureIdentities(_ metrics: ThermalMetrics) -> Set<String> {
+    var current = Set<String>()
+    for (key, error) in metrics.trustedFailures {
+      if let categories = failureIdentity(error) {
+        current.formUnion(categories.map { "\(key):\($0)" })
+      } else {
+        // A capability-only per-key result is neither a new failure nor proof
+        // that this key recovered. Match ordinary provider episode semantics.
+        current.formUnion(activeFailures[.thermal, default: []].filter {
+          $0.hasPrefix("\(key):")
+        })
+      }
+    }
+    return current
   }
 
   private func observeNVMe(_ sample: MetricSample<StorageMetrics>) {
@@ -133,24 +168,39 @@ final class DiagnosticsSessionTracker {
     let previous = lastTicks[name]
     let changed = previous != sample.capturedTicks
     lastTicks[name] = sample.capturedTicks
-    guard case .success(let storage) = sample.result else {
-      if previous != nil, changed { hasObservation.insert(name) }
-      if changed, hasObservation.contains(name), case .failure(let error) = sample.result,
-        isActualFailure(error)
-      { failureCounts[name] = min(21, failureCounts[name, default: 0] + 1) }
-      return
+    let result: MetricResult<NVMeSMARTHealth>
+    switch sample.result {
+    case .success(let storage): result = storage.smartHealth
+    case .failure(let error): result = .failure(error)
     }
     if previous == nil {
-      if case .success = storage.smartHealth { hasObservation.insert(name) }
-      if case .failure(let error) = storage.smartHealth, establishesInitialObservation(error) {
-        hasObservation.insert(name)
+      switch result {
+      case .success: hasObservation.insert(name)
+      case .failure(let error):
+        if establishesInitialObservation(error) { hasObservation.insert(name) }
       }
-    } else if changed {
-      hasObservation.insert(name)
+    } else if changed { hasObservation.insert(name) }
+    guard changed, hasObservation.contains(name) else { return }
+    switch result {
+    case .success: recordFailureEpisodes(name, current: [])
+    case .failure(let error):
+      // Absence/warm-up is not evidence that a previously failing source recovered.
+      if let failures = failureIdentity(error) { recordFailureEpisodes(name, current: failures) }
     }
-    if changed, hasObservation.contains(name), case .failure(let error) = storage.smartHealth,
-      isActualFailure(error)
-    { failureCounts[name] = min(21, failureCounts[name, default: 0] + 1) }
+  }
+
+  private func thermalDegradation(_ metrics: ThermalMetrics) -> DiagnosticsFailureCategory? {
+    // Preserve driver failures as I/O failures, rather than calling every
+    // partial batch invalid data. Optional/raw evidence remains local/manual.
+    if metrics.trustedFailures.values.contains(where: {
+      self.providerObservation($0).category == .ioError
+    }) { return .ioError }
+    if metrics.trustedFailures.values.contains(where: {
+      self.providerObservation($0).category == .invalidData
+    }) { return .invalidData }
+    if !metrics.trustedFailures.isEmpty { return .noData }
+    if case .failure = metrics.maximumSoCCelsius { return .noData }
+    return nil
   }
 
   private func buildCommon(generatedAt: Date, bundle: Bundle) -> DiagnosticsCommonFields {
@@ -159,7 +209,7 @@ final class DiagnosticsSessionTracker {
       memory: summary(.memory, latestSnapshot.memory),
       gpu: summary(.gpu, latestSnapshot.gpu),
       thermal: summary(.thermal, latestSnapshot.thermals) { metrics in
-        metrics.trustedFailures.isEmpty ? nil : .invalidData
+        self.thermalDegradation(metrics)
       },
       fanTelemetry: summary(.fanTelemetry, latestSnapshot.fans),
       battery: summary(.battery, latestSnapshot.battery),
@@ -297,11 +347,6 @@ final class DiagnosticsSessionTracker {
     }
   }
 
-  private func isActualFailure(_ error: TelemetryError) -> Bool {
-    if case .warmingUp = error { return false }
-    return true
-  }
-
   private func establishesInitialObservation(_ error: TelemetryError) -> Bool {
     switch error {
     case .warmingUp, .unavailable: false
@@ -365,7 +410,7 @@ enum DiagnosticsFieldRules {
     guard let value else { return false }
     return !value.isEmpty && value.utf8.count <= 32
       && value.range(
-        of: #"^[0-9]+(?:\.[0-9]+){1,3}(?:[-+][A-Za-z0-9.-]+)?$"#,
+        of: #"^[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?(?:\+[A-Za-z0-9.-]+)?$"#,
         options: .regularExpression) != nil
   }
 
@@ -376,8 +421,11 @@ enum DiagnosticsFieldRules {
   }
 
   static func appleSiliconFamily(_ chipName: String) -> String {
-    for family in ["M1", "M2", "M3", "M4", "M5"] where chipName.contains(family) {
-      return family
+    for family in ["M1", "M2", "M3", "M4", "M5"] {
+      // Match a complete family token: a future M10 is not an M1 mapping.
+      if chipName.range(of: "\\b\(family)\\b", options: .regularExpression) != nil {
+        return family
+      }
     }
     return chipName.localizedCaseInsensitiveContains("Apple") ? "future" : "unknown"
   }
@@ -428,5 +476,33 @@ enum DiagnosticsFieldRules {
     case ..<86_400: .sixToTwentyFourHours
     default: .overTwentyFourHours
     }
+  }
+}
+
+/// Explicit allowlist: reuse the already-sanitized diagnostics identity/provider
+/// snapshot. Never format raw errors, process/device names, paths or addresses.
+enum DiagnosticsSystemSnapshot {
+  static func text(_ common: DiagnosticsCommonFields) -> String {
+    let system = common.system
+    var lines = [
+      "Helios \(common.helios.version) (build \(common.helios.build))",
+      "macOS \(system.macOSVersion) (build \(system.macOSBuild))",
+      "Model: \(system.machineModel ?? "unknown")",
+      "Apple Silicon family: \(system.appleSiliconFamily ?? "unknown")",
+      "Memory bucket: \(system.memoryBucketGiB.rawValue) GiB",
+      "Fan count: \(system.fanCount.map(String.init) ?? "unknown")",
+      "Helper: \(common.helper.installationState.rawValue) / \(common.helper.connectionState.rawValue) / protocol \(common.helper.protocolCompatibility.rawValue)",
+      "Provider / capability states (latest shared observations):",
+    ]
+    let providers = common.providers.all
+    let capabilities = common.capabilities.all
+    for name in DiagnosticsProviderName.allCases {
+      guard let provider = providers[name] else { continue }
+      let category = provider.failureCategory.map { " / " + $0.rawValue } ?? ""
+      let capability = capabilities[name].map { " / capability " + $0.rawValue } ?? ""
+      lines.append("  \(name.rawValue): \(provider.state.rawValue)\(category)\(capability)")
+    }
+    lines.append("Fan-write validation is separate from monitoring availability.")
+    return lines.joined(separator: "\n")
   }
 }

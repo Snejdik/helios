@@ -7,10 +7,6 @@ developers compiling the source; a local build is not a distributable beta.
 
 ## Get the source
 
-If the source preview is not yet public, repository access is required. If
-GitHub returns a 404, request access through [support](mailto:helios@snejda.cz); the
-public availability of this URL is a separate publication step.
-
 ```sh
 git clone https://github.com/Snejdik/helios.git
 cd helios
@@ -33,7 +29,7 @@ The app scheme is **HeliosApp** (not `Helios`).
 - Apple Silicon Mac (`arm64`)
 - macOS 13.0+
 - current Xcode / macOS SDK capable of compiling Swift 6
-- Apple Development signing identity for authenticated helper/XPC operation
+- Apple Development signing identity for authenticated helper/XPC operation (a paid Developer ID is not needed to build and run locally)
 
 No third-party package manager or runtime dependency is required.
 
@@ -108,8 +104,8 @@ After a successful Debug build, open
 open .build/DerivedData/Build/Products/Debug/Helios.app
 ```
 
-Quit other copies first. The app lives in the menu bar and does not normally
-show a Dock icon. Start in System cooling mode. Helper registration and an
+Quit other copies first. The app lives in the menu bar; since 0.2 it shows a
+Dock icon only while one of its windows is open. Start in System cooling mode. Helper registration and an
 authenticated connection are separate from successful compilation; use the
 [installation guide](INSTALLATION.md#6-understand-permissions-and-helper-approval)
 for the actual UI flow. Do not modify entitlements, trust requirements or frozen
@@ -119,6 +115,21 @@ If Xcode reports a signing-team/certificate error, check the ignored local
 configuration and your Xcode account. If the command uses the wrong toolchain,
 check Xcode’s Command Line Tools selection. A Debug build launched under a
 debugger is not evidence of production helper connectivity.
+
+## Run the signed build
+
+`scripts/run-helios.sh` builds a signed Release (`--build`), quits a running Helios
+gracefully so the fans return to macOS (`--replace`), opens the app and can watch
+its CPU and memory use (`--watch`). `scripts/watch-helios.sh` and
+`scripts/watch-fan-layer.sh` measure the app and the fans without writing anything.
+
+## Version identity
+
+The version is `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION` in
+`Config/Base.xcconfig`, and the release tag shown in About is `HeliosReleaseTag` in
+`Resources/HeliosApp-Info.plist`. The tag must be a `v`-prefixed SemVer whose core
+matches `MARKETING_VERSION` (for Beta 1, `v0.2.0-beta.1`). Update checks compare tags,
+not build numbers.
 
 ## Regression gate
 
@@ -141,6 +152,15 @@ physical fan recovery.
 
 The suite includes read-only/simulated checks around telemetry, persistence, presentation, XPC authentication, fan ownership/lifecycle and safety invariants. Generic regression runs must not be used as an excuse to broaden or physically exercise fan writes on unvalidated hardware.
 
+## Offline UI fixture renders
+
+The Helios (0.2) interface can be rendered from deterministic fixtures without
+launching Helios or touching the helper:
+
+```sh
+TMPDIR="$(getconf DARWIN_USER_TEMP_DIR)" ./scripts/render-ui-fixtures.sh
+```
+
 ## Release/performance validation
 
 The repository also contains dedicated Release/performance tooling, including:
@@ -153,8 +173,12 @@ The repository also contains dedicated Release/performance tooling, including:
 
 Performance numbers are meaningful only when the exact executable, machine, power state, preset, UI state and methodology are comparable.
 
-## Public distribution
+## Distribution
 
-A local Apple Development build is not the final public distribution format. A user-friendly release needs Developer ID Application signing, hardened-runtime validation, Apple notarization, stapling and clean-machine installation/helper testing.
+Beta releases are an Apple Development signed `Helios.app`, packaged as a DMG and ZIP
+and published on GitHub Releases. They are **not notarized**, so users confirm the first
+launch with *Open Anyway* ([installation guide](INSTALLATION.md#4-first-launch-and-gatekeeper)).
+A smoother public release needs Developer ID Application signing, hardened-runtime
+validation, Apple notarization, stapling and clean-machine installation and helper testing.
 
 Helios should never instruct users to disable Gatekeeper as a distribution workaround.

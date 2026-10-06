@@ -311,7 +311,9 @@ final class DiagnosticsController: ObservableObject {
     let result = await resolvedTransport().send(payload)
     guard !stopped, !Task.isCancelled else { return .cancelled }
     switch result {
-    case .accepted: preferences.recordLocalStatus(.success, category: .none)
+    case .accepted:
+      session.recordDiagnosticsError(.none)
+      preferences.recordLocalStatus(.success, category: .none)
     case .rejected:
       session.recordDiagnosticsError(.serverRejected)
       preferences.recordLocalStatus(.failed, category: .serverRejected, at: now())
@@ -372,6 +374,9 @@ final class DiagnosticsController: ObservableObject {
 
       let payload: FrozenDiagnosticsPayload
       do {
+        // Payload describes this attempt. Last local submission status retains
+        // prior failures; an old transport error is not a current provider fault.
+        session.recordDiagnosticsError(.none)
         payload = try makeHealthPayload(type: .automaticHealth, reason: reason, now: now())
       } catch {
         session.recordDiagnosticsError(.build)
@@ -389,6 +394,7 @@ final class DiagnosticsController: ObservableObject {
         preferences.consentRevision == revision else { return }
       switch result {
       case .accepted:
+        session.recordDiagnosticsError(.none)
         // Record exactly the accepted report's build tuple, not a newer snapshot.
         guard let accepted = try? JSONDecoder().decode(DiagnosticsHealthReport.self, from: payload.data)
         else { return }

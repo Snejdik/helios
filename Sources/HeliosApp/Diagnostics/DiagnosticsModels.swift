@@ -225,6 +225,15 @@ struct DiagnosticsCapabilities: Codable, Sendable, Equatable {
     case nvmeSmart = "nvme_smart"
     case energyProcess = "energy_process"
   }
+
+  var all: [DiagnosticsProviderName: DiagnosticsCapabilityState] {
+    [
+      .cpu: cpu, .memory: memory, .gpu: gpu, .thermal: thermal,
+      .fanTelemetry: fanTelemetry, .battery: battery, .storage: storage,
+      .nvmeSmart: nvmeSmart, .network: network, .wifi: wifi,
+      .bluetooth: bluetooth, .energyProcess: energyProcess,
+    ]
+  }
 }
 
 struct DiagnosticsProviderSummary: Codable, Sendable, Equatable {
@@ -324,6 +333,8 @@ struct DiagnosticsHealthReport: Codable, Sendable, Equatable {
   let helper: DiagnosticsHelper
   let runtime: DiagnosticsRuntime
   let stability: DiagnosticsStability
+  /// Present only when the user turned on fan-control statistics.
+  var fanLayer: DiagnosticsFanLayer? = nil
 
   enum CodingKeys: String, CodingKey {
     case schemaVersion = "schema_version"
@@ -331,6 +342,7 @@ struct DiagnosticsHealthReport: Codable, Sendable, Equatable {
     case generatedAt = "generated_at"
     case reportReason = "report_reason"
     case helios, system, capabilities, providers, helper, runtime, stability
+    case fanLayer = "fan_layer"
   }
 }
 
@@ -522,7 +534,9 @@ enum DiagnosticsPayloadValidator {
       "capabilities", "providers", "helper", "runtime", "stability",
     ]
     let compatibility = type == .manualCompatibility
-    try closed(root, required: common + (compatibility ? ["raw_hardware", "helios_classification"] : []), at: "$")
+    try closed(
+      root, required: common + (compatibility ? ["raw_hardware", "helios_classification"] : []),
+      optional: compatibility ? [] : ["fan_layer"], at: "$")
     guard integer(root["schema_version"]) == 1 else {
       throw DiagnosticsPayloadError.invalid("$.schema_version")
     }
@@ -548,6 +562,9 @@ enum DiagnosticsPayloadValidator {
     try validateHelper(try object(root, "helper", at: "$"))
     try validateRuntime(try object(root, "runtime", at: "$"))
     try validateStability(try object(root, "stability", at: "$"))
+    if root["fan_layer"] != nil {
+      try DiagnosticsFanLayerValidator.validate(try object(root, "fan_layer", at: "$"))
+    }
     if compatibility {
       let raw = try object(root, "raw_hardware", at: "$")
       let classification = try object(root, "helios_classification", at: "$")
@@ -559,7 +576,7 @@ enum DiagnosticsPayloadValidator {
 
   private static func validateHelios(_ value: [String: Any]) throws {
     try closed(value, required: ["version", "build"], at: "$.helios")
-    guard boundedString(value["version"], 1...32, pattern: #"^[0-9]+(?:\.[0-9]+){1,3}(?:[-+][A-Za-z0-9.-]+)?$"#),
+    guard boundedString(value["version"], 1...32, pattern: #"^[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?(?:\+[A-Za-z0-9.-]+)?$"#),
       boundedString(value["build"], 1...32, pattern: #"^[A-Za-z0-9.-]+$"#)
     else { throw DiagnosticsPayloadError.invalid("$.helios") }
   }

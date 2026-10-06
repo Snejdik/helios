@@ -1,44 +1,38 @@
 # Helios roadmap
 
-Helios is now in **release engineering / external-beta preparation**. The monitoring and UI feature set is intentionally much more stable than during the earlier implementation phases; near-term work should favor validation, compatibility and distribution over large rewrites.
+Helios 0.2.0 **Beta 1** is the first external beta. Near-term work favours testing,
+compatibility and distribution over large rewrites.
 
-## Now
+## Done
 
-- [x] Native menu-bar architecture
-- [x] Quick Dashboard and Full Monitor
-- [x] CPU / Memory / GPU / thermal telemetry
-- [x] Battery and system-power observability
-- [x] Storage, volumes and read-only NVMe SMART
-- [x] Network / Wi-Fi diagnostics
-- [x] Process and per-app energy attribution
-- [x] Persistent telemetry/history and health events
-- [x] Devices, system information and read-only maintenance inventory
+- [x] Native menu-bar app, popovers and a main window with Overview, Activity, History and Diagnostics
+- [x] CPU, memory, GPU, thermal, fan, battery, power, storage, network and process telemetry
+- [x] Battery health over time and an Energy page with period comparison
+- [x] Hardware page and a goal-driven welcome
+- [x] Local history, health events and optional notifications
 - [x] Authenticated fan-only privileged helper
-- [x] Exact-profile Manual / Boost / Automatic Rules safety model
-- [x] Full regression and native presentation gates
-- [x] Measured CPU/wakeup/persistence optimization
-- [x] Repeated UI lifecycle/memory plateau validation on the primary M4 host
+- [x] Experimental cool-only fan layer: System, Boost, Manual and Automatic curve, speed limit and handback to macOS
+- [x] Optional, opt-in diagnostics with a preview, including optional fan-control statistics
+- [x] Full regression, presentation and fixture-render gates
+- [x] PolyForm Noncommercial 1.0.0 license
+- [x] DMG and ZIP packaging for beta testing; GitHub Releases update check with manual download
 
-## External beta preparation
+## Beta 1 → next
 
-- [ ] Read-only smoke tests on additional M1/M2/M3/M4/M5-class Macs
-- [ ] Fanless MacBook Air validation
-- [ ] Dual-fan Mac read-only topology validation
-- [ ] Desktop/no-battery validation
-- [ ] Older supported macOS smoke testing
-- [x] Adopt the PolyForm Noncommercial License 1.0.0 for Helios original material
+- [ ] Smoke tests on more Macs (M1, M2, M3, M5; fanless MacBook Air; dual-fan; desktop)
+- [ ] Older supported macOS versions
+- [ ] Trusted thermal maps beyond the M4 family, so fan control can reach more Macs
+- [ ] Remaining physical fan tests (sleep and lid close while holding, reboot with ownership, macOS reclaiming the fans)
 - [ ] Define the public support matrix
-- [ ] Collect beta crash/compatibility feedback
+- [ ] Collect beta crash and compatibility feedback
+- [ ] Optional: engage cooling earlier when the temperature climbs fast, always within the speed limit
 
 ## Distribution
 
 - [ ] Developer ID Application signing
-- [ ] Notarization
-- [ ] Stapling
-- [ ] Clean-machine helper install/approval test
-- [x] DMG/ZIP packaging for public pre-beta testing
+- [ ] Notarization and stapling
+- [ ] Clean-machine helper install and approval test
 - [ ] Release automation
-- [x] Pre-beta update strategy: GitHub Releases checker with manual download
 - [ ] Secure automatic update installation after Developer ID signing and notarization
 
 ## ROADMAP / PLANNED — not implemented

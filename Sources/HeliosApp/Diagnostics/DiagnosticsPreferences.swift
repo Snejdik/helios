@@ -37,8 +37,13 @@ final class DiagnosticsPreferences: ObservableObject {
   @Published private(set) var lastAutomaticChainStartedAt: Date?
   @Published private(set) var pendingRetryCount: Int
   @Published private(set) var nextEligibleTime: Date?
+  /// Separate from automatic reports and off by default: adds the fan-control
+  /// statistics section to a report. It never affects fan control itself.
+  @Published private(set) var fanStatisticsEnabled: Bool
 
   var automaticWorkCancellation: (() -> Void)?
+  /// Called when fan statistics are switched off, so what was recorded is dropped.
+  var fanStatisticsDiscarded: (() -> Void)?
   var automaticEnabled: Bool { consent == .enabled }
 
   private let defaults: UserDefaults
@@ -56,11 +61,12 @@ final class DiagnosticsPreferences: ObservableObject {
     static let chainStartedAt = DiagnosticsPreferences.namespace + "lastAutomaticChainStartedAt"
     static let retryCount = DiagnosticsPreferences.namespace + "pendingRetryCount"
     static let nextEligible = DiagnosticsPreferences.namespace + "nextEligibleTime"
+    static let fanStatistics = DiagnosticsPreferences.namespace + "fanStatistics"
 
     static let all = [
       consent, consentRevision, lastSuccessfulReport, lastSuccessfulSend, lastStatus,
       lastStatusCategory, lastVersion,
-      lastBuild, lastMacOSBuild, chainStartedAt, retryCount, nextEligible,
+      lastBuild, lastMacOSBuild, chainStartedAt, retryCount, nextEligible, fanStatistics,
       DiagnosticsLifecycleStore.key,
     ]
   }
@@ -84,6 +90,14 @@ final class DiagnosticsPreferences: ObservableObject {
     let retry = (defaults.object(forKey: Key.retryCount) as? NSNumber)?.intValue ?? 0
     pendingRetryCount = (0...2).contains(retry) ? retry : 0
     nextEligibleTime = Self.safeDate(defaults.object(forKey: Key.nextEligible))
+    fanStatisticsEnabled = (defaults.object(forKey: Key.fanStatistics) as? Bool) ?? false
+  }
+
+  func setFanStatisticsEnabled(_ enabled: Bool) {
+    guard enabled != fanStatisticsEnabled else { return }
+    fanStatisticsEnabled = enabled
+    defaults.set(enabled, forKey: Key.fanStatistics)
+    if !enabled { fanStatisticsDiscarded?() }
   }
 
   func makeLifecycleStore() -> DiagnosticsLifecycleStore { DiagnosticsLifecycleStore(defaults: defaults) }

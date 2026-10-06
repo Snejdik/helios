@@ -150,3 +150,13 @@ fastlane/report.xml
 fastlane/Preview.html
 fastlane/screenshots/**/*.png
 fastlane/test_output/
+
+# ============================================================
+# Local-only notes and handoffs (never published)
+# docs/ is for guides and explanations only
+# ============================================================
+
+docs/local/
+
+# Local code-index cache
+.codebase-context/

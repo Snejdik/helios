@@ -1,21 +1,22 @@
 # Install Helios — guide for first-time testers
 
-You do not need Terminal or Xcode to install a Helios test build.
-Helios 0.1.0 Pre-beta 2 is publicly available from GitHub Releases as a DMG
-and ZIP test build. It is Apple Development signed and not notarized; a
-Developer ID signed, notarized public-beta distribution is still pending.
+You do not need Terminal or Xcode to install Helios. **Helios 0.2.0 Beta 1** is
+available from GitHub Releases as a DMG and a ZIP. It is **not notarized**: the
+project has no paid Apple Developer ID yet, so macOS asks you to confirm the first
+launch (see [step 4](#4-first-launch-and-gatekeeper)). Basic monitoring needs nothing
+else; fan control is optional and experimental.
 
 ## 1. Check your Mac
 
 Choose **Apple menu → About This Mac**. You need an **Apple Silicon** chip (an
 Apple M-series chip) and **macOS 13 or later**. Intel Macs are not supported.
 The minimum macOS version is a build target, not proof that every supported
-version or Mac model has been tested. Most testing is on the base M4 MacBook Pro.
+version or Mac model has been tested. Most testing is on a MacBook Pro with an M4 chip.
 
 ## 2. Download the app
 
 Use the current test build from [GitHub Releases](https://github.com/Snejdik/helios/releases).
-The recommended package is the DMG release asset. GitHub's **Code → Download ZIP**
+The recommended package is the DMG (`Helios-0.2.0-beta.1.dmg`). GitHub's **Code → Download ZIP**
 contains developer source files, not an app you can double-click. If a release
 asset or checksum looks inconsistent, stop and contact
 [helios@snejda.cz](mailto:helios@snejda.cz).
@@ -50,10 +51,10 @@ run the app from inside a mounted disk image.
 macOS may ask whether you want to open an app downloaded from the Internet.
 Confirm only if this is the build you obtained from the maintainer.
 
-The repository uses local Apple Development signing; that is not a notarized
-public distribution. A downloaded test build may therefore be blocked because
-Apple cannot verify its developer or notarization. The exact wording varies by
-macOS version and supplied artifact.
+Beta 1 is signed for development but **not notarized**, so macOS Gatekeeper cannot
+verify it and may block the first launch with a message such as "Helios can't be
+opened" or "Apple could not verify…". That is expected for this build. The exact
+wording varies by macOS version.
 
 For a trusted test build, macOS offers a **per-app** exception:
 
@@ -73,18 +74,21 @@ Gatekeeper, remove quarantine through Terminal, or change system security settin
 ## 5. Find Helios and finish setup
 
 Helios is a **menu-bar app**: look at the top-right area of your screen for its
-metric items. It normally has no Dock icon. Click a Helios metric to open its
-popover or Dashboard, then choose **Full Monitor** to see detailed views.
-Use the Dashboard's menu for **Settings**.
+metric items. It has a Dock icon only while one of its windows is open. Click
+the Helios sun to open the summary popover, then **Open Helios** for the main
+window (Overview, components such as CPU, Memory, Thermals, Battery, Energy and
+Network, then Activity, History and Diagnostics). The popover's **Settings…**
+button opens Settings. The original 0.1 interface remains available in
+Settings → Advanced as *Legacy*.
 
-<img src="images/menu-bar-light.png" alt="Live Helios menu-bar CPU, RAM, temperature and power metrics beside the monochrome sun" width="474">
+<img src="images/menu-bar-dark.png" alt="Helios menu-bar items: CPU, RAM, fan state over temperature and power, beside the monochrome sun" width="420">
 
 If Welcome Setup appears, choose an interface preset and finish the setup.
 Optional diagnostics are your choice; monitoring does not require sharing them.
 Leave cooling in **System** for ordinary beta testing.
 
-To verify it is running, open the Dashboard and watch CPU or memory readings
-update, then open Full Monitor. Some hardware fields may say unavailable; that
+To verify it is running, open the popover and watch the CPU chart move, then open
+the main window. Some hardware fields may say unavailable; that
 does not mean the entire app failed. Closing a window leaves menu-bar monitoring
 running. Use Helios's **Quit Helios** command to stop the app.
 
@@ -96,7 +100,8 @@ running. Use Helios's **Quit Helios** command to stop the app.
 | Notifications | Optional health alerts request notification permission after a user action. You can decline. |
 | Launch at Login | Optional in Settings → General. It starts the app at login; it is separate from helper boot registration. |
 | Share beta diagnostics | An in-app opt-in, off by default. Manual reports have a preview and separate Send confirmation. |
-| Privileged helper | Needed for eligible fan control, not ordinary read-only monitoring. Installing or approving it does not make unsupported hardware writable. |
+| Privileged helper | Needed only for fan control, not ordinary monitoring. Installing or approving it does not make a Mac fan-controllable. |
+| Experimental fan control | Off by default. Turn it on in Settings → Cooling for your exact Mac model and macOS version; a macOS update asks again. |
 
 Helios does not request microphone permission merely to list audio devices.
 Accessibility, Screen Recording and Full Disk Access are not basic installation
@@ -115,12 +120,25 @@ If you specifically need the helper for an eligible setup:
    Installed is registration status; Connected is a separate authenticated
    connection status.
 
-**Helper installation ≠ hardware authorization for fan writes.** Unvalidated
-machines remain **System/read-only**, even with the helper installed.
+**Helper installation ≠ permission to control fans.** After the helper is
+connected, Settings → Cooling shows how Helios classified your Mac (*Validated*,
+*Experimental* or *Unsupported*, with the reason). Only on a supported Mac can you
+tick **Use experimental fan control on this Mac** and accept the risk notice. Until
+then Helios stays read-only.
 
-A development build may show **Signing Required** or fail service registration.
-Open Anyway cannot fix that. Ask the maintainer for a correctly signed test
-build; do not replace signatures or manually install a root service.
+### About the experimental fan layer
+
+- Helios only **adds** cooling on top of macOS, within a speed limit of 90 % of the
+  factory maximum (you can unlock the full range in Settings → Cooling).
+- It hands the fans back to macOS on any error, when you quit Helios, before sleep,
+  if the helper restarts, and whenever more cooling than your limit is needed.
+- Taking over the fans from macOS takes several seconds. That is normal.
+- Leave cooling on **System** unless you have a reason to change it. It comes with
+  no warranty; see [How Helios works](HOW_IT_WORKS.md).
+
+A build you compiled yourself may show **Signing Required** or fail service
+registration; see [Building](BUILDING.md#local-signing-configuration). Open Anyway
+cannot fix that. Do not replace signatures or manually install a root service.
 
 ## Common first-launch problems
 
@@ -143,10 +161,6 @@ email [helios@snejda.cz](mailto:helios@snejda.cz). Include the app version from
 Settings → About, your Mac/chip and macOS version, and the exact error. Review
 screenshots for private information first. If GitHub shows a 404 or requires
 repository access you do not have, use the support email instead.
-
-The [Energy Inspector empty-state example](images/energy-inspector-empty-dark.png)
-shows what happens before on-battery history is available. It is not a send or
-installation failure: allow Helios to observe normal battery use first.
 
 ## Remove Helios cleanly
 
@@ -175,5 +189,5 @@ removing the app so the helper can be unregistered through the supported flow.
 
 Prepare removal as above. Keep the erasure option off to preserve settings, or
 turn it on for a clean reinstall. Quit, move the old app to Trash, copy the new
-app to Applications, and open it. Revisit helper approval if you need it. Do not
-run the old and new copies together. No automatic updater is promised for this beta.
+app to Applications, and open it. Revisit helper approval if you need it (it may ask for **Reinstall** in Settings → Cooling after an update). Do not
+run the old and new copies together. Helios only tells you when a new release exists; it never installs updates by itself.

@@ -13,9 +13,11 @@ cd "$(dirname "$0")/.."
 ./scripts/check-ui8-portable.sh
 ./scripts/check-diagnostics.sh
 ./scripts/check-updates.sh
+./scripts/check-perf-tooling.sh
 
 # Fail fast on Next23 UI warnings/type errors and native render regressions.
 ./scripts/check-presentation.sh
+./scripts/check-ui-fixtures.sh
 
 # Compile the complete application before spending minutes on backend simulations.
 xcodebuild \
@@ -29,6 +31,7 @@ printf '%s\n' "PASS Next23 full Xcode build before long regression suites"
 ./scripts/check-ownership.sh
 ./scripts/check-ipc.sh
 ./scripts/check-fans.sh
+./scripts/check-fan-layer.sh
 ./scripts/check-storage-p1.sh
 ./scripts/check-performance-core.sh
 ./scripts/check-ui-memory-lifecycle.sh

@@ -8,7 +8,6 @@ final class DiagnosticsManualApproval: ObservableObject {
   private var generation: UInt64 = 0
 
   var preview: String { payload?.preview ?? "" }
-  var hasPayload: Bool { payload != nil }
 
   func replace<T: Encodable>(
     with report: T,
@@ -78,9 +77,9 @@ struct DiagnosticsCompatibilityConsentView: View {
       Text(
         "It never collects raw SMC bytes, serial numbers, identifiers, files, process names, logs, fan commands, or write capability. The privileged helper is not used."
       )
-      .font(.system(size: 10.5)).foregroundStyle(.secondary)
+      .font(.system(size: 11)).foregroundStyle(.secondary)
       if let status {
-        Text(status).font(.system(size: 10.5, weight: .medium)).foregroundStyle(.secondary)
+        Text(status).font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
       }
       HStack {
         Spacer()
@@ -97,6 +96,7 @@ struct DiagnosticsCompatibilityConsentView: View {
 }
 
 struct DiagnosticsPayloadView: View {
+  @Environment(\.dismiss) private var dismiss
   let title: String
   let explanation: String
   let payload: FrozenDiagnosticsPayload
@@ -116,7 +116,7 @@ struct DiagnosticsPayloadView: View {
 
       ScrollView([.horizontal, .vertical]) {
         Text(payload.preview)
-          .font(.system(size: 10.5, design: .monospaced))
+          .font(.system(size: 11, design: .monospaced))
           .textSelection(.enabled)
           .frame(maxWidth: .infinity, alignment: .topLeading)
           .padding(12)
@@ -127,12 +127,12 @@ struct DiagnosticsPayloadView: View {
           .strokeBorder(Color.secondary.opacity(0.25), lineWidth: 0.5))
 
       if let status {
-        Text(status).font(.system(size: 10.5)).foregroundStyle(.secondary).textSelection(.enabled)
+        Text(status).font(.system(size: 11)).foregroundStyle(.secondary).textSelection(.enabled)
       }
 
       HStack {
         Text("This exact UTF-8 JSON is the complete request body.")
-          .font(.system(size: 10)).foregroundStyle(.secondary)
+          .font(.system(size: 11)).foregroundStyle(.secondary)
         Spacer()
         Button("Copy JSON") {
           let pasteboard = NSPasteboard.general
@@ -140,6 +140,9 @@ struct DiagnosticsPayloadView: View {
           pasteboard.setString(payload.preview, forType: .string)
         }
         if let onRegenerate { Button("Regenerate preview", action: onRegenerate) }
+        Button("Close") { dismiss() }
+          .keyboardShortcut("w", modifiers: .command)
+          .disabled(sending)
         if let onSend {
           Button(sendTitle, action: onSend)
             .buttonStyle(.borderedProminent)
@@ -149,5 +152,7 @@ struct DiagnosticsPayloadView: View {
     }
     .padding(20)
     .frame(minWidth: 620, minHeight: 460)
+    .interactiveDismissDisabled(sending)
+    .onExitCommand { if !sending { dismiss() } }
   }
 }
