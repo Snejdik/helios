@@ -144,6 +144,7 @@ final class SMCThermalReader {
   private var advisoryTemperatureKeys: [String]?
   private var discoveryFailures: [String: TelemetryError] = [:]
   private var trustedDiscoveryFailures: [String: TelemetryError] = [:]
+  private var nextDiscoveryRetry: ContinuousClock.Instant?
 
   private var cachedAdvisoryReadings: [ThermalReading] = []
   private var cachedAdvisoryFailures: [String: TelemetryError] = [:]
@@ -155,12 +156,17 @@ final class SMCThermalReader {
     self.classifier = classifier
   }
 
-  func read() throws -> ThermalMetrics {
-    try discoverTemperatureKeysIfNeeded()
+  private var rawDetailsWereVisible = false
+
+  func read(rawDetailsVisible: Bool = true, forceRawRefresh: Bool = false,
+    now: ContinuousClock.Instant = .now) throws -> ThermalMetrics {
+    let newlyVisible = rawDetailsVisible && !rawDetailsWereVisible
+    rawDetailsWereVisible = rawDetailsVisible
+    try discoverTemperatureKeysIfNeeded(now: now)
 
     let trustedKeys = trustedTemperatureKeys ?? []
     let advisoryKeys = advisoryTemperatureKeys ?? []
-    guard !trustedKeys.isEmpty || !advisoryKeys.isEmpty else {
+    guard !trustedKeys.isEmpty || !advisoryKeys.isEmpty || !discoveryFailures.isEmpty else {
       throw TelemetryError.unavailable("No supported SMC temperature keys discovered")
     }
 
@@ -170,18 +176,29 @@ final class SMCThermalReader {
     // Raw/unclassified keys are expert diagnostics, not control inputs. Reading
     // 100+ undocumented SMC channels every 1–2 seconds is needless monitoring
     // overhead, so refresh them at a relaxed cadence and expose their age.
-    let now = ContinuousClock.now
     let shouldRefreshAdvisory =
       !advisoryKeys.isEmpty
-      && (advisoryReadingsCapturedAt == nil
+      && (forceRawRefresh || newlyVisible || advisoryReadingsCapturedAt == nil
         || nextAdvisoryRefresh.map { now >= $0 } ?? true)
 
     if shouldRefreshAdvisory {
+      // Age the advisory batch from its first read, not the end of potentially
+      // slow driver calls. This is diagnostic freshness only, never safety data.
+      let advisoryStartedAt = Date()
       let advisoryBatch = read(keys: advisoryKeys)
       cachedAdvisoryReadings = advisoryBatch.readings
       cachedAdvisoryFailures = advisoryBatch.failures
-      advisoryReadingsCapturedAt = Date()
-      nextAdvisoryRefresh = now.advanced(by: Self.advisoryRefreshInterval)
+      advisoryReadingsCapturedAt = advisoryStartedAt
+      // Frozen FanControlModel conservatively checks raw Tp/Te/Tg failures.
+      // Keep its existing 15-second advisory evidence cadence even when hidden;
+      // do not reinterpret those prefixes as trusted temperature identities.
+      let hasLegacyFanGuardKeys = advisoryKeys.contains {
+        $0.hasPrefix("Tp") || $0.hasPrefix("Te") || $0.hasPrefix("Tg")
+      }
+      nextAdvisoryRefresh = now.advanced(by: TelemetryDetailPolicy.interval(
+        visible: rawDetailsVisible || hasLegacyFanGuardKeys,
+        foreground: Self.advisoryRefreshInterval,
+        background: TelemetryDetailPolicy.backgroundRawSensorInterval))
     }
 
     let readings = trustedBatch.readings + cachedAdvisoryReadings
@@ -191,16 +208,18 @@ final class SMCThermalReader {
     failures.merge(trustedBatch.failures, uniquingKeysWith: { _, newest in newest })
     failures.merge(cachedAdvisoryFailures, uniquingKeysWith: { _, newest in newest })
 
-    // Health and safety semantics use only failures tied to exact classifier-
-    // trusted keys. Advisory/raw SMC failures remain evidence, not health faults.
+    // Ordinary provider health uses only exact classifier-trusted failures.
+    // Frozen fan readiness remains additionally conservative about raw prefixes,
+    // as noted in the cadence policy above; its guard is not broadened here.
     var trustedFailures = trustedDiscoveryFailures
     trustedFailures.merge(trustedBatch.failures, uniquingKeysWith: { _, newest in newest })
 
-    guard !readings.isEmpty else {
-      let firstFailure = failures.keys.sorted().first.flatMap { failures[$0] }
-      throw firstFailure ?? TelemetryError.unavailable("No valid SMC temperature readings")
-    }
-
+    // Keep even an empty decoded batch as explicit per-key evidence. Choosing
+    // an arbitrary raw error here could mask a trusted I/O failure, turn an
+    // optional decode error into a provider failure episode, and lose the raw
+    // inventory. No valid trusted maximum still means no usable temperature;
+    // the diagnostics builder classifies trusted failures/no_data separately,
+    // and frozen fan readiness still requires all trusted groups and a maximum.
     return ThermalMetrics(
       readings: readings,
       failures: failures,
@@ -208,7 +227,18 @@ final class SMCThermalReader {
       advisoryReadingsCapturedAt: advisoryReadingsCapturedAt)
   }
 
-  private func discoverTemperatureKeysIfNeeded() throws {
+  private func discoverTemperatureKeysIfNeeded(now: ContinuousClock.Instant) throws {
+    if let nextDiscoveryRetry, now >= nextDiscoveryRetry {
+      // Retry incomplete discovery at a bounded cadence. Cached metadata/read
+      // failures must not permanently hide a key after its transport recovers.
+      trustedTemperatureKeys = nil
+      advisoryTemperatureKeys = nil
+      cachedAdvisoryReadings = []
+      cachedAdvisoryFailures = [:]
+      advisoryReadingsCapturedAt = nil
+      nextAdvisoryRefresh = nil
+      self.nextDiscoveryRetry = nil
+    }
     guard trustedTemperatureKeys == nil || advisoryTemperatureKeys == nil else { return }
 
     let discovered = try client.discoverKeys()
@@ -256,6 +286,13 @@ final class SMCThermalReader {
 
     trustedTemperatureKeys = trusted.sorted()
     advisoryTemperatureKeys = advisory.sorted()
+    let needsRetry = !trustedDiscoveryFailures.isEmpty || discoveryFailures.values.contains { error in
+      switch error {
+      case .kernel, .ioKit, .smc, .unavailable: true
+      case .invalidData, .warmingUp: false
+      }
+    }
+    nextDiscoveryRetry = needsRetry ? now.advanced(by: .seconds(30)) : nil
   }
 
   private func read(keys: [String]) -> (
@@ -298,7 +335,7 @@ actor ThermalProvider {
     lastFailure = nil
   }
 
-  func sample() -> MetricSample<ThermalMetrics> {
+  func sample(rawDetailsVisible: Bool = true, forceRawRefresh: Bool = false) -> MetricSample<ThermalMetrics> {
     if let retryAfter, ContinuousClock.now < retryAfter, let lastFailure {
       return MetricSample(.failure(lastFailure))
     }
@@ -321,7 +358,7 @@ actor ThermalProvider {
         reader = SMCThermalReader(client: SMCClient(transport: transport), classifier: classifier)
       }
       guard let reader else { throw TelemetryError.unavailable("Thermal reader unavailable") }
-      return try reader.read()
+      return try reader.read(rawDetailsVisible: rawDetailsVisible, forceRawRefresh: forceRawRefresh)
     }
     if case .failure(let error) = result {
       reader = nil
@@ -361,21 +398,26 @@ final class SMCNumericReader {
   init(client: SMCClient) { self.client = client }
 
   func read(maximumReadings: Int = 512) throws -> SMCNumericMetrics {
+    try Task.checkCancellation()
     guard (1...2_048).contains(maximumReadings) else {
       throw TelemetryError.invalidData("Invalid SMC numeric inventory bound")
     }
     let discovered = try client.discoverKeys()
+    // Frozen discovery and an in-flight IOKit call cannot be interrupted.
+    try Task.checkCancellation()
     var readings: [SMCNumericReading] = []
     readings.reserveCapacity(min(maximumReadings, discovered.keys.count))
     var failures = discovered.failures
     var truncated = false
 
     for key in discovered.keys where key != "#KEY" {
+      try Task.checkCancellation()
       if readings.count >= maximumReadings {
         truncated = true
         break
       }
       let infoResult = captureMetric { try client.keyInfo(key) }
+      try Task.checkCancellation()
       guard case .success(let info) = infoResult else {
         if case .failure(let error) = infoResult { failures[key] = error }
         continue
@@ -429,9 +471,11 @@ actor SMCNumericProvider {
     let capturedAt = Date()
     let capturedTicks = HostClock.now
     let result = captureMetric {
+      try Task.checkCancellation()
       if reader == nil {
         reader = SMCNumericReader(client: SMCClient(transport: try SMCIOKitTransport()))
       }
+      try Task.checkCancellation()
       guard let reader else {
         throw TelemetryError.unavailable("SMC numeric inventory unavailable")
       }

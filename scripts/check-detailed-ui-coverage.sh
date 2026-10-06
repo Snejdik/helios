@@ -10,7 +10,11 @@ from pathlib import Path
 import re, sys
 
 root = Path('.')
-windows = (root / 'Sources/HeliosApp/HeliosWindows.swift').read_text()
+# The window code lives in Sources/HeliosApp/Windows; read it in its former file order
+# so the text after a marker means the same as it did in the single file.
+window_files = ['HeliosWindowCoordinator', 'HeliosEnergyInspector', 'HeliosMonitorWindow',
+                'HeliosModuleDetail', 'HeliosSettings', 'HeliosOnboarding', 'HeliosWindowChrome']
+windows = ''.join((root / 'Sources/HeliosApp/Windows' / (name + '.swift')).read_text() for name in window_files)
 overview = (root / 'Sources/HeliosApp/OverviewViewController.swift').read_text()
 marker = '// MARK: - Complete published telemetry'
 if marker not in windows:

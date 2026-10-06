@@ -103,7 +103,8 @@ enum CapabilityEvaluator {
         case .success(let value): append("audio", "CoreAudio devices", true, "\(value.devices.count) audio device(s)")
         case .failure(let e): append("audio", "CoreAudio devices", nilIfWarming(e), e.localizedDescription)
         }
-        switch TelemetryFormatting.fresh(snapshot.powerAssertions, maxAge: 45, now: now) {
+        // Hidden device detail polls every 60 seconds, matching OverviewPresentation.
+        switch TelemetryFormatting.fresh(snapshot.powerAssertions, maxAge: 90, now: now) {
         case .success(let value): append("power-assertions", "Sleep blockers", true, "\(value.assertions.count) active power assertion(s)")
         case .failure(let e): append("power-assertions", "Sleep blockers", nilIfWarming(e), e.localizedDescription)
         }

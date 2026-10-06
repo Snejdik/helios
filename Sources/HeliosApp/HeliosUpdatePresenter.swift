@@ -9,9 +9,10 @@ final class HeliosUpdatePresenter {
   let checker = HeliosUpdateChecker()
   private var panel: NSPanel?
   private var task: Task<Void, Never>?
+  private var stopped = false
 
   func check(manual: Bool) {
-    guard task == nil else { return }
+    guard !stopped, task == nil else { return }
     task = Task { [weak self] in
       guard let self else { return }
       defer { task = nil }
@@ -21,6 +22,8 @@ final class HeliosUpdatePresenter {
   }
 
   func shutdown() {
+    stopped = true
+    checker.shutdown()
     task?.cancel()
     panel?.close()
     panel = nil
@@ -62,7 +65,7 @@ private struct HeliosUpdateNoticeView: View {
       HStack {
         Spacer()
         if case .available(let release) = outcome {
-          Button("Remind Me Later", action: dismiss)
+          Button("Remind Me Later", action: dismiss).keyboardShortcut(.cancelAction)
           Button("View / Download Update") {
             NSWorkspace.shared.open(release.releaseURL)
             dismiss()
@@ -73,6 +76,7 @@ private struct HeliosUpdateNoticeView: View {
         }
       }
     }
+    .onExitCommand(perform: dismiss)
     .padding(24)
     .frame(width: 420)
     .fixedSize(horizontal: false, vertical: true)
@@ -84,6 +88,7 @@ private struct HeliosUpdateNoticeView: View {
     case .upToDate: "Helios is up to date."
     case .unavailable: "Update information is unavailable."
     case .failed: "Couldn’t check for updates."
+    case .rateLimited: "Update checks are temporarily limited."
     }
   }
 
@@ -91,9 +96,11 @@ private struct HeliosUpdateNoticeView: View {
     switch outcome {
     case .available:
       "You’re running \(current?.displayName ?? "a development build"). The update opens on GitHub."
-    case .upToDate: "You’re running the latest available Helios pre-beta version."
-    case .unavailable: "No comparable pre-beta release was found, or this build has no release tag."
+    case .upToDate: "You’re running the latest available Helios version for this release channel."
+    case .unavailable: "No comparable release was found, or this build has no valid release tag."
     case .failed: "GitHub couldn’t be reached or returned an error. Please try again later."
+    case .rateLimited(let until):
+      "GitHub requested a pause. Try again after \(until.formatted(date: .abbreviated, time: .shortened))."
     }
   }
 }

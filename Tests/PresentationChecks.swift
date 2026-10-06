@@ -18,18 +18,314 @@ private func require(_ condition: @autoclosure () -> Bool, _ message: String) th
   guard condition() else { throw PresentationCheckFailure(message: message) }
 }
 
+/// Pure, explicitly resumed sampler. No clock sleeps, providers or transports.
+@MainActor
+private final class NumericFixtureSampler {
+  private(set) var calls = 0
+  private(set) var maximumReadings: Int?
+  private(set) var completedCanceled = false
+  private var started: CheckedContinuation<Void, Never>?
+  private var completion: CheckedContinuation<MetricSample<SMCNumericMetrics>, Never>?
+
+  func sample(_ maximumReadings: Int) async -> MetricSample<SMCNumericMetrics> {
+    calls += 1
+    self.maximumReadings = maximumReadings
+    let result: MetricSample<SMCNumericMetrics> = await withCheckedContinuation { continuation in
+      completion = continuation
+      started?.resume()
+      started = nil
+    }
+    completedCanceled = Task.isCancelled
+    return result
+  }
+
+  func waitUntilStarted() async {
+    guard calls == 0 else { return }
+    await withCheckedContinuation { started = $0 }
+  }
+
+  func finish(_ sample: MetricSample<SMCNumericMetrics>) {
+    completion?.resume(returning: sample)
+    completion = nil
+  }
+}
+
+@MainActor
+private final class MaintenanceFixtureSampler<Value: Sendable> {
+  private(set) var calls = 0
+  private(set) var completedCanceled = false
+  private var started: CheckedContinuation<Void, Never>?
+  private var completion: CheckedContinuation<MetricSample<Value>, Never>?
+
+  func sample() async -> MetricSample<Value> {
+    calls += 1
+    let value = await withCheckedContinuation { continuation in
+      completion = continuation
+      started?.resume()
+      started = nil
+    }
+    completedCanceled = Task.isCancelled
+    return value
+  }
+
+  func waitUntilStarted(call: Int = 1) async {
+    guard calls < call else { return }
+    await withCheckedContinuation { started = $0 }
+  }
+
+  func finish(_ value: MetricSample<Value>) {
+    completion?.resume(returning: value)
+    completion = nil
+  }
+}
+
 @main
 @MainActor
 private struct PresentationChecks {
-  static func main() {
-    do { try run() } catch {
+  static func main() async {
+    do {
+      try await smcNumericLifecycleChecks()
+      if CommandLine.arguments.contains("--smc-numeric-only") {
+        print("PASS pure on-demand SMC inventory ownership, isolation and cancellation")
+        return
+      }
+      try await maintenanceLifecycleChecks()
+      if CommandLine.arguments.contains("--model-actions-only") {
+        print("PASS pure SMC and maintenance action ownership, isolation and cancellation")
+        return
+      }
+      try run()
+    } catch {
       print("FAIL: \(error)")
       exit(1)
     }
   }
 
+  private static func smcNumericLifecycleChecks() async throws {
+    let capturedAt = Date(timeIntervalSince1970: 1_800_000_000)
+    let expected = MetricSample(.success(SMCNumericMetrics(
+      readings: [SMCNumericReading(key: "Xraw", type: "ui16", value: 42)],
+      failures: [:], truncated: false)), capturedAt: capturedAt, capturedTicks: 1_000_000)
+    let disabled = OverviewViewModel(runtimeServicesEnabled: false)
+    try require(disabled.smcNumericSample == nil && disabled.loadSMCNumericInventory() == nil
+      && !disabled.smcNumericLoading, "Disabled fixture reached default SMC sampling")
+    disabled.shutdown()
+
+    let cached = OverviewViewModel(runtimeServicesEnabled: false, smcNumericSampler: { _ in expected })
+    guard let first = cached.loadSMCNumericInventory() else {
+      throw PresentationCheckFailure(message: "Injected pure sampler was not admitted")
+    }
+    try require(cached.smcNumericSample == nil, "Request fabricated a capture before sampling")
+    await first.value
+    try require(cached.smcNumericSample?.capturedAt == capturedAt
+      && cached.smcNumericSample?.capturedTicks == 1_000_000 && !cached.smcNumericLoading,
+      "On-demand sample lost its original capture clocks")
+    cached.cancelSMCNumericInventory()
+    try require(cached.smcNumericSample?.capturedAt == capturedAt,
+      "Section cancellation discarded cached display evidence")
+    cached.cancelSMCNumericInventory(clearCachedSample: true)
+    try require(cached.smcNumericSample == nil,
+      "Monitor close retained the reconstructible raw inventory cache")
+    guard let refreshed = cached.loadSMCNumericInventory() else {
+      throw PresentationCheckFailure(message: "Cleared fixture request was not admitted")
+    }
+    await refreshed.value
+    try require(cached.smcNumericSample != nil, "Cleared model lost refresh behavior")
+    cached.shutdown()
+    try require(cached.smcNumericSample == nil, "Shutdown retained raw inventory cache")
+    try require(cached.loadSMCNumericInventory() == nil, "Stopped model admitted inventory work")
+
+    let failedSample = MetricSample<SMCNumericMetrics>(.failure(.unavailable("Fixture missing data")),
+      capturedAt: capturedAt, capturedTicks: 1_000_001)
+    let failed = OverviewViewModel(runtimeServicesEnabled: false, smcNumericSampler: { _ in failedSample })
+    guard let failedTask = failed.loadSMCNumericInventory() else {
+      throw PresentationCheckFailure(message: "Failure fixture request missing")
+    }
+    await failedTask.value
+    try require(failed.smcNumericSample?.result == failedSample.result
+      && failed.smcNumericSample?.capturedTicks == 1_000_001 && !failed.smcNumericLoading,
+      "Completed failure lost its typed absence/capture evidence")
+    failed.shutdown()
+
+    let notStarted = NumericFixtureSampler()
+    let beforeStart = OverviewViewModel(runtimeServicesEnabled: false,
+      smcNumericSampler: { await notStarted.sample($0) })
+    guard let canceled = beforeStart.loadSMCNumericInventory() else {
+      throw PresentationCheckFailure(message: "Pre-start fixture request missing")
+    }
+    beforeStart.cancelSMCNumericInventory()
+    await canceled.value
+    try require(notStarted.calls == 0 && !beforeStart.smcNumericLoading,
+      "Cancellation before first turn invoked the sampler")
+    beforeStart.shutdown()
+
+    for shutdown in [false, true] {
+      let gate = NumericFixtureSampler()
+      let model = OverviewViewModel(runtimeServicesEnabled: false, smcNumericSampler: { maximum in
+        await gate.sample(maximum)
+      })
+      guard let task = model.loadSMCNumericInventory() else {
+        throw PresentationCheckFailure(message: "Suspended fixture request missing")
+      }
+      await gate.waitUntilStarted()
+      defer { gate.finish(expected) }
+      let calls = gate.calls
+      try require(calls == 1 && gate.maximumReadings == 512 && model.smcNumericLoading,
+        "Inventory request did not retain the existing 512-reading bound")
+      try require(model.loadSMCNumericInventory() == nil, "Concurrent request was admitted")
+      if shutdown { model.shutdown() } else { model.cancelSMCNumericInventory() }
+      model.cancelSMCNumericInventory()
+      try require(model.loadSMCNumericInventory() == nil && model.smcNumericLoading,
+        "Canceled blocking work released its slot before draining")
+      gate.finish(expected)
+      await task.value
+      try require(gate.completedCanceled && gate.calls == calls && model.smcNumericSample == nil
+        && !model.smcNumericLoading, "Stale completion published after close/shutdown")
+      if !shutdown {
+        guard let reopened = model.loadSMCNumericInventory() else {
+          throw PresentationCheckFailure(message: "Drained model could not reopen inventory")
+        }
+        model.cancelSMCNumericInventory()
+        await reopened.value
+      }
+      model.shutdown()
+    }
+
+    let gate = NumericFixtureSampler()
+    var released: OverviewViewModel? = OverviewViewModel(runtimeServicesEnabled: false,
+      smcNumericSampler: { await gate.sample($0) })
+    weak let weakModel = released
+    guard let orphan = released?.loadSMCNumericInventory() else {
+      throw PresentationCheckFailure(message: "Deinit fixture request missing")
+    }
+    await gate.waitUntilStarted()
+    released = nil
+    try require(weakModel == nil, "Inventory task retained its model across suspension")
+    gate.finish(expected)
+    await orphan.value
+    try require(gate.completedCanceled, "Model deinit did not cancel owned inventory work")
+  }
+
+  private static func maintenanceLifecycleChecks() async throws {
+    let date = Date(timeIntervalSince1970: 1_800_000_000)
+    let cleanup = MetricSample(.success(CleanupMetrics(candidates: [])), capturedAt: date, capturedTicks: 1)
+    let applications = MetricSample(.success(ApplicationsMetrics(applications: [])), capturedAt: date, capturedTicks: 1)
+    let completed = MaintenanceViewModel(cleanupSampler: { cleanup }, applicationsSampler: { applications })
+    guard let firstCleanup = completed.scanCleanup(), let firstApps = completed.scanApplications() else {
+      throw PresentationCheckFailure(message: "Injected maintenance request was not admitted")
+    }
+    await firstCleanup.value
+    await firstApps.value
+    try require(completed.cleanup != nil && completed.applications != nil
+      && completed.applicationsPresentation?.largestFirst.isEmpty == true
+      && !completed.scanningCleanup && !completed.scanningApplications,
+      "Completed maintenance state or derived presentation was lost")
+
+    let before = MaintenanceFixtureSampler<CleanupMetrics>()
+    let beforeStart = MaintenanceViewModel(cleanupSampler: { await before.sample() }, applicationsSampler: { applications })
+    guard let canceled = beforeStart.scanCleanup() else {
+      throw PresentationCheckFailure(message: "Pre-start maintenance task missing")
+    }
+    beforeStart.cancelScans()
+    await canceled.value
+    try require(before.calls == 0 && beforeStart.cleanup == nil && !beforeStart.scanningCleanup,
+      "Pre-start cancellation invoked a maintenance sampler")
+
+    let cleanupGate = MaintenanceFixtureSampler<CleanupMetrics>()
+    let appGate = MaintenanceFixtureSampler<ApplicationsMetrics>()
+    let pending = MaintenanceViewModel(cleanupSampler: { await cleanupGate.sample() },
+      applicationsSampler: { await appGate.sample() })
+    guard let cleanupTask = pending.scanCleanup(), let appTask = pending.scanApplications() else {
+      throw PresentationCheckFailure(message: "Suspended maintenance task missing")
+    }
+    await cleanupGate.waitUntilStarted()
+    await appGate.waitUntilStarted()
+    defer { cleanupGate.finish(cleanup); appGate.finish(applications) }
+    pending.cancelScans()
+    try require(pending.scanCleanup() == nil && pending.scanApplications() == nil
+      && pending.scanningCleanup && pending.scanningApplications,
+      "Canceled filesystem work released its slot before draining")
+    cleanupGate.finish(cleanup)
+    appGate.finish(applications)
+    await cleanupTask.value
+    await appTask.value
+    try require(cleanupGate.completedCanceled && appGate.completedCanceled
+      && pending.cleanup == nil && pending.applications == nil
+      && pending.applicationsPresentation == nil && pending.cleanupError == nil
+      && !pending.scanningCleanup && !pending.scanningApplications,
+      "Canceled maintenance result published after disappearance")
+    guard let reopened = pending.scanCleanup() else {
+      throw PresentationCheckFailure(message: "Drained maintenance slot did not reopen")
+    }
+    await cleanupGate.waitUntilStarted(call: 2)
+    cleanupGate.finish(cleanup)
+    await reopened.value
+    try require(pending.cleanup != nil && cleanupGate.calls == 2,
+      "Reopened maintenance action lost its result")
+
+    let deathGate = MaintenanceFixtureSampler<CleanupMetrics>()
+    var released: MaintenanceViewModel? = MaintenanceViewModel(
+      cleanupSampler: { await deathGate.sample() }, applicationsSampler: { applications })
+    weak let weakModel = released
+    guard let orphan = released?.scanCleanup() else {
+      throw PresentationCheckFailure(message: "Maintenance deinit task missing")
+    }
+    await deathGate.waitUntilStarted()
+    released = nil
+    try require(weakModel == nil, "Maintenance task retained its model while suspended")
+    deathGate.finish(cleanup)
+    await orphan.value
+    try require(deathGate.completedCanceled, "Maintenance deinit did not cancel owned scan")
+  }
+
   private static func run() throws {
     NSApplication.shared.setActivationPolicy(.prohibited)
+    let demandModel = OverviewViewModel(runtimeServicesEnabled: false)
+    var demands: [TelemetryDetailDemand] = []
+    demandModel.onDetailDemandChange = { demands.append($0) }
+    demandModel.setDetailDemand(.processes, owner: "popover")
+    demandModel.setDetailDemand(.processes, owner: "inspector")
+    demandModel.setDetailDemand([], owner: "popover")
+    demandModel.setDetailDemand(.rawSensors, owner: "monitor")
+    try require(demands == [.processes, [.processes, .rawSensors]],
+      "Surface ownership must coalesce shared demand without clearing another owner")
+    demandModel.shutdown()
+    demandModel.setDetailDemand(.all, owner: "late-window-callback")
+    try require(demands.last == [] && demandModel.detailDemand.isEmpty,
+      "Shutdown must release demand and reject late surface callbacks")
+    try require(HeliosMonitorRoute.thermals.detailDemand == .rawSensors
+      && HeliosMonitorRoute.devices.detailDemand == .devices
+      && HeliosMonitorRoute.processes.detailDemand == .processes
+      && HeliosMonitorRoute.expert.detailDemand == .all
+      && HeliosMonitorRoute.history.detailDemand.isEmpty,
+      "Monitor route detail demand does not match its data surface")
+    let alertSuite = "Helios.AlertPreferences.\(UUID().uuidString)"
+    let alertDefaults = UserDefaults(suiteName: alertSuite)!
+    defer { alertDefaults.removePersistentDomain(forName: alertSuite) }
+    let alertPreferences = HeliosPreferences(defaults: alertDefaults)
+    alertPreferences.setHealthAlert(.socHot, enabled: false, threshold: 88.5)
+    let alertReload = HeliosPreferences(defaults: alertDefaults)
+    try require(!alertReload.healthAlerts[.socHot].enabled
+      && alertReload.healthAlerts[.socHot].threshold == 88.5, "Alert preference persistence")
+    try require(alertReload.healthAlerts[.socCritical].threshold == HealthAlertRule.socCritical.defaultThreshold,
+      "Changing one threshold changed another")
+    let priorMode = alertReload.dashboardMode
+    alertReload.restoreHealthAlertDefaults()
+    try require(alertReload.healthAlerts == .defaults && alertReload.dashboardMode == priorMode,
+      "Notification reset must preserve unrelated preferences")
+    alertDefaults.set(Data("malformed".utf8), forKey: HeliosPreferences.healthAlertsKey)
+    try require(HeliosPreferences(defaults: alertDefaults).healthAlerts == .defaults,
+      "Corrupt preference fallback")
+
+    alertDefaults.set("monthly", forKey: HeliosUpdateChecker.frequencyKey)
+    alertReload.restoreHealthAlertDefaults()
+    try require(alertDefaults.string(forKey: HeliosUpdateChecker.frequencyKey) == "monthly",
+      "Notification defaults must preserve updater frequency")
+    try require(HeliosChartValueStyle.bytes.format(Double(UInt64.max)) != "—",
+      "UInt64.max represented as Double must format without an out-of-range integer conversion")
+    try require(HeliosChartValueStyle.bytes.format(-1) == "—"
+      && HeliosChartValueStyle.bytes.format(.infinity) == "—", "Invalid byte quantities remain unavailable")
+
     let now = Date()
     let normal = fixture(cpu: 12, temperature: 56, now: now)
     let summary = try OverviewPresentation(normal, now: now).temperatures(.performanceCPU).get()
@@ -38,6 +334,17 @@ private struct PresentationChecks {
       "Average must include only the selected group's sensors")
     let hottest = try normal.thermals.result.get().maximumSoCCelsius.get()
     try require(hottest == 56, "Unclassified sensors must not affect the SoC maximum")
+    var assertionSnapshot = normal
+    assertionSnapshot.powerAssertions = MetricSample(.success(PowerAssertionsMetrics(assertions: [])), capturedAt: now)
+    let hiddenAssertions = try OverviewPresentation(assertionSnapshot, now: now.addingTimeInterval(60)).powerAssertions.get()
+    try require(hiddenAssertions.assertions.isEmpty,
+      "Power assertions must remain valid through the hidden 60-second cadence")
+    let boundaryAssertions = try OverviewPresentation(assertionSnapshot, now: now.addingTimeInterval(90)).powerAssertions.get()
+    try require(boundaryAssertions.assertions.isEmpty,
+      "Assertion freshness boundary is inclusive")
+    if case .success = OverviewPresentation(assertionSnapshot, now: now.addingTimeInterval(91)).powerAssertions {
+      throw PresentationCheckFailure(message: "Stalled assertion inventory must still expire")
+    }
     let expired = OverviewPresentation(normal, now: now.addingTimeInterval(16))
     try require(
       DisplayValue(expired.cpu.map(\.usagePercent)) { String($0) }.failure != nil,
@@ -320,6 +627,94 @@ private struct PresentationChecks {
       "Stale cooling RPM must clear with the rest of the menu-bar telemetry")
     widget.update(normal, now: now)
     try require(widget.coolingFanText == "Fan off", "Zero-RPM cooling readout must say Fan off")
+    // Energy Inspector export and app actions.
+    let csv = HeliosEnergyCSV.make(entries: [
+      AppEnergyEntry(
+        appKey: "app:/Applications/Fixture.app", displayName: "=cmd,\"x\"", energyWattHours: 0.5,
+        cpuCoreSeconds: 12.34, wakeups: 7, peakMemoryBytes: 1024)
+    ])
+    try require(
+      csv == "app,energy_wh,cpu_core_seconds,wakeups,peak_memory_bytes\n\"'=cmd,\"\"x\"\"\",0.500000,12.3,7,1024\n",
+      "Energy CSV must quote fields and neutralise a leading formula character, got \(csv)")
+    try require(
+      HeliosAppActions.bundlePath(forKey: "app:/Applications/Fixture.app") == "/Applications/Fixture.app"
+        && HeliosAppActions.bundlePath(forKey: "proc:fixture") == nil
+        && HeliosAppActions.bundlePath(forKey: "app:") == nil,
+      "Only bundle app keys offer app actions")
+    // Energy page: ranking, comparison with the previous period and unobserved time.
+    let energyEnd = Date(timeIntervalSince1970: 1_790_985_600)
+    func energyEntry(_ key: String, _ wattHours: Double) -> AppEnergyEntry {
+      AppEnergyEntry(
+        appKey: key, displayName: key, energyWattHours: wattHours, cpuCoreSeconds: 1, wakeups: 1,
+        peakMemoryBytes: 1)
+    }
+    var energyBuckets: [AppEnergyBucket] = []
+    for minute in stride(from: -120, through: 0, by: 1) {
+      let recent = minute > -60
+      // A 30-minute stretch in the last hour has no samples: the Mac was asleep.
+      if minute > -40 && minute < -8 { continue }
+      var entries = [energyEntry("app:/A.app", recent ? 0.004 : 0.001)]
+      if recent { entries.append(energyEntry("app:/C.app", 0.001)) } else { entries.append(energyEntry("app:/B.app", 0.002)) }
+      energyBuckets.append(AppEnergyBucket(
+        capturedAt: energyEnd.addingTimeInterval(Double(minute) * 60), durationSeconds: 60,
+        onBattery: true, batteryPercent: 80 + Double(minute) / 10, entries: entries))
+    }
+    let energyWindow = DateInterval(start: energyEnd.addingTimeInterval(-3_600), end: energyEnd)
+    let energy = HeliosEnergyAnalysis.make(buckets: energyBuckets, window: energyWindow, onBatteryOnly: true)
+    try require(
+      energy.entries.first?.appKey == "app:/A.app" && energy.hasPreviousWindow
+        && energy.rises.map(\.appKey) == ["app:/A.app", "app:/C.app"]
+        && energy.rises.first?.changePercent.map({ abs($0 - 95) < 1 }) == true
+        && energy.rises.last?.changePercent == nil,
+      "Energy comparison must rank apps that use more than in the period before, got \(energy.rises)")
+    try require(
+      energy.unobserved.count == 1 && abs(energy.unobservedSeconds - 1_920) < 1,
+      "Energy page must report the asleep stretch, got \(energy.unobservedSeconds) s in \(energy.unobserved.count) gaps")
+    let all = HeliosEnergyAnalysis.make(buckets: energyBuckets, window: energyWindow, onBatteryOnly: false)
+    try require(all.entries.count == energy.entries.count, "All-activity filter must keep these on-battery buckets")
+    let noHistory = HeliosEnergyAnalysis.make(
+      buckets: energyBuckets.filter { $0.capturedAt > energyWindow.start }, window: energyWindow, onBatteryOnly: true)
+    try require(!noHistory.hasPreviousWindow && noHistory.rises.isEmpty,
+      "Without a period before there is nothing to compare")
+    // An app that ranked below the top twenty before is compared with what it really used.
+    let crowded = energyBuckets.map { bucket -> AppEnergyBucket in
+      guard bucket.capturedAt < energyWindow.start else { return bucket }
+      let fillers = (0..<25).map { energyEntry("app:/Filler\($0).app", 0.01 + Double($0) * 0.001) }
+      return AppEnergyBucket(
+        capturedAt: bucket.capturedAt, durationSeconds: bucket.durationSeconds, onBattery: true,
+        batteryPercent: bucket.batteryPercent, entries: bucket.entries + fillers)
+    }
+    let crowdedAnalysis = HeliosEnergyAnalysis.make(buckets: crowded, window: energyWindow, onBatteryOnly: true)
+    try require(
+      crowdedAnalysis.rises.first(where: { $0.appKey == "app:/A.app" })?.changePercent.map { abs($0 - 95) < 1 } == true,
+      "Energy comparison must not treat an app below the top twenty as new, got \(crowdedAnalysis.rises)")
+    let state = HeliosEnergyPageState()
+    state.range = .custom
+    state.customStart = energyEnd
+    state.customEnd = energyEnd.addingTimeInterval(-60)
+    try require(state.window(now: energyEnd).duration >= 300, "A custom range is at least five minutes long")
+    state.range = .sevenDays
+    try require(state.window(now: energyEnd).duration == 7 * 86_400, "Seven days is a preset range")
+    guard let energyJSON = HeliosEnergyJSON.make(
+      entries: energy.entries, window: energyWindow, onBatteryOnly: true),
+      let decoded = try JSONSerialization.jsonObject(with: energyJSON) as? [String: Any],
+      let apps = decoded["apps"] as? [[String: Any]]
+    else { throw PresentationCheckFailure(message: "Energy JSON export is not valid JSON") }
+    try require(
+      apps.count == energy.entries.count && decoded["on_battery_only"] as? Bool == true,
+      "Energy JSON export must list every app and its filter")
+
+    var spread = normal
+    spread.thermals = MetricSample(
+      .success(ThermalMetrics(readings: [
+        ThermalReading(key: "Tp01", group: .performanceCPU, celsius: 80),
+        ThermalReading(key: "Te05", group: .efficiencyCPU, celsius: 60),
+        ThermalReading(key: "Tg0G", group: .gpu, celsius: 90),
+      ], failures: [:])), capturedAt: now)
+    widget.update(spread, now: now)
+    try require(
+      widget.coolingTemperatureText == "70/90°C",
+      "Cooling item must show the CPU average and the hottest sensor, got \(widget.coolingTemperatureText)")
     var runningFan = normal
     runningFan.fans = MetricSample(
       .success(
@@ -605,6 +1000,50 @@ private struct PresentationChecks {
     }
     print("PASS undecided/OFF/ON onboarding transitions, Back paths, unchanged consent and donation-free Finish")
 
+    // Goals: the welcome flow's plan is pure, and applying it configures every surface.
+    let emptyPlan = HeliosGoalPlan.make(for: [])
+    try require(emptyPlan == HeliosGoalPlan.make(for: [.simple]), "No goal behaves like Simple")
+    try require(Set(emptyPlan.samplers) == HeliosGoalPlan.baseSamplers,
+      "Simple collects only the four health areas' samplers")
+    try require(emptyPlan.menuBarMetrics.isEmpty && emptyPlan.popoverSections == [.chart],
+      "Simple shows only the status item and the chart")
+    try require(!emptyPlan.wantsFanHelper && !emptyPlan.visiblePages.contains(.history),
+      "Simple has no helper step and no History page")
+    let coolPlan = HeliosGoalPlan.make(for: [.cooling])
+    try require(coolPlan.wantsFanHelper && coolPlan.samplers.contains(.fans)
+      && coolPlan.menuBarMetrics == [.temperature] && coolPlan.popoverSections.contains(.cooling)
+      && coolPlan.visiblePages.contains(.hardware), "Cooling goal wires fans, menu bar, popover and Hardware")
+    let combined = HeliosGoalPlan.make(for: [.battery, .network, .liveStats])
+    try require(combined.samplers.contains(.processes) && combined.samplers.contains(.wifi)
+      && combined.menuBarMetrics.count <= HeliosGoalPlan.maximumMenuBarMetrics
+      && combined.visiblePages.contains(.network), "Goals combine by union and respect the menu-bar cap")
+    try require(combined.samplers == HeliosTelemetryModule.allCases.filter(Set(combined.samplers).contains),
+      "Samplers keep canonical order")
+    let goalSuite = "Helios.Goals.\(UUID().uuidString)"
+    let goalDefaults = UserDefaults(suiteName: goalSuite)!
+    defer { goalDefaults.removePersistentDomain(forName: goalSuite) }
+    let goalPreferences = HeliosPreferences(defaults: goalDefaults)
+    goalPreferences.completeOnboarding(goals: [.battery])
+    let batteryPlan = HeliosGoalPlan.make(for: [.battery])
+    try require(goalPreferences.onboardingCompleted && goalPreferences.telemetryModules == batteryPlan.samplers,
+      "Completing onboarding applies the goal's samplers")
+    try require(goalPreferences.menuBarMetrics == [.battery]
+      && goalPreferences.interface.popoverSections == batteryPlan.popoverSections
+      && goalPreferences.interface.goals == [.battery]
+      && goalPreferences.interface.hiddenPages.contains(.network),
+      "Completing onboarding applies menu bar, popover, sidebar and remembers the goals")
+    let reloaded = HeliosPreferences(defaults: goalDefaults)
+    try require(reloaded.interface.goals == [.battery] && reloaded.telemetryModules == batteryPlan.samplers
+      && reloaded.menuBarMetrics == [.battery], "Goals and their effects persist")
+    var helperFlow = HeliosOnboardingFlow(consent: .disabled)
+    try require(!helperFlow.advance(diagnostics: DiagnosticsController(preferences: DiagnosticsPreferences(defaults: goalDefaults)),
+      shareDiagnostics: false, wantsFanHelper: true) && helperFlow.page == .helper, "Cooling goal shows the helper step")
+    try require(!helperFlow.advance(diagnostics: DiagnosticsController(preferences: DiagnosticsPreferences(defaults: goalDefaults)),
+      shareDiagnostics: false) && helperFlow.page == .support, "Helper step continues to Support when consent is known")
+    helperFlow.back()
+    try require(helperFlow.page == .helper, "Support Back returns to the helper step it followed")
+    print("PASS welcome goals: pure plan, combination, persistence and the optional fan-helper step")
+
     for (name, enabled, approval, busy, message) in [
       ("off", false, false, false, Optional<String>.none),
       ("on", true, false, false, nil),
@@ -773,7 +1212,9 @@ private struct PresentationChecks {
       ("missing", SMAppService.Status.notRegistered), ("approval", .requiresApproval),
       ("installed", .enabled),
     ] {
-      let service = DaemonService(driver: PresentationRegistration(status))
+      // Rendering fixtures must not enter the installed-helper connection path,
+      // even if this test binary is signed differently in another environment.
+      let service = DaemonService(driver: PresentationRegistration(status), connectAutomatically: false)
       service.fanControl.refresh(normal)
       defer { service.shutdown() }
       for dark in [false, true] {

@@ -116,9 +116,15 @@ import Foundation
 enum HeliosGraphRange { case fiveMinutes; var seconds: TimeInterval { 300 } }
 struct TelemetryHistoryPoint { let capturedAt: Date; let value: Double? }
 struct PersistedTelemetryPoint { let capturedAt: Date; let value: Double? }
+enum TemperatureUnit {
+  case celsius
+  static let current = TemperatureUnit.celsius
+  func format(_ value: Double, decimals: Int = 0) -> String { String(format: "%.\(decimals)f°C", value) }
+}
 enum TelemetryFormatting {
   static func bytesPerSecond(_ value: Double) -> String { "\(value) B/s" }
   static func storageBytes(_ value: UInt64) -> String { "\(value) B" }
+  static func decimalBytes(_ value: Double) -> String { "\(value) B" }
 }
 SWIFT
 # Reuse only the real Foundation-compatible chart sample/merge implementation.
@@ -264,6 +270,10 @@ import Foundation
 enum TelemetryError: Error, Equatable, Sendable {
   case unavailable(String)
   case invalidData(String)
+  case warmingUp
+  case kernel(String, Int32)
+  case ioKit(String, Int32)
+  case smc(String, UInt8)
 }
 func captureMetric<Value>(_ operation: () throws -> Value) -> Result<Value, TelemetryError> {
   do { return .success(try operation()) }
@@ -339,6 +349,7 @@ enum SMCCodec {
   }
 }
 SWIFT
+sed '/^import Foundation$/d' Sources/HeliosApp/Telemetry/TelemetryCollectionPolicy.swift >> "$thermal_cadence"
 awk '
   /^final class SMCThermalReader/ {copy=1}
   /^actor ThermalProvider/ {copy=0}

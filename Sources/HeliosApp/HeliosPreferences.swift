@@ -1,7 +1,7 @@
 import Combine
 import Foundation
 
-/// UI-only preferences for Next23. These settings never alter privileged fan
+/// UI-only preferences. These settings never alter privileged fan
 /// capabilities, battery policy, or the telemetry write surface.
 enum HeliosDashboardMode: String, CaseIterable, Identifiable, Sendable {
   case simple
@@ -12,15 +12,6 @@ enum HeliosDashboardMode: String, CaseIterable, Identifiable, Sendable {
   var id: String { rawValue }
 
   var label: String {
-    switch self {
-    case .simple: "Simple"
-    case .advanced: "Recommended"
-    case .all: "Detailed"
-    case .custom: "Custom"
-    }
-  }
-
-  var onboardingTitle: String {
     switch self {
     case .simple: "Simple"
     case .advanced: "Recommended"
@@ -59,7 +50,7 @@ enum HeliosDashboardMetric: String, CaseIterable, Identifiable, Sendable {
     case .cpu: "CPU"
     case .memory: "Memory"
     case .gpu: "GPU"
-    case .temperature: "Temperature"
+    case .temperature: "Max SoC Temperature"
     case .battery: "Battery"
     case .energy: "Energy"
     case .power: "System Power"
@@ -106,7 +97,7 @@ enum HeliosColorRole: String, CaseIterable, Identifiable, Sendable {
     case .cpu: "CPU"
     case .memory: "Memory"
     case .gpu: "GPU"
-    case .temperature: "Temperature"
+    case .temperature: "Max SoC Temperature"
     case .fan: "Fan"
     case .battery: "Battery"
     case .power: "System power"
@@ -373,7 +364,7 @@ enum HeliosMenuBarMetric: String, CaseIterable, Identifiable, Sendable {
     case .cpu: "CPU"
     case .memory: "Memory"
     case .gpu: "GPU"
-    case .temperature: "Temperature"
+    case .temperature: "Max SoC Temperature"
     case .cooling: "Temperature & Fan"
     case .fan: "Fan"
     case .battery: "Battery"
@@ -456,7 +447,7 @@ final class HeliosPreferences: ObservableObject {
   @Published private(set) var monitorRoutes: [HeliosMonitorRoute]
   @Published var dashboardMode: HeliosDashboardMode { didSet { persist() } }
   @Published var compactCards: Bool { didSet { persist() } }
-  /// Legacy/global identity is kept as the fallback for migrated UI7 installs.
+  /// Global identity style; the fallback for modules without their own setting.
   @Published var menuBarIdentityStyle: HeliosMenuBarIdentityStyle { didSet { persist() } }
   @Published var menuBarLayout: HeliosMenuBarLayout { didSet { persist() } }
   @Published var showMenuBarHub: Bool { didSet { persist() } }
@@ -466,6 +457,13 @@ final class HeliosPreferences: ObservableObject {
   /// the neutral track. Users who prefer a fully segmented ring can opt into a
   /// muted Available segment without changing the underlying accounting.
   @Published var memoryGaugeShowsAvailable: Bool { didSet { persist() } }
+  /// Display unit only; telemetry and thresholds stay in Celsius.
+  @Published var temperatureUnit: TemperatureUnit {
+    didSet {
+      TemperatureUnit.current = temperatureUnit
+      persist()
+    }
+  }
   @Published var detailedMonitorContent: Bool { didSet { persist() } }
   /// Visual density for native menu-bar metric items. This changes configured
   /// geometry only when the user moves the slider; live telemetry never resizes
@@ -487,7 +485,30 @@ final class HeliosPreferences: ObservableObject {
   private var graphRanges: [HeliosGraphScope: HeliosGraphRange]
   private var colorHexValues: [HeliosColorRole: String]
 
+  static let healthAlertsKey = "healthAlerts.v1.configuration"
+  @Published private(set) var healthAlerts: HealthAlertConfiguration
+
+  func setHealthAlert(_ rule: HealthAlertRule, enabled: Bool? = nil, threshold: Double? = nil) {
+    var configuration = healthAlerts
+    var setting = configuration[rule]
+    if let enabled { setting.enabled = enabled }
+    if let threshold { setting.threshold = threshold }
+    configuration[rule] = setting
+    healthAlerts = configuration
+    if let data = try? JSONEncoder().encode(configuration) {
+      defaults.set(data, forKey: Self.healthAlertsKey)
+    }
+  }
+
+  func restoreHealthAlertDefaults() {
+    healthAlerts = .defaults
+    defaults.removeObject(forKey: Self.healthAlertsKey)
+  }
+
   private let defaults: UserDefaults
+  /// Helios interface choice and layout. A separate observable so Helios
+  /// layout edits never invalidate Legacy surfaces observing these preferences.
+  let interface: HeliosInterfacePreferences
   /// Structural manual edits move the global interface preset to Custom. Preset
   /// application suppresses this so one preset can update several surfaces
   /// atomically without immediately relabelling itself as Custom.
@@ -498,7 +519,7 @@ final class HeliosPreferences: ObservableObject {
   private static let monitorRoutesKey = "next23.ui.monitorRoutes"
   private static let dashboardKey = "next23.ui.dashboardMode"
   private static let compactKey = "next23.ui.compactCards"
-  private static let symbolsKey = "next23.ui.menuBarSymbols"  // legacy UI6 migration key
+  private static let symbolsKey = "next23.ui.menuBarSymbols"  // read once to migrate old layouts
   private static let identityStyleKey = "next23.ui.menuBarIdentityStyle"
   private static let menuBarLayoutKey = "next23.ui8.menuBarLayout"
   private static let menuBarHubKey = "next23.ui8.showMenuBarHub"
@@ -507,6 +528,7 @@ final class HeliosPreferences: ObservableObject {
   private static let metricLabelsKey = "next23.ui8.metricLabels"
   private static let graphLineStyleKey = "next23.ui8.graphLineStyle"
   private static let graphAnimateKey = "next23.ui8.animateGraphUpdates"
+  private static let temperatureUnitKey = "v2.ui.temperatureUnit"
   private static let memoryGaugeAvailableKey = "next23.ui9.memoryGaugeShowsAvailable"
   private static let detailedMonitorKey = "next23.ui10.detailedMonitorContent"
   private static let menuBarSpacingKey = "next23.ui10.menuBarSpacing"
@@ -521,6 +543,8 @@ final class HeliosPreferences: ObservableObject {
   private static let currentSchemaVersion = 12
 
   init(defaults: UserDefaults = .standard) {
+    let resolvedHealthAlerts = defaults.data(forKey: Self.healthAlertsKey)
+      .flatMap { try? JSONDecoder().decode(HealthAlertConfiguration.self, from: $0) } ?? .defaults
     // Resolve every persisted value into locals before assigning any stored
     // property. Swift does not allow reading `self` until all stored
     // properties have been initialized, and @Published properties still
@@ -578,7 +602,7 @@ final class HeliosPreferences: ObservableObject {
     } else {
       resolvedMonitorRoutes = Self.normalizedMonitorRoutes(uniqueMonitorRoutes)
     }
-    // UI10 promoted Energy to a first-class route. Older persisted arrays could
+    // Energy is a first-class route. Older persisted arrays could
     // not contain it, so migrate it once instead of silently hiding a new feature
     // forever. Later explicit user customization is respected.
     let storedSchemaVersion = defaults.integer(forKey: Self.schemaVersionKey)
@@ -596,12 +620,11 @@ final class HeliosPreferences: ObservableObject {
       monitorRoutesChangedByMigration = true
     }
 
-    // RC1–RC3 briefly coupled collection with presentation and could delete a
-    // Full Monitor route when its sampler was toggled off. RC4 separates those
-    // concepts. Prefer surviving presentation evidence, then use the still-enabled
-    // sampler as a one-time development fallback for routes that RC3 could delete
-    // from every presentation surface at once. This repairs the damaged RC state
-    // without changing future collection-toggle behavior.
+    // Builds before schema 12 coupled collection with presentation and could delete
+    // a Full Monitor route when its sampler was toggled off. Prefer surviving
+    // presentation evidence, then fall back to the still-enabled sampler to repair
+    // routes that were removed from every presentation surface at once. Later
+    // collection toggles are unaffected.
     if storedSchemaVersion == 11, hasStoredMonitorRoutes {
       let storedTelemetryForRepair = Set(
         defaults.stringArray(forKey: Self.telemetryModulesKey) ?? [])
@@ -650,9 +673,8 @@ final class HeliosPreferences: ObservableObject {
     let resolvedMenuBarIdentityStyle =
       defaults.string(forKey: Self.identityStyleKey).flatMap(
         HeliosMenuBarIdentityStyle.init(rawValue:))
-      // UI7 intentionally adopts text labels as the fresh-install/upgrade
-      // default when the richer identity preference has never been stored. The
-      // legacy UI6 boolean is still written for rollback compatibility only.
+      // Text labels are the default when no identity style was ever stored. The
+      // older boolean key is still written so a downgrade keeps working.
       ?? .label
     let resolvedMenuBarLayout =
       defaults.string(forKey: Self.menuBarLayoutKey).flatMap(HeliosMenuBarLayout.init(rawValue:))
@@ -673,6 +695,9 @@ final class HeliosPreferences: ObservableObject {
       defaults.object(forKey: Self.graphAnimateKey) as? Bool ?? true
     let resolvedMemoryGaugeShowsAvailable =
       defaults.object(forKey: Self.memoryGaugeAvailableKey) as? Bool ?? false
+    let resolvedTemperatureUnit =
+      defaults.string(forKey: Self.temperatureUnitKey).flatMap(TemperatureUnit.init(rawValue:))
+      ?? .celsius
     let resolvedDetailedMonitorContent =
       defaults.object(forKey: Self.detailedMonitorKey) as? Bool
       ?? (resolvedDashboardMode == .all || resolvedDashboardMode == .custom)
@@ -742,6 +767,8 @@ final class HeliosPreferences: ObservableObject {
     let resolvedFanSafetyGuideCompleted = defaults.bool(forKey: Self.fanSafetyGuideKey)
 
     self.defaults = defaults
+    interface = HeliosInterfacePreferences(defaults: defaults)
+    healthAlerts = resolvedHealthAlerts
     menuBarMetrics = resolvedMenuBarMetrics
     popoverModules = resolvedPopoverModules
     dashboardMetrics = resolvedDashboardMetrics
@@ -754,6 +781,8 @@ final class HeliosPreferences: ObservableObject {
     graphLineStyle = resolvedGraphLineStyle
     animateGraphUpdates = resolvedAnimateGraphUpdates
     memoryGaugeShowsAvailable = resolvedMemoryGaugeShowsAvailable
+    temperatureUnit = resolvedTemperatureUnit
+    TemperatureUnit.current = resolvedTemperatureUnit
     detailedMonitorContent = resolvedDetailedMonitorContent
     menuBarSpacing = resolvedMenuBarSpacing
     coolingFeaturesEnabled = resolvedCoolingFeaturesEnabled
@@ -770,13 +799,6 @@ final class HeliosPreferences: ObservableObject {
       defaults.set(resolvedMonitorRoutes.map(\.rawValue), forKey: Self.monitorRoutesKey)
     }
     defaults.set(Self.currentSchemaVersion, forKey: Self.schemaVersionKey)
-  }
-
-  /// Compatibility surface for the Next23 presentation fixtures and older
-  /// settings code. UI7 exposes the richer three-state identity style.
-  var showMenuBarSymbols: Bool {
-    get { menuBarIdentityStyle == .symbol }
-    set { menuBarIdentityStyle = newValue ? .symbol : .label }
   }
 
   func identityStyle(for metric: HeliosMenuBarMetric) -> HeliosMenuBarIdentityStyle {
@@ -993,6 +1015,11 @@ final class HeliosPreferences: ObservableObject {
 
   func isTelemetryEnabled(_ module: HeliosTelemetryModule) -> Bool {
     telemetryModules.contains(module)
+  }
+
+  /// The shared collector also supplies enabled alerts, independently of UI selection.
+  func isTelemetryCollectionRequired(_ module: HeliosTelemetryModule) -> Bool {
+    isTelemetryEnabled(module) || healthAlerts.requiresCollection(module)
   }
 
   func setTelemetryModuleEnabled(_ module: HeliosTelemetryModule, enabled: Bool) {
@@ -1276,6 +1303,42 @@ final class HeliosPreferences: ObservableObject {
     persist()
   }
 
+  /// Configures menu bar, collection, popover and sidebar from what the user
+  /// cares about. Later manual edits in Modules stay as the user made them until
+  /// goals are applied again.
+  func applyGoals(_ goals: Set<HeliosGoal>, traits: HeliosMacTraits = .unknown) {
+    let plan = HeliosGoalPlan.make(for: goals, traits: traits)
+    applyingInterfacePreset = true
+    defer { applyingInterfacePreset = false }
+    dashboardMode = .custom
+    telemetryModules = plan.samplers
+    menuBarMetrics = plan.menuBarMetrics
+    showMenuBarHub = true
+    // Legacy keeps its complete layout; its surfaces hide whatever is not collected.
+    popoverModules = Self.advancedPopoverModules
+    dashboardMetrics = Self.dashboardMetrics(for: .advanced)
+    monitorRoutes = Self.normalizedMonitorRoutes(HeliosMonitorRoute.allCases)
+    detailedMonitorContent = false
+    interface.apply(plan, goals: goals)
+    persist()
+  }
+
+  /// Finishes the welcome flow with the chosen goals.
+  func completeOnboarding(goals: Set<HeliosGoal>, traits: HeliosMacTraits = .unknown) {
+    // Text labels are the clearest first-run identity (see completeOnboarding(with:)).
+    menuBarIdentityStyle = .label
+    menuBarLayout = .nativeModules
+    metricIdentityStyles = Dictionary(
+      uniqueKeysWithValues: HeliosMenuBarMetric.allCases.map { ($0, .label) })
+    metricContent = Dictionary(
+      uniqueKeysWithValues: HeliosMenuBarMetric.allCases.map { ($0, .labelAndValue) })
+    metricLabels = Dictionary(
+      uniqueKeysWithValues: HeliosMenuBarMetric.allCases.map { ($0, $0.shortLabel) })
+    applyGoals(goals, traits: traits)
+    onboardingCompleted = true
+    persist()
+  }
+
   func markOnboardingIncomplete() {
     onboardingCompleted = false
     persist()
@@ -1290,6 +1353,7 @@ final class HeliosPreferences: ObservableObject {
     graphLineStyle = .smooth
     animateGraphUpdates = true
     memoryGaugeShowsAvailable = false
+    temperatureUnit = .celsius
     detailedMonitorContent = false
     menuBarSpacing = 2
     coolingFeaturesEnabled = true
@@ -1300,6 +1364,7 @@ final class HeliosPreferences: ObservableObject {
     graphRange = .fiveMinutes
     resetColors()
     resetMenuBar()
+    interface.resetLayout()
     persist()
   }
 
@@ -1326,6 +1391,7 @@ final class HeliosPreferences: ObservableObject {
     defaults.set(graphLineStyle.rawValue, forKey: Self.graphLineStyleKey)
     defaults.set(animateGraphUpdates, forKey: Self.graphAnimateKey)
     defaults.set(memoryGaugeShowsAvailable, forKey: Self.memoryGaugeAvailableKey)
+    defaults.set(temperatureUnit.rawValue, forKey: Self.temperatureUnitKey)
     defaults.set(detailedMonitorContent, forKey: Self.detailedMonitorKey)
     defaults.set(menuBarSpacing, forKey: Self.menuBarSpacingKey)
     defaults.set(coolingFeaturesEnabled, forKey: Self.coolingFeaturesKey)
@@ -1338,7 +1404,7 @@ final class HeliosPreferences: ObservableObject {
     defaults.set(
       Dictionary(uniqueKeysWithValues: graphRanges.map { ($0.key.rawValue, $0.value.rawValue) }),
       forKey: Self.graphRangesKey)
-    // Keep writing the UI6 key for reversible development-build migration.
+    // Older builds read this key; keep writing it so a downgrade keeps the choice.
     defaults.set(menuBarIdentityStyle == .symbol, forKey: Self.symbolsKey)
     defaults.set(onboardingCompleted, forKey: Self.onboardingKey)
     defaults.set(Self.currentSchemaVersion, forKey: Self.schemaVersionKey)

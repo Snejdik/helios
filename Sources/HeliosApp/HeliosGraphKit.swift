@@ -28,7 +28,7 @@ enum HeliosChartValueStyle: String, Sendable {
     case .percent:
       return String(format: "%.1f%%", value)
     case .celsius:
-      return String(format: "%.1f°C", value)
+      return TemperatureUnit.current.format(value, decimals: 1)
     case .watts:
       return String(format: "%.2f W", value)
     case .signedWatts:
@@ -38,8 +38,7 @@ enum HeliosChartValueStyle: String, Sendable {
     case .bytesPerSecond:
       return TelemetryFormatting.bytesPerSecond(value)
     case .bytes:
-      guard value >= 0, value <= Double(UInt64.max) else { return "—" }
-      return TelemetryFormatting.storageBytes(UInt64(value.rounded()))
+      return TelemetryFormatting.decimalBytes(value)
     case .count:
       return String(format: "%.0f", value)
     case .milliwattHours:
@@ -222,6 +221,8 @@ struct HeliosTimeSeriesChart: View {
   var inspectorEnabled = true
   var valueStyle: HeliosChartValueStyle = .plain
   var seriesLabel: String = "Value"
+  /// Optional Activity event markers; empty for every Legacy caller.
+  var markers: [HeliosChartMarker] = []
 
   var body: some View {
     HeliosNativeChartRepresentable(
@@ -233,7 +234,8 @@ struct HeliosTimeSeriesChart: View {
       animateUpdates: animateUpdates,
       inspectorEnabled: inspectorEnabled,
       valueStyle: valueStyle,
-      seriesLabel: seriesLabel
+      seriesLabel: seriesLabel,
+      markers: markers
     )
     .background(Color.secondary.opacity(0.035), in: RoundedRectangle(cornerRadius: 6))
     .accessibilityElement(children: .ignore)
@@ -254,6 +256,7 @@ private struct HeliosNativeChartRepresentable: NSViewRepresentable {
   let inspectorEnabled: Bool
   let valueStyle: HeliosChartValueStyle
   let seriesLabel: String
+  let markers: [HeliosChartMarker]
 
   func makeNSView(context: Context) -> HeliosNativeTimeSeriesView {
     let view = HeliosNativeTimeSeriesView()
@@ -267,6 +270,7 @@ private struct HeliosNativeChartRepresentable: NSViewRepresentable {
       inspectorEnabled: inspectorEnabled,
       valueStyle: valueStyle,
       seriesLabel: seriesLabel,
+      markers: markers,
       allowAnimation: false)
     return view
   }
@@ -282,6 +286,7 @@ private struct HeliosNativeChartRepresentable: NSViewRepresentable {
       inspectorEnabled: inspectorEnabled,
       valueStyle: valueStyle,
       seriesLabel: seriesLabel,
+      markers: markers,
       allowAnimation: true)
   }
 }
@@ -349,6 +354,7 @@ private final class HeliosNativeTimeSeriesView: NSView {
   private var inspectorEnabled = true
   private var valueStyle: HeliosChartValueStyle = .plain
   private var seriesLabel = "Value"
+  private var markers: [HeliosChartMarker] = []
   private var stableDynamicRange: ClosedRange<Double>?
   private var latestTimestamp: Date?
   private var cursorPoint: NSPoint?
@@ -454,6 +460,7 @@ private final class HeliosNativeTimeSeriesView: NSView {
     inspectorEnabled newInspectorEnabled: Bool,
     valueStyle newValueStyle: HeliosChartValueStyle,
     seriesLabel newSeriesLabel: String,
+    markers newMarkers: [HeliosChartMarker] = [],
     allowAnimation: Bool
   ) {
     let oldLatest = latestTimestamp
@@ -472,6 +479,7 @@ private final class HeliosNativeTimeSeriesView: NSView {
     inspectorEnabled = newInspectorEnabled
     valueStyle = newValueStyle
     seriesLabel = newSeriesLabel
+    markers = newMarkers
     samples = Self.decimated(
       newSamples, target: max(360, Int(max(plotClipView.bounds.width, max(bounds.width, 360)) * 2)))
     latestTimestamp = newLatest
@@ -588,6 +596,7 @@ private final class HeliosNativeTimeSeriesView: NSView {
     context.setShouldAntialias(true)
     let valueRange = resolvedValueRange
     let segments = pointSegments(valueRange: valueRange, plotRect: plotBounds)
+    drawMarkers(context: context, plotRect: plotBounds)
 
     context.saveGState()
     context.setStrokeColor(tint.withAlphaComponent(0.92).cgColor)
@@ -634,6 +643,45 @@ private final class HeliosNativeTimeSeriesView: NSView {
     if !animateUpdates, cursorPoint == nil, let point = segments.last?.last {
       context.setFillColor(tint.withAlphaComponent(0.98).cgColor)
       context.fillEllipse(in: CGRect(x: point.x - 2, y: point.y - 2, width: 4, height: 4))
+    }
+  }
+
+  /// Event markers live on the sliding canvas so they move with the samples.
+  private func drawMarkers(context: CGContext, plotRect: NSRect) {
+    guard !markers.isEmpty, let displayNow = latestTimestamp, range.seconds > 0 else { return }
+    let cutoff = displayNow.addingTimeInterval(-range.seconds)
+    context.saveGState()
+    context.setLineWidth(1)
+    context.setLineDash(phase: 0, lengths: [3, 3])
+    for marker in markers {
+      let fraction = marker.date.timeIntervalSince(cutoff) / range.seconds
+      guard fraction.isFinite, fraction >= -0.05, fraction <= 1.05 else { continue }
+      let x = plotRect.minX + plotRect.width * CGFloat(fraction)
+      context.setStrokeColor(Self.markerColor(marker.tone).withAlphaComponent(0.55).cgColor)
+      context.move(to: CGPoint(x: x, y: plotRect.minY))
+      context.addLine(to: CGPoint(x: x, y: plotRect.maxY))
+      context.strokePath()
+    }
+    context.restoreGState()
+  }
+
+  private static func markerColor(_ tone: HeliosActivityEvent.Tone) -> NSColor {
+    switch tone {
+    case .neutral: .secondaryLabelColor
+    case .positive: .systemGreen
+    case .attention: .systemOrange
+    case .critical: .systemRed
+    }
+  }
+
+  private func marker(near cursor: NSPoint) -> HeliosChartMarker? {
+    guard !markers.isEmpty, let displayNow = latestTimestamp, range.seconds > 0 else { return nil }
+    let plotRect = visiblePlotRect
+    let cutoff = displayNow.addingTimeInterval(-range.seconds)
+    return markers.first { marker in
+      let x = plotRect.minX + plotRect.width
+        * CGFloat(marker.date.timeIntervalSince(cutoff) / range.seconds)
+      return abs(x - cursor.x) <= 5
     }
   }
 
@@ -753,15 +801,16 @@ private final class HeliosNativeTimeSeriesView: NSView {
     let time = formatter.string(from: item.sample.capturedAt)
     let value = item.sample.value.map(valueStyle.format) ?? "—"
     let title = "\(seriesLabel)  \(value)"
-    let subtitle = time
+    let event = marker(near: cursor)?.label
+    let subtitle = event.map { "\(time) · \($0)" } ?? time
 
-    let titleFont = NSFont.systemFont(ofSize: 10, weight: .semibold)
-    let subtitleFont = NSFont.monospacedDigitSystemFont(ofSize: 8.5, weight: .regular)
+    let titleFont = NSFont.systemFont(ofSize: 11, weight: .semibold)
+    let subtitleFont = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
     let titleWidth = ceil((title as NSString).size(withAttributes: [.font: titleFont]).width)
     let subtitleWidth = ceil(
       (subtitle as NSString).size(withAttributes: [.font: subtitleFont]).width)
     let width = max(titleWidth, subtitleWidth) + 14
-    let height: CGFloat = 34
+    let height: CGFloat = 38
     var x = item.point.x + 8
     if x + width > bounds.maxX - 4 { x = item.point.x - width - 8 }
     x = min(max(4, x), max(4, bounds.width - width - 4))
@@ -776,10 +825,10 @@ private final class HeliosNativeTimeSeriesView: NSView {
     box.stroke()
 
     (title as NSString).draw(
-      in: NSRect(x: rect.minX + 7, y: rect.minY + 5, width: rect.width - 14, height: 13),
+      in: NSRect(x: rect.minX + 7, y: rect.minY + 5, width: rect.width - 14, height: 15),
       withAttributes: [.font: titleFont, .foregroundColor: NSColor.labelColor])
     (subtitle as NSString).draw(
-      in: NSRect(x: rect.minX + 7, y: rect.minY + 19, width: rect.width - 14, height: 11),
+      in: NSRect(x: rect.minX + 7, y: rect.minY + 21, width: rect.width - 14, height: 13),
       withAttributes: [.font: subtitleFont, .foregroundColor: NSColor.secondaryLabelColor])
   }
 
@@ -971,5 +1020,31 @@ private final class HeliosNativeTimeSeriesView: NSView {
       }
     }
     return tangents
+  }
+}
+
+/// Clipboard actions format only existing presentation data and run on explicit clicks.
+@MainActor
+extension View {
+  func heliosMetricCopyActions(name: String, value: String) -> some View {
+    contextMenu {
+      Button("Copy Value") { HeliosClipboard.copy(value) }
+      Button("Copy Name and Value") { HeliosClipboard.copy("\(name): \(value)") }
+    }
+  }
+
+  func heliosProcessCopyActions(_ process: ProcessActivity) -> some View {
+    contextMenu {
+      Button("Copy Process Name") { HeliosClipboard.copy(process.name) }
+      Button("Copy PID") { HeliosClipboard.copy(String(process.pid)) }
+    }
+  }
+}
+
+@MainActor
+private enum HeliosClipboard {
+  static func copy(_ text: String) {
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString(text, forType: .string)
   }
 }

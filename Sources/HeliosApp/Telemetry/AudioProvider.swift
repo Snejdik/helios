@@ -24,7 +24,6 @@ struct AudioMetrics: Sendable, Equatable {
 
     var defaultInput: AudioDeviceMetrics? { defaultInputDeviceID.flatMap { id in devices.first { $0.objectID == id } } }
     var defaultOutput: AudioDeviceMetrics? { defaultOutputDeviceID.flatMap { id in devices.first { $0.objectID == id } } }
-    var defaultSystemOutput: AudioDeviceMetrics? { defaultSystemOutputDeviceID.flatMap { id in devices.first { $0.objectID == id } } }
 }
 
 actor AudioProvider {

@@ -1,801 +1,5 @@
 import AppKit
-import Combine
 import SwiftUI
-
-@MainActor
-final class HeliosWindowCoordinator: NSObject, NSWindowDelegate {
-  private let service: DaemonService
-  private let preferences: HeliosPreferences
-  private let model: OverviewViewModel
-  private let diagnostics: DiagnosticsController
-  private var monitorController: HeliosMonitorWindowController?
-  private var energyInspectorController: NSWindowController?
-  private var settingsController: NSWindowController?
-  private var onboardingController: NSWindowController?
-  private var lastMonitorRoute: HeliosMonitorRoute = .overview
-  private let energyInspectorState = HeliosEnergyInspectorState()
-
-  init(
-    service: DaemonService, preferences: HeliosPreferences, model: OverviewViewModel,
-    diagnostics: DiagnosticsController
-  ) {
-    self.service = service
-    self.preferences = preferences
-    self.model = model
-    self.diagnostics = diagnostics
-    super.init()
-  }
-
-  /// The shared UI8 model is fed once by StatusItemController. Windows observe it
-  /// directly, avoiding duplicate history/persistence work per open surface.
-  func update(_ snapshot: TelemetrySnapshot) {}
-
-  func showMonitor(snapshot: TelemetrySnapshot, route: HeliosMonitorRoute? = nil) {
-    let isNew = monitorController == nil
-    let controller =
-      monitorController
-      ?? HeliosMonitorWindowController(
-        model: model, service: service, preferences: preferences,
-        openEnergyInspector: { [weak self] in self?.showEnergyInspector() })
-    monitorController = controller
-    controller.window?.delegate = self
-    controller.update(snapshot)
-    if let route {
-      controller.select(route)
-    } else if isNew {
-      controller.select(lastMonitorRoute)
-    }
-    show(controller.window)
-  }
-
-  func showEnergyInspector() {
-    let controller: NSWindowController
-    if let energyInspectorController {
-      controller = energyInspectorController
-    } else {
-      let content = HeliosEnergyInspectorView(
-        model: model, preferences: preferences, state: energyInspectorState)
-      let hosting = NSHostingController(rootView: content)
-      let window = NSWindow(contentViewController: hosting)
-      window.title = "Helios Energy Inspector"
-      window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
-      window.minSize = NSSize(width: 700, height: 500)
-      window.setContentSize(NSSize(width: 820, height: 620))
-      window.toolbarStyle = .unified
-      window.titlebarAppearsTransparent = true
-      window.isReleasedWhenClosed = false
-      window.center()
-      controller = NSWindowController(window: window)
-      window.delegate = self
-      energyInspectorController = controller
-    }
-    show(controller.window)
-  }
-
-  func showSettings() {
-    let controller: NSWindowController
-    if let settingsController {
-      controller = settingsController
-    } else {
-      let content = HeliosSettingsView(
-        preferences: preferences, service: service, diagnostics: diagnostics)
-      let hosting = NSHostingController(rootView: content)
-      let window = NSWindow(contentViewController: hosting)
-      window.title = "Helios Settings"
-      window.styleMask = [.titled, .closable, .miniaturizable]
-      window.setContentSize(NSSize(width: 720, height: 520))
-      window.isReleasedWhenClosed = false
-      window.center()
-      controller = NSWindowController(window: window)
-      window.delegate = self
-      settingsController = controller
-    }
-    show(controller.window)
-  }
-
-  func showOnboardingIfNeeded() {
-    guard !preferences.onboardingCompleted else { return }
-    if let onboardingController {
-      show(onboardingController.window)
-      return
-    }
-
-    let content = HeliosOnboardingView(preferences: preferences, diagnostics: diagnostics) {
-      [weak self] in
-      self?.onboardingController?.close()
-      self?.onboardingController = nil
-    }
-    let hosting = NSHostingController(rootView: content)
-    let window = NSWindow(contentViewController: hosting)
-    window.title = "Welcome to Helios"
-    window.styleMask = [.titled, .closable, .resizable]
-    window.titlebarAppearsTransparent = true
-    window.contentMinSize = NSSize(width: 600, height: 440)
-    window.setContentSize(NSSize(width: 720, height: 560))
-    window.isReleasedWhenClosed = false
-    window.center()
-    let controller = NSWindowController(window: window)
-    window.delegate = self
-    onboardingController = controller
-    show(window)
-  }
-
-  func windowWillClose(_ notification: Notification) {
-    guard let window = notification.object as? NSWindow else { return }
-
-    // A closed NSWindow can outlive the coordinator's strong reference inside
-    // AppKit. Merely nil-ing our NSWindowController therefore does not prove
-    // that a large NSHostingController/AttributeGraph tree is gone. Tear the
-    // presentation hierarchy off the window explicitly before releasing our
-    // controller. The shared telemetry model/preferences/service stay alive;
-    // only reconstructible UI state is discarded.
-    if window === monitorController?.window {
-      let controller = monitorController
-      lastMonitorRoute = controller?.selectedRoute ?? lastMonitorRoute
-      monitorController = nil
-      detachPresentationTree(from: window)
-      controller?.window = nil
-    } else if window === energyInspectorController?.window {
-      let controller = energyInspectorController
-      energyInspectorController = nil
-      energyInspectorState.clearDerivedCache()
-      detachPresentationTree(from: window)
-      controller?.window = nil
-    } else if window === settingsController?.window {
-      let controller = settingsController
-      settingsController = nil
-      detachPresentationTree(from: window)
-      controller?.window = nil
-    } else if window === onboardingController?.window {
-      let controller = onboardingController
-      onboardingController = nil
-      detachPresentationTree(from: window)
-      controller?.window = nil
-    }
-
-    // Application icons are reconstructible presentation data. Never keep a
-    // workspace-icon cache alive merely because a heavy window was visited.
-    HeliosAppIconCache.shared.purge()
-  }
-
-  private func detachPresentationTree(from window: NSWindow) {
-    // Break responder/view/controller ownership in a deterministic order. This
-    // is intentionally UI-only: no telemetry collector, helper, lease, fan or
-    // persistence state is touched. A fresh hosting tree is built on reopen.
-    window.makeFirstResponder(nil)
-    window.delegate = nil
-    window.contentViewController = nil
-    window.contentView = NSView(frame: .zero)
-  }
-
-  private func show(_ window: NSWindow?) {
-    guard let window else { return }
-    NSApp.activate(ignoringOtherApps: true)
-    window.makeKeyAndOrderFront(nil)
-  }
-}
-
-@MainActor
-final class HeliosMonitorWindowController: NSWindowController {
-  private let model: OverviewViewModel
-  private let navigation = HeliosMonitorNavigation()
-
-  init(
-    model: OverviewViewModel,
-    service: DaemonService,
-    preferences: HeliosPreferences,
-    openEnergyInspector: @escaping () -> Void
-  ) {
-    self.model = model
-    let root = HeliosMonitorWindowView(
-      model: model, service: service, preferences: preferences, navigation: navigation,
-      openEnergyInspector: openEnergyInspector)
-    let hosting = NSHostingController(rootView: root)
-    let window = NSWindow(contentViewController: hosting)
-    window.title = "Helios"
-    window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
-    window.minSize = NSSize(width: 720, height: 500)
-    window.setContentSize(NSSize(width: 860, height: 600))
-    window.toolbarStyle = .unified
-    window.titlebarAppearsTransparent = true
-    window.isReleasedWhenClosed = false
-    super.init(window: window)
-  }
-
-  required init?(coder: NSCoder) { nil }
-  func update(_ snapshot: TelemetrySnapshot) {}
-  func select(_ route: HeliosMonitorRoute) { navigation.selection = route }
-  var selectedRoute: HeliosMonitorRoute { navigation.selection ?? .overview }
-}
-
-@MainActor
-final class HeliosEnergyInspectorState: ObservableObject {
-  struct Aggregation {
-    let visibleBuckets: [AppEnergyBucket]
-    let summary: AppEnergySummary
-    let batteryBuckets: [AppEnergyBucket]
-  }
-
-  @Published var range: HeliosGraphRange = .sixHours
-  @Published var selectedAppKey: String?
-
-  private var cachedRange: HeliosGraphRange?
-  private var cachedBucketCount = -1
-  private var cachedFirstCapture: Date?
-  private var cachedLastCapture: Date?
-  private var cachedAggregation: Aggregation?
-
-  func clearDerivedCache() {
-    cachedRange = nil
-    cachedBucketCount = -1
-    cachedFirstCapture = nil
-    cachedLastCapture = nil
-    cachedAggregation = nil
-  }
-
-  func aggregation(for source: AppEnergySummary) -> Aggregation {
-    let first = source.buckets.first?.capturedAt
-    let last = source.buckets.last?.capturedAt
-    if cachedRange == range, cachedBucketCount == source.buckets.count,
-      cachedFirstCapture == first, cachedLastCapture == last, let cachedAggregation
-    {
-      return cachedAggregation
-    }
-
-    let visible: [AppEnergyBucket]
-    if let anchor = last {
-      let cutoff = anchor.addingTimeInterval(-range.seconds)
-      visible = source.buckets.filter { $0.capturedAt >= cutoff && $0.capturedAt <= anchor }
-    } else {
-      visible = []
-    }
-    let summary = AppEnergyHistoryEngine.summary(visible)
-    let result = Aggregation(
-      visibleBuckets: visible,
-      summary: summary,
-      batteryBuckets: visible.filter { $0.onBattery == true })
-    cachedRange = range
-    cachedBucketCount = source.buckets.count
-    cachedFirstCapture = first
-    cachedLastCapture = last
-    cachedAggregation = result
-    return result
-  }
-}
-
-@MainActor
-struct HeliosEnergyInspectorView: View {
-  @ObservedObject var model: OverviewViewModel
-  @ObservedObject var preferences: HeliosPreferences
-  @ObservedObject var state: HeliosEnergyInspectorState = HeliosEnergyInspectorState()
-
-  private var range: HeliosGraphRange { state.range }
-  private var selectedAppKey: String? { state.selectedAppKey }
-
-  private static let supportedRanges: [HeliosGraphRange] = [.oneHour, .sixHours, .twentyFourHours]
-  private var p: OverviewPresentation { OverviewPresentation(model.snapshot) }
-
-  private var aggregation: HeliosEnergyInspectorState.Aggregation {
-    state.aggregation(for: model.appEnergy)
-  }
-
-  private var visibleBuckets: [AppEnergyBucket] { aggregation.visibleBuckets }
-  private var summary: AppEnergySummary { aggregation.summary }
-  private var batteryBuckets: [AppEnergyBucket] { aggregation.batteryBuckets }
-
-  private var trackedEnergyWattHours: Double {
-    summary.topOnBattery.reduce(0) { $0 + $1.energyWattHours }
-  }
-
-  private var effectiveSelectedAppKey: String? {
-    if let selectedAppKey,
-      summary.topOnBattery.contains(where: { $0.appKey == selectedAppKey })
-    {
-      return selectedAppKey
-    }
-    return summary.topOnBattery.first?.appKey
-  }
-
-  private var selectedEntry: AppEnergyEntry? {
-    guard let key = effectiveSelectedAppKey else { return nil }
-    return summary.topOnBattery.first { $0.appKey == key }
-  }
-
-  private var batteryChangePercent: Double? {
-    let values = batteryBuckets.compactMap { bucket -> Double? in
-      guard let percent = bucket.batteryPercent, percent.isFinite, (0...100).contains(percent)
-      else { return nil }
-      return percent
-    }
-    guard let first = values.first, let last = values.last, values.count >= 2 else { return nil }
-    return last - first
-  }
-
-  var body: some View {
-    VStack(spacing: 0) {
-      header
-      Divider()
-      ScrollView {
-        VStack(alignment: .leading, spacing: 16) {
-          summaryCards
-          batteryHistory
-          HStack(alignment: .top, spacing: 14) {
-            rankingPanel
-              .frame(minWidth: 270, idealWidth: 300, maxWidth: 320, alignment: .topLeading)
-            selectedAppPanel
-              .frame(maxWidth: .infinity, alignment: .topLeading)
-          }
-          caveat
-        }
-        .padding(18)
-      }
-      .background(Color(nsColor: .windowBackgroundColor))
-    }
-    .frame(minWidth: 680, minHeight: 470)
-  }
-
-  private var header: some View {
-    HStack(spacing: 12) {
-      Image(systemName: "battery.75percent")
-        .font(.system(size: 19, weight: .semibold))
-        .foregroundStyle(preferences.color(for: .energy))
-        .frame(width: 24)
-      VStack(alignment: .leading, spacing: 2) {
-        Text("Energy Inspector")
-          .font(.system(size: 16, weight: .semibold))
-        Text("Which apps used battery energy, and when")
-          .font(.system(size: 10))
-          .foregroundStyle(.secondary)
-      }
-      Spacer()
-      Picker("History range", selection: $state.range) {
-        ForEach(Self.supportedRanges) { item in
-          Text(item.label).tag(item)
-        }
-      }
-      .labelsHidden()
-      .pickerStyle(.segmented)
-      .controlSize(.small)
-      .frame(width: 190)
-      .accessibilityLabel("Energy history range")
-    }
-    .padding(.horizontal, 18)
-    .padding(.vertical, 12)
-  }
-
-  private var summaryCards: some View {
-    LazyVGrid(
-      columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 4), spacing: 10
-    ) {
-      inspectorCard(
-        "Battery now", currentBatteryText, detail: currentPowerSourceText,
-        symbol: "battery.75percent", tint: preferences.color(for: .battery))
-      inspectorCard(
-        "Live flow", currentBatteryFlowText, detail: currentBatteryFlowDetail,
-        symbol: "bolt.fill", tint: preferences.color(for: .power))
-      inspectorCard(
-        "Battery change", batteryChangeText,
-        detail: "during observed on-battery samples", symbol: "chart.line.downtrend.xyaxis",
-        tint: batteryChangeTint)
-      inspectorCard(
-        "Observed", TelemetryFormatting.duration(summary.onBatteryCoverageSeconds),
-        detail: "on battery in selected range", symbol: "clock",
-        tint: preferences.color(for: .energy))
-    }
-  }
-
-  private var batteryHistory: some View {
-    GroupBox {
-      VStack(alignment: .leading, spacing: 8) {
-        HStack(alignment: .firstTextBaseline) {
-          Text("Battery level")
-            .font(.system(size: 11, weight: .semibold))
-          Spacer()
-          Text(range.menuLabel)
-            .font(.system(size: 9.5, weight: .medium).monospacedDigit())
-            .foregroundStyle(.secondary)
-        }
-        if batteryLevelSamples.contains(where: { $0.value != nil }) {
-          HeliosTimeSeriesChart(
-            samples: batteryLevelSamples,
-            range: range,
-            fixedRange: 0...100,
-            tint: preferences.color(for: .battery),
-            lineStyle: preferences.graphLineStyle,
-            animateUpdates: false,
-            inspectorEnabled: true,
-            valueStyle: .percent,
-            seriesLabel: "Battery"
-          )
-          .frame(height: 92)
-        } else {
-          inspectorEmpty(
-            "No battery-level history in this range",
-            detail:
-              "Use the Mac on battery while Helios is running; the local history updates automatically."
-          )
-        }
-      }
-      .padding(4)
-    }
-  }
-
-  private var rankingPanel: some View {
-    GroupBox {
-      VStack(alignment: .leading, spacing: 8) {
-        HStack {
-          Text("Battery energy by app")
-            .font(.system(size: 11, weight: .semibold))
-          Spacer()
-          Text("Share")
-            .font(.system(size: 9))
-            .foregroundStyle(.tertiary)
-        }
-
-        if summary.topOnBattery.isEmpty {
-          inspectorEmpty(
-            "No on-battery app history",
-            detail:
-              "Helios will rank apps after it has observed at least one completed energy-history bucket while on battery."
-          )
-        } else {
-          ForEach(Array(summary.topOnBattery.prefix(12).enumerated()), id: \.element.id) {
-            index, entry in
-            Button {
-              state.selectedAppKey = entry.appKey
-            } label: {
-              energyLeaderRow(rank: index + 1, entry: entry)
-            }
-            .buttonStyle(.plain)
-          }
-        }
-      }
-      .padding(4)
-    }
-  }
-
-  @ViewBuilder
-  private var selectedAppPanel: some View {
-    GroupBox {
-      if let entry = selectedEntry {
-        VStack(alignment: .leading, spacing: 10) {
-          HStack(spacing: 9) {
-            HeliosAppIdentityIcon(appKey: entry.appKey, size: 30)
-            VStack(alignment: .leading, spacing: 1) {
-              Text(entry.displayName)
-                .font(.system(size: 12, weight: .semibold))
-                .lineLimit(1)
-              Text(selectedShareText(entry))
-                .font(.system(size: 9.5))
-                .foregroundStyle(.secondary)
-            }
-            Spacer()
-            Text(energyText(entry.energyWattHours))
-              .font(.system(size: 11, weight: .semibold).monospacedDigit())
-          }
-
-          HeliosTimeSeriesChart(
-            samples: selectedAppSamples(appKey: entry.appKey),
-            range: range,
-            fixedRange: nil,
-            tint: preferences.color(for: .energy),
-            lineStyle: preferences.graphLineStyle,
-            animateUpdates: false,
-            inspectorEnabled: true,
-            valueStyle: .milliwattHours,
-            seriesLabel: entry.displayName
-          )
-          .frame(height: 100)
-
-          Divider().opacity(0.45)
-          inspectorDetailRow("CPU time", TelemetryFormatting.duration(entry.cpuCoreSeconds))
-          inspectorDetailRow("Wakeups", String(format: "%.0f", entry.wakeups))
-          inspectorDetailRow(
-            "Peak memory", TelemetryFormatting.storageBytes(entry.peakMemoryBytes))
-        }
-        .padding(4)
-      } else {
-        VStack(alignment: .leading, spacing: 8) {
-          Text("App timeline")
-            .font(.system(size: 11, weight: .semibold))
-          inspectorEmpty(
-            "Select an app",
-            detail:
-              "Once on-battery history exists, choose an app on the left to inspect its minute-by-minute tracked energy."
-          )
-        }
-        .padding(4)
-      }
-    }
-  }
-
-  private var caveat: some View {
-    Label(
-      "Relative local attribution only. Inaccessible/system processes can be absent, and process-accounted energy does not equal whole-system battery drain 1:1.",
-      systemImage: "info.circle"
-    )
-    .font(.system(size: 9.5))
-    .foregroundStyle(.secondary)
-    .fixedSize(horizontal: false, vertical: true)
-  }
-
-  private var batteryLevelSamples: [HeliosChartSample] {
-    visibleBuckets.map { bucket in
-      let value = bucket.onBattery == true ? bucket.batteryPercent : nil
-      return HeliosChartSample(capturedAt: bucket.capturedAt, value: value)
-    }
-  }
-
-  private func selectedAppSamples(appKey: String) -> [HeliosChartSample] {
-    visibleBuckets.map { bucket in
-      guard bucket.onBattery == true else {
-        return HeliosChartSample(capturedAt: bucket.capturedAt, value: nil)
-      }
-      let energy = bucket.entries.first(where: { $0.appKey == appKey })?.energyWattHours
-      let milliwattHours = energy.map { $0 * 1_000 }
-      return HeliosChartSample(capturedAt: bucket.capturedAt, value: milliwattHours)
-    }
-  }
-
-  private func energyLeaderRow(rank: Int, entry: AppEnergyEntry) -> some View {
-    let selected = effectiveSelectedAppKey == entry.appKey
-    let share = trackedEnergyWattHours > 0 ? entry.energyWattHours / trackedEnergyWattHours : 0
-    return HStack(spacing: 8) {
-      Text("\(rank)")
-        .font(.system(size: 9, weight: .medium).monospacedDigit())
-        .foregroundStyle(.tertiary)
-        .frame(width: 14, alignment: .trailing)
-      HeliosAppIdentityIcon(appKey: entry.appKey, size: 24)
-      VStack(alignment: .leading, spacing: 2) {
-        Text(entry.displayName)
-          .font(.system(size: 10.5, weight: .medium))
-          .lineLimit(1)
-        GeometryReader { proxy in
-          ZStack(alignment: .leading) {
-            Capsule().fill(Color.secondary.opacity(0.10))
-            Capsule().fill(Color.orange.opacity(0.78))
-              .frame(width: proxy.size.width * CGFloat(min(1, max(0, share))))
-          }
-        }
-        .frame(height: 3)
-      }
-      Spacer(minLength: 5)
-      VStack(alignment: .trailing, spacing: 1) {
-        Text(String(format: "%.0f%%", share * 100))
-          .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
-        Text(energyText(entry.energyWattHours))
-          .font(.system(size: 8.5).monospacedDigit())
-          .foregroundStyle(.tertiary)
-      }
-    }
-    .padding(.horizontal, 6)
-    .padding(.vertical, 5)
-    .background(
-      selected ? Color.accentColor.opacity(0.12) : Color.clear,
-      in: RoundedRectangle(cornerRadius: 7, style: .continuous)
-    )
-    .contentShape(Rectangle())
-  }
-
-  private func inspectorCard(
-    _ title: String, _ value: String, detail: String, symbol: String, tint: Color
-  ) -> some View {
-    VStack(alignment: .leading, spacing: 6) {
-      HStack(spacing: 5) {
-        Image(systemName: symbol)
-          .foregroundStyle(tint)
-        Text(title)
-          .foregroundStyle(.secondary)
-      }
-      .font(.system(size: 9.5, weight: .medium))
-      Text(value)
-        .font(.system(size: 18, weight: .semibold).monospacedDigit())
-        .lineLimit(1)
-      Text(detail)
-        .font(.system(size: 8.5))
-        .foregroundStyle(.tertiary)
-        .lineLimit(2)
-    }
-    .frame(maxWidth: .infinity, minHeight: 72, alignment: .topLeading)
-    .padding(10)
-    .background(
-      Color(nsColor: .controlBackgroundColor).opacity(0.52),
-      in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-  }
-
-  private func inspectorEmpty(_ title: String, detail: String) -> some View {
-    VStack(alignment: .leading, spacing: 3) {
-      Text(title)
-        .font(.system(size: 10.5, weight: .semibold))
-      Text(detail)
-        .font(.system(size: 9.5))
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
-    }
-    .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
-    .padding(.vertical, 6)
-  }
-
-  private func inspectorDetailRow(_ title: String, _ value: String) -> some View {
-    HStack {
-      Text(title).foregroundStyle(.secondary)
-      Spacer()
-      Text(value).monospacedDigit()
-    }
-    .font(.system(size: 9.5))
-  }
-
-  private func selectedShareText(_ entry: AppEnergyEntry) -> String {
-    guard trackedEnergyWattHours > 0 else { return "Tracked battery share unavailable" }
-    let share = entry.energyWattHours / trackedEnergyWattHours
-    return String(format: "%.1f%% of tracked app energy · %@", share * 100, range.menuLabel)
-  }
-
-  private func energyText(_ wattHours: Double) -> String {
-    guard wattHours.isFinite, wattHours >= 0 else { return "—" }
-    if wattHours < 1 {
-      return String(format: "%.2f mWh", wattHours * 1_000)
-    }
-    return String(format: "%.2f Wh", wattHours)
-  }
-
-  private var currentBatteryText: String {
-    guard case .success(let battery) = p.battery,
-      case .success(let percent) = battery.stateOfChargePercent
-    else { return "—" }
-    return String(format: "%.0f%%", percent)
-  }
-
-  private var currentPowerSourceText: String {
-    guard case .success(let battery) = p.battery,
-      case .success(let source) = battery.powerSource
-    else { return "Current power source unavailable" }
-    return source.rawValue
-  }
-
-  private var currentBatteryFlowText: String {
-    guard case .success(let battery) = p.battery,
-      case .success(let power) = battery.power
-    else { return "—" }
-    return String(format: "%+.1f W", power.signedWatts)
-  }
-
-  private var currentBatteryFlowDetail: String {
-    guard case .success(let battery) = p.battery,
-      case .success(let source) = battery.powerSource
-    else { return "Current battery flow unavailable" }
-    switch source {
-    case .battery: return "negative = discharging"
-    case .powerAdapter: return "connected to power adapter"
-    }
-  }
-
-  private var batteryChangeText: String {
-    guard let batteryChangePercent else { return "—" }
-    return String(format: "%+.1f%%", batteryChangePercent)
-  }
-
-  private var batteryChangeTint: Color {
-    guard let batteryChangePercent else { return .secondary }
-    if batteryChangePercent < -15 { return .orange }
-    if batteryChangePercent > 0.5 { return .green }
-    return .blue
-  }
-}
-
-enum HeliosMonitorRoute: String, CaseIterable, Identifiable, Sendable {
-  case overview, cpu, memory, gpu, thermals, battery, energy, storage, network, processes, history,
-    health,
-    system, devices, maintenance, expert
-  var id: String { rawValue }
-  var title: String {
-    switch self {
-    case .overview: "Overview"
-    case .cpu: "CPU"
-    case .memory: "Memory"
-    case .gpu: "GPU"
-    case .thermals: "Thermals & Fans"
-    case .battery: "Battery"
-    case .energy: "Energy"
-    case .storage: "Storage"
-    case .network: "Network"
-    case .processes: "Processes"
-    case .history: "History"
-    case .health: "Health & Alerts"
-    case .system: "System"
-    case .devices: "Devices"
-    case .maintenance: "Maintenance"
-    case .expert: "Expert"
-    }
-  }
-  var symbol: String {
-    switch self {
-    case .overview: "square.grid.2x2"
-    case .cpu: "cpu"
-    case .memory: "memorychip"
-    case .gpu: "display"
-    case .thermals: "thermometer.medium"
-    case .battery: "battery.75percent"
-    case .energy: "chart.bar.xaxis"
-    case .storage: "internaldrive"
-    case .network: "network"
-    case .processes: "list.bullet.rectangle"
-    case .history: "clock.arrow.circlepath"
-    case .health: "heart.text.square"
-    case .system: "macbook"
-    case .devices: "macbook.and.iphone"
-    case .maintenance: "wrench.and.screwdriver"
-    case .expert: "slider.horizontal.3"
-    }
-  }
-}
-
-private enum HeliosExpertSection: String, CaseIterable, Identifiable {
-  case complete = "All Diagnostics"
-  case sensors = "Sensors"
-  case telemetry = "Telemetry"
-  case services = "Services"
-  case logs = "Logs"
-
-  var id: String { rawValue }
-}
-
-@MainActor
-private final class HeliosMonitorNavigation: ObservableObject {
-  @Published var selection: HeliosMonitorRoute? = .overview
-}
-
-private struct HeliosMonitorWindowView: View {
-  @ObservedObject var model: OverviewViewModel
-  @ObservedObject var service: DaemonService
-  @ObservedObject var preferences: HeliosPreferences
-  @ObservedObject var navigation: HeliosMonitorNavigation
-  let openEnergyInspector: () -> Void
-
-  var body: some View {
-    NavigationSplitView {
-      List(preferences.monitorRoutesForPresentation, selection: $navigation.selection) { route in
-        Label(route.title, systemImage: route.symbol).tag(route)
-      }
-      .navigationTitle("Helios")
-      .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 220)
-    } detail: {
-      ScrollView {
-        HeliosModuleDetail(
-          route: navigation.selection ?? .overview, model: model, service: service,
-          preferences: preferences, openEnergyInspector: openEnergyInspector
-        )
-        .padding(20)
-        .frame(maxWidth: 1280, alignment: .topLeading)
-        .frame(maxWidth: .infinity, alignment: .top)
-      }
-      .background(Color(nsColor: .windowBackgroundColor))
-      .navigationTitle((navigation.selection ?? .overview).title)
-    }
-    .onReceive(preferences.$monitorRoutes) { _ in
-      repairNavigationSelectionAfterPreferenceMutation()
-    }
-    .onReceive(preferences.$telemetryModules) { _ in
-      // Collection and presentation are persisted independently. When a
-      // sampler stops or resumes, the visible route list must update without
-      // destroying the user's saved order or requiring an app restart.
-      repairNavigationSelectionAfterPreferenceMutation()
-    }
-  }
-
-  private func repairNavigationSelectionAfterPreferenceMutation() {
-    // @Published emits before the property mutation is visible through the
-    // observed object. Defer one main-loop turn, then validate against the
-    // regenerated presentation surface.
-    DispatchQueue.main.async {
-      let routes = preferences.monitorRoutesForPresentation
-      guard let selection = navigation.selection, routes.contains(selection) else {
-        navigation.selection = .overview
-        return
-      }
-    }
-  }
-}
 
 private struct HeliosDiagnosticDisclosurePanel<Content: View>: View {
   let title: String
@@ -834,7 +38,7 @@ private struct HeliosDiagnosticDisclosurePanel<Content: View>: View {
               .foregroundStyle(.primary)
             if let subtitle {
               Text(subtitle)
-                .font(.system(size: 9.5))
+                .font(.system(size: 11))
                 .foregroundStyle(.tertiary)
                 .lineLimit(2)
             }
@@ -844,7 +48,7 @@ private struct HeliosDiagnosticDisclosurePanel<Content: View>: View {
 
           if let summary {
             Text(summary)
-              .font(.system(size: 9.5, weight: .medium).monospacedDigit())
+              .font(.system(size: 11, weight: .medium).monospacedDigit())
               .foregroundStyle(.secondary)
               .padding(.horizontal, 7)
               .padding(.vertical, 3)
@@ -882,7 +86,7 @@ private struct HeliosDiagnosticDisclosurePanel<Content: View>: View {
   }
 }
 
-private struct HeliosModuleDetail: View {
+struct HeliosModuleDetail: View {
   let route: HeliosMonitorRoute
   @ObservedObject var model: OverviewViewModel
   @ObservedObject var service: DaemonService
@@ -890,9 +94,7 @@ private struct HeliosModuleDetail: View {
   let openEnergyInspector: () -> Void
   @State private var showRawThermalSensors = false
   @State private var expertSection: HeliosExpertSection = .complete
-  @State private var smcNumericResult: MetricResult<SMCNumericMetrics>?
-  @State private var smcNumericLoading = false
-  private var p: OverviewPresentation { OverviewPresentation(model.snapshot) }
+  private var p: OverviewPresentation { model.presentation }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 14) {
@@ -912,11 +114,11 @@ private struct HeliosModuleDetail: View {
       Label("Advanced diagnostics", systemImage: "waveform.path.ecg")
         .font(.system(size: 12, weight: .semibold))
       Text("Complete backend telemetry, grouped into compact expandable sections.")
-        .font(.system(size: 10))
+        .font(.system(size: 11))
         .foregroundStyle(.secondary)
       Spacer()
       Text("Detailed")
-        .font(.system(size: 9, weight: .semibold))
+        .font(.system(size: 11, weight: .semibold))
         .foregroundStyle(.secondary)
         .padding(.horizontal, 7)
         .padding(.vertical, 3)
@@ -991,7 +193,7 @@ private struct HeliosModuleDetail: View {
     HStack(spacing: 10) {
       if let scope = graphScope {
         Text("Range")
-          .font(.system(size: 10, weight: .medium))
+          .font(.system(size: 11, weight: .medium))
           .foregroundStyle(.secondary)
         HeliosGraphRangePicker(
           range: Binding(
@@ -1035,28 +237,28 @@ private struct HeliosModuleDetail: View {
         columns: [GridItem(.adaptive(minimum: 190, maximum: 360), spacing: 12)], spacing: 12
       ) {
         tile(
-          "CPU", "cpu", metric(p.cpu.map(\.usagePercent)) { String(format: "%.1f%%", $0) },
+          "CPU", "cpu", metric(p.cpu.map(\.usagePercent)) { TelemetryFormatting.percent($0, decimals: 1) },
           preferences.color(for: .cpu))
         tile(
           "Memory", "memorychip",
-          metric(p.memory.map(\.usagePercent)) { String(format: "%.1f%%", $0) },
+          metric(p.memory.map(\.usagePercent)) { TelemetryFormatting.percent($0, decimals: 1) },
           preferences.color(for: .memory))
         tile(
           "GPU", "display",
-          metric(p.gpu.flatMap(\.deviceUtilizationPercent)) { String(format: "%.1f%%", $0) },
+          metric(p.gpu.flatMap(\.deviceUtilizationPercent)) { TelemetryFormatting.percent($0, decimals: 1) },
           preferences.color(for: .gpu))
         tile(
           "Max SoC", "thermometer.medium",
-          metric(p.thermals.flatMap(\.maximumSoCCelsius)) { String(format: "%.1f°C", $0) },
+          metric(p.thermals.flatMap(\.maximumSoCCelsius)) { TelemetryFormatting.temperature($0, decimals: 1) },
           preferences.color(for: .temperature))
         tile(
           "Battery", "battery.75percent",
-          metric(p.battery.flatMap(\.stateOfChargePercent)) { String(format: "%.0f%%", $0) },
+          metric(p.battery.flatMap(\.stateOfChargePercent)) { TelemetryFormatting.percent($0) },
           preferences.color(for: .battery)
         )
         tile(
           "System Power", "bolt.fill",
-          metric(p.systemPower.flatMap(\.totalSystemWatts)) { String(format: "%.1f W", $0) },
+          metric(p.systemPower.flatMap(\.totalSystemWatts)) { TelemetryFormatting.watts($0) },
           preferences.color(for: .power))
       }
 
@@ -1068,25 +270,25 @@ private struct HeliosModuleDetail: View {
             "CPU", samples: mergedSeries(\.cpuPercent, \.cpuPercent),
             current: model.history.points.last?.cpuPercent,
             fixedRange: 0...100, tint: preferences.color(for: .cpu), valueStyle: .percent,
-            format: { String(format: "%.0f%%", $0) })
+            format: { TelemetryFormatting.percent($0) })
           trendCardSeries(
             "Memory", samples: mergedSeries(\.memoryPercent, \.memoryPercent),
             current: model.history.points.last?.memoryPercent, fixedRange: 0...100,
             tint: preferences.color(for: .memory),
             valueStyle: .percent,
-            format: { String(format: "%.0f%%", $0) })
+            format: { TelemetryFormatting.percent($0) })
           trendCardSeries(
             "Temperature", samples: mergedSeries(\.maxSoCCelsius, \.maxSoCCelsius),
             current: model.history.points.last?.maxSoCCelsius, fixedRange: 20...100,
             tint: preferences.color(for: .temperature),
             valueStyle: .celsius,
-            format: { String(format: "%.0f°C", $0) })
+            format: { TelemetryFormatting.temperature($0) })
           trendCardSeries(
             "System Power", samples: mergedSeries(\.systemPowerWatts, \.systemPowerWatts),
             current: model.history.points.last?.systemPowerWatts, fixedRange: nil,
             tint: preferences.color(for: .power),
             valueStyle: .watts,
-            format: { String(format: "%.1f W", $0) })
+            format: { TelemetryFormatting.watts($0) })
         }
       }
 
@@ -1113,7 +315,7 @@ private struct HeliosModuleDetail: View {
       Text(
         "Helios recommends System mode for normal use. Acknowledge this once to reveal Boost, Manual and Automatic Rules. You can show the guide again from Settings → Cooling."
       )
-      .font(.system(size: 9.5)).foregroundStyle(.secondary)
+      .font(.system(size: 11)).foregroundStyle(.secondary)
       HStack {
         Button("Keep System") { service.fanControl.setMode(.system) }
         Spacer()
@@ -1127,12 +329,12 @@ private struct HeliosModuleDetail: View {
   private var cpu: some View {
     VStack(spacing: 12) {
       section("CPU Usage", "cpu") {
-        big(metric(p.cpu.map(\.usagePercent)) { String(format: "%.1f%%", $0) })
+        big(metric(p.cpu.map(\.usagePercent)) { TelemetryFormatting.percent($0, decimals: 1) })
         if case .success(let cpu) = p.cpu {
           HStack(spacing: 28) {
-            compactValue("User", String(format: "%.1f%%", cpu.userPercent))
-            compactValue("System", String(format: "%.1f%%", cpu.systemPercent))
-            compactValue("Idle", String(format: "%.1f%%", cpu.idlePercent))
+            compactValue("User", TelemetryFormatting.percent(cpu.userPercent, decimals: 1))
+            compactValue("System", TelemetryFormatting.percent(cpu.systemPercent, decimals: 1))
+            compactValue("Idle", TelemetryFormatting.percent(cpu.idlePercent, decimals: 1))
           }
           .frame(maxWidth: 420, alignment: .leading)
         }
@@ -1147,7 +349,7 @@ private struct HeliosModuleDetail: View {
           Spacer()
           Text(activeGraphRange.label).monospacedDigit()
         }
-        .font(.system(size: 10))
+        .font(.system(size: 11))
       }
 
       if preferences.detailedMonitorContent, case .success(let cpu) = p.cpu {
@@ -1156,7 +358,7 @@ private struct HeliosModuleDetail: View {
             HStack {
               Text("Core \(index + 1)").frame(width: 58, alignment: .leading)
               ProgressView(value: min(100, max(0, usage)), total: 100)
-              Text(String(format: "%.0f%%", usage)).monospacedDigit().frame(
+              Text(TelemetryFormatting.percent(usage)).monospacedDigit().frame(
                 width: 46, alignment: .trailing)
             }
             .font(.system(size: 11))
@@ -1176,7 +378,7 @@ private struct HeliosModuleDetail: View {
               segments: composition.gaugeSegments(
                 showAvailable: preferences.memoryGaugeShowsAvailable, preferences: preferences),
               progress: composition.usedFraction,
-              valueText: String(format: "%.0f%%", m.usagePercent),
+              valueText: TelemetryFormatting.percent(m.usagePercent),
               subtitle: "Used"
             )
             .frame(width: 132, height: 116)
@@ -1192,7 +394,7 @@ private struct HeliosModuleDetail: View {
               HStack(spacing: 7) {
                 Circle().fill(memoryPressureColor(m.pressure)).frame(width: 7, height: 7)
                 Text("Memory pressure")
-                  .font(.system(size: 10))
+                  .font(.system(size: 11))
                   .foregroundStyle(.secondary)
                 Text(metric(m.pressure) { $0.rawValue })
                   .font(.system(size: 11.5, weight: .semibold))
@@ -1204,14 +406,14 @@ private struct HeliosModuleDetail: View {
                   ? "The arc is an exclusive view of physical memory: app + wired + compressed + available."
                   : "The colored arc is memory in use; the neutral remainder is available physical memory."
               )
-              .font(.system(size: 9))
+              .font(.system(size: 11))
               .foregroundStyle(.tertiary)
               .fixedSize(horizontal: false, vertical: true)
             }
           }
           .frame(maxWidth: 540, alignment: .leading)
         } else {
-          big(metric(p.memory.map(\.usagePercent)) { String(format: "%.1f%%", $0) })
+          big(metric(p.memory.map(\.usagePercent)) { TelemetryFormatting.percent($0, decimals: 1) })
         }
         timeChart(
           mergedSeries(\.memoryPercent, \.memoryPercent), fixedRange: 0...100,
@@ -1224,7 +426,7 @@ private struct HeliosModuleDetail: View {
           Spacer()
           Text(activeGraphRange.label).monospacedDigit()
         }
-        .font(.system(size: 10))
+        .font(.system(size: 11))
       }
 
       if case .success(let m) = p.memory {
@@ -1249,7 +451,7 @@ private struct HeliosModuleDetail: View {
           Text(
             "Cache is reclaimable memory and can overlap the available/reusable view, so it is intentionally not drawn as a fifth physical segment."
           )
-          .font(.system(size: 9.5))
+          .font(.system(size: 11))
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
           Divider().opacity(0.5)
@@ -1271,7 +473,8 @@ private struct HeliosModuleDetail: View {
               Text(TelemetryFormatting.storageBytes(process.physicalFootprintBytes))
                 .monospacedDigit().foregroundStyle(.secondary)
             }
-            .font(.system(size: 10.5))
+            .font(.system(size: 11))
+            .heliosProcessCopyActions(process)
           }
         }
       }
@@ -1281,7 +484,7 @@ private struct HeliosModuleDetail: View {
   private var gpu: some View {
     VStack(spacing: 12) {
       section("Graphics", "display") {
-        big(metric(p.gpu.flatMap(\.deviceUtilizationPercent)) { String(format: "%.1f%%", $0) })
+        big(metric(p.gpu.flatMap(\.deviceUtilizationPercent)) { TelemetryFormatting.percent($0, decimals: 1) })
         timeChart(
           mergedSeries(\.gpuPercent, \.gpuPercent), fixedRange: 0...100,
           tint: preferences.color(for: .gpu),
@@ -1292,8 +495,8 @@ private struct HeliosModuleDetail: View {
           row("Model", metric(g.model) { $0 })
           row("Cores", metric(g.coreCount) { String($0) })
           if preferences.detailedMonitorContent {
-            row("Renderer", metric(g.rendererUtilizationPercent) { String(format: "%.1f%%", $0) })
-            row("Tiler", metric(g.tilerUtilizationPercent) { String(format: "%.1f%%", $0) })
+            row("Renderer", metric(g.rendererUtilizationPercent) { TelemetryFormatting.percent($0, decimals: 1) })
+            row("Tiler", metric(g.tilerUtilizationPercent) { TelemetryFormatting.percent($0, decimals: 1) })
             row("Memory in use", metric(g.inUseSystemMemoryBytes, TelemetryFormatting.storageBytes))
           }
         }
@@ -1304,17 +507,19 @@ private struct HeliosModuleDetail: View {
   private var thermals: some View {
     VStack(spacing: 12) {
       section("Thermal History", "chart.xyaxis.line") {
+        Text(ThermalMetrics.primaryExplanation)
+          .font(.system(size: 11)).foregroundStyle(.secondary)
         trendRowSeries(
           "Max SoC", samples: mergedSeries(\.maxSoCCelsius, \.maxSoCCelsius),
           current: model.history.points.last?.maxSoCCelsius, fixedRange: 20...100,
           tint: preferences.color(for: .temperature),
           valueStyle: .celsius,
-          format: { String(format: "%.1f°C", $0) })
+          format: { TelemetryFormatting.temperature($0, decimals: 1) })
         trendRowSeries(
           "Fan", samples: mergedSeries(\.fanRPM, \.fanRPM),
           current: model.history.points.last?.fanRPM,
           fixedRange: nil, tint: preferences.color(for: .fan), valueStyle: .rpm,
-          format: { $0 < 50 ? "Off" : String(format: "%.0f RPM", $0) }
+          format: { $0 < 50 ? "Off" : TelemetryFormatting.rpm($0) }
         )
       }
 
@@ -1339,52 +544,80 @@ private struct HeliosModuleDetail: View {
           Text(
             "Temperature and read-only fan telemetry remain available when their samplers are enabled. Re-enable cooling controls in Settings if you want Boost, Manual or Automatic Rules."
           )
-          .font(.system(size: 10)).foregroundStyle(.secondary)
+          .font(.system(size: 11)).foregroundStyle(.secondary)
         }
       }
 
       if preferences.detailedMonitorContent {
         section("Sensors", "thermometer.medium") {
-          big(metric(p.thermals.flatMap(\.maximumSoCCelsius)) { String(format: "%.1f°C", $0) })
+          Text(ThermalMetrics.primaryExplanation)
+            .font(.system(size: 11)).foregroundStyle(.secondary)
+          big(metric(p.thermals.flatMap(\.maximumSoCCelsius)) { TelemetryFormatting.temperature($0, decimals: 1) })
           if case .success(let t) = p.thermals {
-            let identified = t.readings.filter { $0.group != .unclassified }
-            let raw = t.readings
-              .filter { $0.group == .unclassified }
-              .sorted(by: { $0.celsius > $1.celsius })
-            let classifiedRaw = ThermalDisplayClassifier.classify(raw)
-            let auxiliary = classifiedRaw.filter { $0.info.kind == .knownAuxiliary }
-            let unknown = classifiedRaw.filter { $0.info.kind == .unknown }
+            let inventory = ThermalInventoryPresentation(t)
+            let identified = inventory.identified
+            let raw = inventory.raw
+            let auxiliary = inventory.auxiliary
+            let unknown = inventory.unknown
 
+            row("Identified / trusted sensors", String(identified.count))
+            row("Raw / advisory diagnostic sensors", String(raw.count))
+            Text(ThermalMetrics.primaryExplanation)
+              .font(.system(size: 11)).foregroundStyle(.secondary)
+              .fixedSize(horizontal: false, vertical: true)
+            if !t.trustedFailures.isEmpty {
+              DisclosureGroup("Trusted sensor failures (\(t.trustedFailures.count))") {
+                Text("These affect thermal provider health.")
+                  .foregroundStyle(.orange)
+                ForEach(t.trustedFailures.keys.sorted(), id: \.self) { key in
+                  row(key, t.trustedFailures[key]?.localizedDescription ?? "Unavailable")
+                }
+              }
+              .font(.system(size: 11))
+            }
+            let advisoryFailures = inventory.advisoryFailures
+            if !advisoryFailures.isEmpty {
+              DisclosureGroup("Raw / optional diagnostic failures (\(advisoryFailures.count))") {
+                ForEach(advisoryFailures.keys.sorted(), id: \.self) { key in
+                  row(key, advisoryFailures[key]?.localizedDescription ?? "Unavailable")
+                }
+              }
+              .font(.system(size: 11))
+              .help("Optional raw failures remain visible evidence; they do not become Max SoC readings or trusted thermal faults.")
+            }
             if identified.isEmpty {
               Text("No trusted thermal groups are currently available.")
-                .font(.system(size: 10))
+                .font(.system(size: 11))
                 .foregroundStyle(.secondary)
             } else {
-              ForEach(
-                ThermalGroup.allCases.filter { $0 != .unclassified }, id: \.rawValue
-              ) { group in
-                let readings = identified.filter { $0.group == group }
-                if !readings.isEmpty {
-                  let maximum = readings.map(\.celsius).max() ?? 0
-                  let average = readings.map(\.celsius).reduce(0, +) / Double(readings.count)
-                  row(
-                    group.rawValue,
-                    String(format: "%.1f°C max · %.1f°C avg", maximum, average))
-                }
+              ForEach(inventory.summaries) { summary in
+                row(
+                  summary.group.rawValue,
+                  "\(TelemetryFormatting.temperature(summary.values.maximum, decimals: 1)) max · \(TelemetryFormatting.temperature(summary.values.average, decimals: 1)) avg")
               }
             }
 
+            if !identified.isEmpty {
+              DisclosureGroup("Identified / trusted readings") {
+                ForEach(identified, id: \.key) { reading in
+                  row("\(reading.key) · \(reading.group.rawValue)",
+                    TelemetryFormatting.temperature(reading.celsius, decimals: 1))
+                }
+              }
+              .font(.system(size: 11))
+              .help("Exact classified keys eligible for Max SoC; zones are not individual CPU-core temperatures.")
+            }
             if !raw.isEmpty {
               Divider().opacity(0.5)
               HStack(spacing: 6) {
                 Label("Advisory sensor inventory", systemImage: "waveform.path.ecg")
-                  .font(.system(size: 9.5, weight: .medium))
+                  .font(.system(size: 11, weight: .medium))
                 Spacer()
                 if let capturedAt = t.advisoryReadingsCapturedAt {
                   Text(
-                    "updated \(max(0, Int(Date().timeIntervalSince(capturedAt))))s ago · relaxed ~15s cadence"
+                    "updated \(TelemetryFormatting.ageSeconds(since: capturedAt)) ago · about every 15 s while visible, 15–60 s in the background"
                   )
-                  .font(.system(size: 9).monospacedDigit())
+                  .font(.system(size: 11).monospacedDigit())
                   .foregroundStyle(.tertiary)
                 }
               }
@@ -1393,9 +626,9 @@ private struct HeliosModuleDetail: View {
               )
 
               Text(
-                "Only the exact trusted groups above participate in Max SoC and fan safety. Attributed Stats auxiliary mappings and unclassified raw keys remain advisory and are never promoted into control policy without independent validation."
+                "Only the exact trusted groups above supply Max SoC and Cooling Rules temperatures. Auxiliary and unclassified values are never promoted into those metrics. The frozen fan-readiness policy additionally blocks some raw Tp/Te/Tg failures conservatively; this does not identify those sensors or grant write support."
               )
-              .font(.system(size: 9.5))
+              .font(.system(size: 11))
               .foregroundStyle(.secondary)
               .fixedSize(horizontal: false, vertical: true)
 
@@ -1420,7 +653,7 @@ private struct HeliosModuleDetail: View {
                       Text(
                         "Raw SMC keys are undocumented expert diagnostics. Helios does not infer their meaning or use them for Max SoC, Cooling Rules, or fan safety."
                       )
-                      .font(.system(size: 9.5))
+                      .font(.system(size: 11))
                       .foregroundStyle(.secondary)
                       .fixedSize(horizontal: false, vertical: true)
                       .padding(.bottom, 3)
@@ -1451,14 +684,14 @@ private struct HeliosModuleDetail: View {
         HStack(spacing: 12) {
           batteryHero(
             "Battery",
-            metric(p.battery.flatMap(\.stateOfChargePercent)) { String(format: "%.0f%%", $0) },
+            metric(p.battery.flatMap(\.stateOfChargePercent)) { TelemetryFormatting.percent($0) },
             detail: "System SoC", tint: preferences.color(for: .battery))
           batteryHero(
             "Remaining", estimate.compactText, detail: estimate.source.rawValue,
             tint: estimate.approximate ? .orange : .blue)
           batteryHero(
             "Battery flow",
-            metric(p.battery.flatMap(\.power)) { String(format: "%+.1f W", $0.signedWatts) },
+            metric(p.battery.flatMap(\.power)) { TelemetryFormatting.watts($0.signedWatts, signed: true) },
             detail: batteryFlowDetail, tint: preferences.color(for: .power))
         }
         trendRowSeries(
@@ -1466,29 +699,29 @@ private struct HeliosModuleDetail: View {
           current: model.history.points.last?.batteryPercent, fixedRange: 0...100,
           tint: preferences.color(for: .battery),
           valueStyle: .percent,
-          format: { String(format: "%.0f%%", $0) })
+          format: { TelemetryFormatting.percent($0) })
         trendRowSeries(
           "Battery flow", samples: mergedSeries(\.batteryPowerWatts, \.batteryPowerWatts),
           current: model.history.points.last?.batteryPowerWatts, fixedRange: nil,
           tint: preferences.color(for: .power),
           valueStyle: .signedWatts,
-          format: { String(format: "%+.1f W", $0) })
+          format: { TelemetryFormatting.watts($0, signed: true) })
 
         if case .success(let b) = p.battery {
-          row("System SoC", metric(b.systemChargePercent) { String(format: "%.1f%%", $0) })
+          row("System SoC", metric(b.systemChargePercent) { TelemetryFormatting.percent($0, decimals: 1) })
           row(
-            "Raw capacity SoC", metric(b.rawStateOfChargePercent) { String(format: "%.1f%%", $0) })
-          row("Health", metric(b.healthPercent) { String(format: "%.1f%%", $0) })
+            "Raw capacity SoC", metric(b.rawStateOfChargePercent) { TelemetryFormatting.percent($0, decimals: 1) })
+          row("Health", metric(b.healthPercent) { TelemetryFormatting.percent($0, decimals: 1) })
           row("Cycles", metric(b.cycleCount) { String($0) })
           row("Power source", metric(b.powerSource) { $0.rawValue })
           row("Charging", metric(b.isCharging) { $0 ? "Yes" : "No" })
           row("Time remaining", estimate.compactText)
-          row("Cell temperature", metric(b.temperatureCelsius) { String(format: "%.1f°C", $0) })
+          row("Cell temperature", metric(b.temperatureCelsius) { TelemetryFormatting.temperature($0, decimals: 1) })
           if estimate.source == .helios {
             Text(
               "≈ is an early read-only Helios estimate derived from recent battery drain. It stabilizes as more samples arrive; macOS' own estimate takes priority when available."
             )
-            .font(.system(size: 9.5))
+            .font(.system(size: 11))
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
           }
@@ -1503,7 +736,7 @@ private struct HeliosModuleDetail: View {
             Text(
               "Local, battery-only attribution for the selected \(activeGraphRange.label) window. Helios uses the ranking as a relative diagnostic signal, not billing-grade joules."
             )
-            .font(.system(size: 9.5))
+            .font(.system(size: 11))
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
           }
@@ -1512,7 +745,7 @@ private struct HeliosModuleDetail: View {
             Text(activeGraphRange.label)
               .font(.system(size: 11, weight: .semibold).monospacedDigit())
             Text("Observed \(TelemetryFormatting.duration(energy.onBatteryCoverageSeconds))")
-              .font(.system(size: 9))
+              .font(.system(size: 11))
               .foregroundStyle(.tertiary)
           }
         }
@@ -1535,11 +768,11 @@ private struct HeliosModuleDetail: View {
               .foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 2) {
               Text("No on-battery app history in this range")
-                .font(.system(size: 10.5, weight: .semibold))
+                .font(.system(size: 11, weight: .semibold))
               Text(
                 "Use the Mac on battery for a few minutes and Helios will begin ranking the apps it can observe."
               )
-              .font(.system(size: 9.5))
+              .font(.system(size: 11))
               .foregroundStyle(.secondary)
             }
           }
@@ -1560,10 +793,10 @@ private struct HeliosModuleDetail: View {
             HStack {
               Text("Other tracked apps").foregroundStyle(.secondary)
               Spacer()
-              Text(String(format: "%.0f%%", otherShare * 100))
+              Text(TelemetryFormatting.percent(otherShare * 100))
                 .monospacedDigit().foregroundStyle(.secondary)
             }
-            .font(.system(size: 9.5))
+            .font(.system(size: 11))
           }
         }
       }
@@ -1571,7 +804,7 @@ private struct HeliosModuleDetail: View {
       if preferences.detailedMonitorContent {
         section("Electrical", "bolt") {
           if case .success(let b) = p.battery {
-            row("Battery flow", metric(b.power) { String(format: "%+.2f W", $0.signedWatts) })
+            row("Battery flow", metric(b.power) { TelemetryFormatting.watts($0.signedWatts, decimals: 2, signed: true) })
             row("Battery voltage", metric(b.voltageVolts) { String(format: "%.2f V", $0) })
             row("Battery current", metric(b.currentAmps) { String(format: "%+.2f A", $0) })
             row("Adapter rating", metric(b.adapterWatts) { "\($0) W" })
@@ -1604,7 +837,7 @@ private struct HeliosModuleDetail: View {
             Text(
               "Battery telemetry is read-only. Charging policy remains owned by macOS; diagnostics never issue battery or charger writes."
             )
-            .font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary).fixedSize(
+            .font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary).fixedSize(
               horizontal: false, vertical: true)
           } else {
             Text("Battery diagnostics unavailable.").foregroundStyle(.secondary)
@@ -1622,11 +855,11 @@ private struct HeliosModuleDetail: View {
         HStack(spacing: 12) {
           batteryHero(
             "System power",
-            metric(p.systemPower.flatMap(\.totalSystemWatts)) { String(format: "%.1f W", $0) },
+            metric(p.systemPower.flatMap(\.totalSystemWatts)) { TelemetryFormatting.watts($0) },
             detail: "Live total", tint: preferences.color(for: .power))
           batteryHero(
             "Battery flow",
-            metric(p.battery.flatMap(\.power)) { String(format: "%+.1f W", $0.signedWatts) },
+            metric(p.battery.flatMap(\.power)) { TelemetryFormatting.watts($0.signedWatts, signed: true) },
             detail: batteryFlowDetail, tint: preferences.color(for: .battery))
           batteryHero(
             "Observed", TelemetryFormatting.duration(summary.onBatteryCoverageSeconds),
@@ -1636,7 +869,7 @@ private struct HeliosModuleDetail: View {
           "System power", samples: mergedSeries(\.systemPowerWatts, \.systemPowerWatts),
           current: model.history.points.last?.systemPowerWatts, fixedRange: nil,
           tint: preferences.color(for: .power), valueStyle: .watts,
-          format: { String(format: "%.1f W", $0) })
+          format: { TelemetryFormatting.watts($0) })
         HStack {
           Button(action: openEnergyInspector) {
             Label("Open Energy Inspector…", systemImage: "chart.bar.xaxis")
@@ -1651,7 +884,7 @@ private struct HeliosModuleDetail: View {
           Text(
             "Use the Mac on battery for a few minutes and Helios will begin ranking the apps it can observe in this range."
           )
-          .font(.system(size: 10)).foregroundStyle(.secondary)
+          .font(.system(size: 11)).foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
         } else {
           let leaders = Array(
@@ -1684,7 +917,7 @@ private struct HeliosModuleDetail: View {
             row("SMART", smart.state.rawValue)
             row("Life remaining", "\(smart.lifeRemainingPercent)%")
             if let temp = smart.temperatureCelsius {
-              row("SSD temperature", String(format: "%.1f°C", temp))
+              row("SSD temperature", TelemetryFormatting.temperature(temp, decimals: 1))
             }
           }
         } else {
@@ -1753,7 +986,7 @@ private struct HeliosModuleDetail: View {
           HStack {
             VStack(alignment: .leading, spacing: 1) {
               Text(process.name)
-              Text("PID \(process.pid)").font(.system(size: 9)).foregroundStyle(.tertiary)
+              Text("PID \(process.pid)").font(.system(size: 11)).foregroundStyle(.tertiary)
             }
             Spacer()
             Text(TelemetryFormatting.processCPUShareText(process.cpuPercent)).monospacedDigit()
@@ -1761,6 +994,7 @@ private struct HeliosModuleDetail: View {
               .secondary
             ).frame(width: 84, alignment: .trailing)
           }.font(.system(size: 11))
+          .heliosProcessCopyActions(process)
         }
       } else {
         Text("Process telemetry unavailable.").foregroundStyle(.secondary)
@@ -1775,22 +1009,22 @@ private struct HeliosModuleDetail: View {
           "CPU", samples: mergedSeries(\.cpuPercent, \.cpuPercent),
           current: model.history.points.last?.cpuPercent,
           fixedRange: 0...100, tint: preferences.color(for: .cpu), valueStyle: .percent,
-          format: { String(format: "%.0f%%", $0) })
+          format: { TelemetryFormatting.percent($0) })
         trendRowSeries(
           "Memory", samples: mergedSeries(\.memoryPercent, \.memoryPercent),
           current: model.history.points.last?.memoryPercent, fixedRange: 0...100,
           tint: preferences.color(for: .memory),
-          format: { String(format: "%.0f%%", $0) })
+          format: { TelemetryFormatting.percent($0) })
         trendRowSeries(
           "Temperature", samples: mergedSeries(\.maxSoCCelsius, \.maxSoCCelsius),
           current: model.history.points.last?.maxSoCCelsius, fixedRange: 20...100,
           tint: preferences.color(for: .temperature),
-          format: { String(format: "%.0f°C", $0) })
+          format: { TelemetryFormatting.temperature($0) })
         trendRowSeries(
           "System Power", samples: mergedSeries(\.systemPowerWatts, \.systemPowerWatts),
           current: model.history.points.last?.systemPowerWatts, fixedRange: nil,
           tint: preferences.color(for: .power),
-          format: { String(format: "%.1f W", $0) })
+          format: { TelemetryFormatting.watts($0) })
       }
       section("Current Session", "waveform.path.ecg") {
         row("History window", TelemetryFormatting.duration(model.history.durationSeconds))
@@ -1822,7 +1056,7 @@ private struct HeliosModuleDetail: View {
         Text(
           "History integration remains gap-safe: sleep, clock jumps, stale power samples, and malformed tails are never guessed."
         )
-        .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(
+        .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(
           horizontal: false, vertical: true)
       }
     }
@@ -1860,11 +1094,11 @@ private struct HeliosModuleDetail: View {
             HStack {
               VStack(alignment: .leading, spacing: 1) {
                 Text(assertion.processName).lineLimit(1)
-                Text(assertion.assertionType).font(.system(size: 9)).foregroundStyle(.tertiary)
+                Text(assertion.assertionType).font(.system(size: 11)).foregroundStyle(.tertiary)
                   .lineLimit(1)
               }
               Spacer()
-              Text(assertion.reason ?? "Active").font(.system(size: 10)).foregroundStyle(.secondary)
+              Text(assertion.reason ?? "Active").font(.system(size: 11)).foregroundStyle(.secondary)
                 .lineLimit(1)
             }.font(.system(size: 11))
           }
@@ -1919,7 +1153,7 @@ private struct HeliosModuleDetail: View {
         Text(
           "Expert is the complete technical workspace. All Diagnostics intentionally includes the full app-published telemetry set, even when the same value also appears on a focused module page. Values marked advisory remain display-only unless Helios explicitly classifies them as trusted."
         )
-        .font(.system(size: 10)).foregroundStyle(.secondary)
+        .font(.system(size: 11)).foregroundStyle(.secondary)
         Picker("Expert section", selection: $expertSection) {
           ForEach(HeliosExpertSection.allCases) { section in
             Text(section.rawValue).tag(section)
@@ -1944,7 +1178,7 @@ private struct HeliosModuleDetail: View {
       Text(
         "Complete read-only diagnostics expose every telemetry value the frozen backend currently retains and publishes to the app layer, including lifetime counters, raw sensor inventory, process I/O, history summaries and sampler metadata. Provider-internal transient parser scratch state is not a retained metric; exposing that would require changing the frozen backend, which this UI pass deliberately does not do."
       )
-      .font(.system(size: 10))
+      .font(.system(size: 11))
       .foregroundStyle(.secondary)
       completeTelemetryInventory
     }
@@ -1954,7 +1188,7 @@ private struct HeliosModuleDetail: View {
     VStack(spacing: 12) {
       section("Trusted thermal map", "thermometer.medium") {
         if case .success(let thermals) = p.thermals {
-          row("Max SoC", metric(thermals.maximumSoCCelsius) { String(format: "%.1f°C", $0) })
+          row("Max SoC", metric(thermals.maximumSoCCelsius) { TelemetryFormatting.temperature($0, decimals: 1) })
           ForEach(ThermalGroup.allCases.filter { $0 != .unclassified }, id: \.rawValue) { group in
             let values = thermals.readings.filter { $0.group == group }.map(\.celsius)
             if !values.isEmpty {
@@ -1975,7 +1209,7 @@ private struct HeliosModuleDetail: View {
           Text(
             "Attributed Stats auxiliary mappings and unclassified raw SMC keys remain display-only. Unclassified channels never enter cooling policy without independent validation."
           )
-          .font(.system(size: 9.5)).foregroundStyle(.secondary)
+          .font(.system(size: 11)).foregroundStyle(.secondary)
           DisclosureGroup(
             "Raw / unclassified sensors (\(classified.count))", isExpanded: $showRawThermalSensors
           ) {
@@ -1997,14 +1231,15 @@ private struct HeliosModuleDetail: View {
         ForEach(HeliosTelemetryModule.allCases) { module in
           HStack {
             VStack(alignment: .leading, spacing: 1) {
-              Text(module.label).font(.system(size: 10.5, weight: .medium))
-              Text(module.monitoringCost).font(.system(size: 8.5)).foregroundStyle(.tertiary)
+              Text(module.label).font(.system(size: 11, weight: .medium))
+              Text(module.monitoringCost).font(.system(size: 11)).foregroundStyle(.tertiary)
             }
             Spacer()
-            Text(preferences.isTelemetryEnabled(module) ? "Collecting" : "Stopped")
-              .font(.system(size: 10, weight: .semibold))
+            Text(preferences.isTelemetryEnabled(module) ? "Collecting"
+              : preferences.isTelemetryCollectionRequired(module) ? "Alerts only" : "Stopped")
+              .font(.system(size: 11, weight: .semibold))
               .foregroundStyle(
-                preferences.isTelemetryEnabled(module) ? Color.green : Color.secondary)
+                preferences.isTelemetryCollectionRequired(module) ? Color.green : Color.secondary)
           }
         }
       }
@@ -2013,9 +1248,9 @@ private struct HeliosModuleDetail: View {
         row("Persistent history", "\(model.persistentHistory.points.count) samples")
         row("App-energy buckets", "\(model.appEnergy.buckets.count)")
         Text(
-          "Collection toggles stop the corresponding sampler; hiding a UI module alone does not."
+          "Enabled alerts keep their shared memory, battery or storage sampler running even when its module is off. Hiding a UI module alone does not stop collection."
         )
-        .font(.system(size: 9.5)).foregroundStyle(.secondary)
+        .font(.system(size: 11)).foregroundStyle(.secondary)
       }
     }
   }
@@ -2038,7 +1273,7 @@ private struct HeliosModuleDetail: View {
           Text(
             "Cooling controls are disabled by preference. The helper installation is left untouched rather than being silently removed."
           )
-          .font(.system(size: 10)).foregroundStyle(.secondary)
+          .font(.system(size: 11)).foregroundStyle(.secondary)
         }
       }
     }
@@ -2051,7 +1286,7 @@ private struct HeliosModuleDetail: View {
         Text(
           "Health events record activation, resolution and notification decisions. The log is bounded and local so repeated alerts can be diagnosed without turning Helios into a telemetry service."
         )
-        .font(.system(size: 10)).foregroundStyle(.secondary)
+        .font(.system(size: 11)).foregroundStyle(.secondary)
       }
     }
   }
@@ -2085,7 +1320,7 @@ private struct HeliosModuleDetail: View {
           Text(
             "Maintenance providers are intentionally on-demand. Their complete scan results are shown directly in the Maintenance card after you run a scan; no background maintenance collector is added."
           )
-          .font(.system(size: 10)).foregroundStyle(.secondary)
+          .font(.system(size: 11)).foregroundStyle(.secondary)
         }
       )
     case .overview, .expert: AnyView(EmptyView())
@@ -2221,10 +1456,10 @@ private struct HeliosModuleDetail: View {
               VStack(alignment: .leading, spacing: 7) {
                 HStack {
                   Text(group.rawValue)
-                    .font(.system(size: 10.5, weight: .semibold))
+                    .font(.system(size: 11, weight: .semibold))
                   Spacer()
                   Text("\(readings.count)")
-                    .font(.system(size: 9, weight: .medium).monospacedDigit())
+                    .font(.system(size: 11, weight: .medium).monospacedDigit())
                     .foregroundStyle(.tertiary)
                 }
                 LazyVGrid(
@@ -2356,7 +1591,7 @@ private struct HeliosModuleDetail: View {
         diagnosticRow("Maximum capacity", metric(b.maximumCapacityMAh) { "\($0) mAh" })
         diagnosticRow("Current raw capacity", metric(b.currentCapacityMAh) { "\($0) mAh" })
         diagnosticRow("Cycles", metric(b.cycleCount, String.init))
-        diagnosticRow("Temperature", metric(b.temperatureCelsius) { String(format: "%.3f°C", $0) })
+        diagnosticRow("Temperature", metric(b.temperatureCelsius) { TelemetryFormatting.temperature($0, decimals: 3) })
         Divider().opacity(0.45)
         diagnosticRow("Power source", metric(b.powerSource) { $0.rawValue })
         diagnosticRow(
@@ -2593,7 +1828,7 @@ private struct HeliosModuleDetail: View {
               diagnosticMiniMetric(
                 "Critical warning", String(format: "0x%02X", smart.criticalWarning))
               diagnosticMiniMetric(
-                "Temperature", smart.temperatureCelsius.map { String(format: "%.3f°C", $0) } ?? "—")
+                "Temperature", smart.temperatureCelsius.map { TelemetryFormatting.temperature($0, decimals: 3) } ?? "—")
               diagnosticMiniMetric("Available spare", "\(smart.availableSparePercent)%")
               diagnosticMiniMetric("Spare threshold", "\(smart.availableSpareThresholdPercent)%")
               diagnosticMiniMetric("Percentage used", "\(smart.percentageUsed)%")
@@ -2994,10 +2229,10 @@ private struct HeliosModuleDetail: View {
           "Battery max", h.batteryMaximumPercent.map { String(format: "%.3f%%", $0) } ?? "—")
         diagnosticRow(
           "Battery min temperature",
-          h.batteryMinimumTemperatureCelsius.map { String(format: "%.3f°C", $0) } ?? "—")
+          h.batteryMinimumTemperatureCelsius.map { TelemetryFormatting.temperature($0, decimals: 3) } ?? "—")
         diagnosticRow(
           "Battery max temperature",
-          h.batteryMaximumTemperatureCelsius.map { String(format: "%.3f°C", $0) } ?? "—")
+          h.batteryMaximumTemperatureCelsius.map { TelemetryFormatting.temperature($0, decimals: 3) } ?? "—")
         diagnosticRow(
           "Battery min health",
           h.batteryMinimumHealthPercent.map { String(format: "%.3f%%", $0) } ?? "—")
@@ -3128,20 +2363,20 @@ private struct HeliosModuleDetail: View {
       Text(
         "This uses Helios' existing read-only SMCNumericProvider only when requested. Values remain unitless unless a dedicated provider has validated their meaning; unknown keys never enter cooling policy."
       )
-      .font(.system(size: 9.5)).foregroundStyle(.secondary)
+      .font(.system(size: 11)).foregroundStyle(.secondary)
 
       HStack {
-        Button(smcNumericLoading ? "Reading SMC…" : "Load / Refresh Raw SMC") {
-          loadSMCNumericInventory()
+        Button(model.smcNumericLoading ? "Reading SMC…" : "Load / Refresh Raw SMC") {
+          model.loadSMCNumericInventory()
         }
-        .disabled(smcNumericLoading)
+        .disabled(model.smcNumericLoading)
         .controlSize(.small)
-        if smcNumericLoading { ProgressView().controlSize(.small) }
+        if model.smcNumericLoading { ProgressView().controlSize(.small) }
         Spacer()
       }
 
-      if let result = smcNumericResult {
-        switch result {
+      if let sample = model.smcNumericSample {
+        switch sample.result {
         case .success(let value):
           LazyVGrid(
             columns: [GridItem(.adaptive(minimum: 145, maximum: 220), spacing: 6)], spacing: 6
@@ -3179,22 +2414,11 @@ private struct HeliosModuleDetail: View {
           }
         case .failure(let error):
           Text("Raw SMC inventory unavailable — \(error.localizedDescription)")
-            .font(.system(size: 10)).foregroundStyle(.secondary)
+            .font(.system(size: 11)).foregroundStyle(.secondary)
         }
       }
     }
-  }
-
-  private func loadSMCNumericInventory() {
-    guard !smcNumericLoading else { return }
-    smcNumericLoading = true
-    Task {
-      let sample = await SMCNumericProvider().sample(maximumReadings: 512)
-      await MainActor.run {
-        smcNumericResult = sample.result
-        smcNumericLoading = false
-      }
-    }
+    .onDisappear { model.cancelSMCNumericInventory() }
   }
 
   private func energyEntryList(_ title: String, entries: [AppEnergyEntry]) -> some View {
@@ -3226,14 +2450,14 @@ private struct HeliosModuleDetail: View {
               VStack(alignment: .leading, spacing: 6) {
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
                   Text(entry.appKey)
-                    .font(.system(size: 8.5, design: .monospaced))
+                    .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .textSelection(.enabled)
                   Spacer(minLength: 8)
                   Text(wattHoursText(entry.energyWattHours))
-                    .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                    .font(.system(size: 11, weight: .semibold).monospacedDigit())
                 }
                 LazyVGrid(
                   columns: [GridItem(.adaptive(minimum: 145, maximum: 220), spacing: 6)], spacing: 6
@@ -3290,12 +2514,12 @@ private struct HeliosModuleDetail: View {
           "Neural memory", TelemetryFormatting.storageBytes(process.neuralFootprintBytes))
         diagnosticMiniMetric(
           "CPU (1 core = 100%)",
-          process.cpuPercent.map { String(format: "%.4f%%", $0) } ?? "—")
+          process.cpuPercent.map { TelemetryFormatting.percent($0, decimals: 1) } ?? "—")
         diagnosticMiniMetric(
-          "Power", process.powerWatts.map { String(format: "%.6f W", $0) } ?? "—")
+          "Power", process.powerWatts.map { TelemetryFormatting.watts($0, decimals: 2) } ?? "—")
         diagnosticMiniMetric(
           "P-core power",
-          process.performanceCorePowerWatts.map { String(format: "%.6f W", $0) } ?? "—")
+          process.performanceCorePowerWatts.map { TelemetryFormatting.watts($0, decimals: 2) } ?? "—")
         diagnosticMiniMetric(
           "Disk read",
           process.diskReadBytesPerSecond.map(TelemetryFormatting.bytesPerSecond) ?? "—")
@@ -3303,7 +2527,7 @@ private struct HeliosModuleDetail: View {
           "Disk write",
           process.diskWriteBytesPerSecond.map(TelemetryFormatting.bytesPerSecond) ?? "—")
         diagnosticMiniMetric(
-          "Wakeups", process.wakeupsPerSecond.map { String(format: "%.4f/s", $0) } ?? "—")
+          "Wakeups", process.wakeupsPerSecond.map { String(format: "%.1f/s", $0) } ?? "—")
         diagnosticMiniMetric(
           "Instructions",
           process.instructionsPerSecond.map { String(format: "%.3f/s", $0) } ?? "—")
@@ -3311,7 +2535,7 @@ private struct HeliosModuleDetail: View {
           "Cycles", process.cyclesPerSecond.map { String(format: "%.3f/s", $0) } ?? "—")
         diagnosticMiniMetric(
           "Instructions / cycle",
-          process.instructionsPerCycle.map { String(format: "%.6f", $0) } ?? "—")
+          process.instructionsPerCycle.map { String(format: "%.2f", $0) } ?? "—")
         diagnosticMiniMetric(
           "Session read", TelemetryFormatting.storageBytes(process.sessionDiskReadBytes))
         diagnosticMiniMetric(
@@ -3319,6 +2543,7 @@ private struct HeliosModuleDetail: View {
         diagnosticMiniMetric("Executable", process.executablePath ?? "—")
       }
     }
+    .heliosProcessCopyActions(process)
   }
 
   @ViewBuilder
@@ -3373,7 +2598,7 @@ private struct HeliosModuleDetail: View {
     diagnosticRow("CPU", point.cpuPercent.map { String(format: "%.3f%%", $0) } ?? "—")
     diagnosticRow("Memory", point.memoryPercent.map { String(format: "%.3f%%", $0) } ?? "—")
     diagnosticRow("GPU", point.gpuPercent.map { String(format: "%.3f%%", $0) } ?? "—")
-    diagnosticRow("Max SoC", point.maxSoCCelsius.map { String(format: "%.3f°C", $0) } ?? "—")
+    diagnosticRow("Max SoC", point.maxSoCCelsius.map { TelemetryFormatting.temperature($0, decimals: 3) } ?? "—")
     diagnosticRow(
       "System power", point.systemPowerWatts.map { String(format: "%.6f W", $0) } ?? "—")
     diagnosticRow("Battery", point.batteryPercent.map { String(format: "%.3f%%", $0) } ?? "—")
@@ -3399,7 +2624,7 @@ private struct HeliosModuleDetail: View {
     diagnosticRow("CPU", point.cpuPercent.map { String(format: "%.3f%%", $0) } ?? "—")
     diagnosticRow("Memory", point.memoryPercent.map { String(format: "%.3f%%", $0) } ?? "—")
     diagnosticRow("GPU", point.gpuPercent.map { String(format: "%.3f%%", $0) } ?? "—")
-    diagnosticRow("Max SoC", point.maxSoCCelsius.map { String(format: "%.3f°C", $0) } ?? "—")
+    diagnosticRow("Max SoC", point.maxSoCCelsius.map { TelemetryFormatting.temperature($0, decimals: 3) } ?? "—")
     diagnosticRow(
       "System power", point.systemPowerWatts.map { String(format: "%.6f W", $0) } ?? "—")
     diagnosticRow(
@@ -3411,10 +2636,10 @@ private struct HeliosModuleDetail: View {
     diagnosticRow("Battery on AC", optionalBoolText(point.batteryOnAC))
     diagnosticRow(
       "Battery temperature",
-      point.batteryTemperatureCelsius.map { String(format: "%.3f°C", $0) } ?? "—")
+      point.batteryTemperatureCelsius.map { TelemetryFormatting.temperature($0, decimals: 3) } ?? "—")
     diagnosticRow("Battery cycles", point.batteryCycleCount.map(String.init) ?? "—")
     diagnosticRow(
-      "SSD temperature", point.storageTemperatureCelsius.map { String(format: "%.3f°C", $0) } ?? "—"
+      "SSD temperature", point.storageTemperatureCelsius.map { TelemetryFormatting.temperature($0, decimals: 3) } ?? "—"
     )
     diagnosticRow("Storage device", point.storageDeviceBSDName ?? "—")
     diagnosticRow(
@@ -3462,7 +2687,7 @@ private struct HeliosModuleDetail: View {
     -> some View
   {
     Text(TelemetryFormatting.text(result) { _ in title })
-      .font(.system(size: 10)).foregroundStyle(.secondary)
+      .font(.system(size: 11)).foregroundStyle(.secondary)
   }
 
   private func boolText(_ value: Bool) -> String { value ? "Yes" : "No" }
@@ -3498,7 +2723,7 @@ private struct HeliosModuleDetail: View {
         .foregroundStyle(.tertiary)
         .monospacedDigit()
     }
-    .font(.system(size: 10.5, weight: .medium))
+    .font(.system(size: 11, weight: .medium))
   }
 
   private func thermalDisplayRow(_ item: ThermalDisplayReading) -> some View {
@@ -3507,15 +2732,17 @@ private struct HeliosModuleDetail: View {
         Text(item.info.title)
           .lineLimit(1)
         Text(item.reading.key)
-          .font(.system(size: 8.5, design: .monospaced))
+          .font(.system(size: 11, design: .monospaced))
           .foregroundStyle(.tertiary)
       }
       Spacer(minLength: 8)
-      Text(String(format: "%.1f°C", item.reading.celsius))
+      Text(TelemetryFormatting.temperature(item.reading.celsius, decimals: 1))
         .monospacedDigit()
     }
-    .font(.system(size: 10.5))
+    .font(.system(size: 11))
     .help(item.info.detail)
+    .heliosMetricCopyActions(name: "\(item.info.title) (\(item.reading.key))",
+      value: TelemetryFormatting.temperature(item.reading.celsius, decimals: 1))
   }
 
   private var batteryFlowDetail: String {
@@ -3530,10 +2757,10 @@ private struct HeliosModuleDetail: View {
     _ title: String, _ value: String, detail: String, tint: Color
   ) -> some View {
     VStack(alignment: .leading, spacing: 4) {
-      Text(title).font(.system(size: 9.5, weight: .medium)).foregroundStyle(.secondary)
+      Text(title).font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
       Text(value).font(.system(size: 21, weight: .semibold).monospacedDigit())
         .foregroundStyle(tint)
-      Text(detail).font(.system(size: 8.5)).foregroundStyle(.tertiary).lineLimit(1)
+      Text(detail).font(.system(size: 11)).foregroundStyle(.tertiary).lineLimit(1)
     }
     .padding(10)
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -3579,7 +2806,7 @@ private struct HeliosModuleDetail: View {
     let valid = samples.compactMap(\.value).filter(\.isFinite)
     return VStack(alignment: .leading, spacing: 6) {
       HStack {
-        Text(title).font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
+        Text(title).font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
         Spacer()
         Text(current.map(format) ?? "—")
           .font(.system(size: 11, weight: .semibold).monospacedDigit())
@@ -3592,7 +2819,7 @@ private struct HeliosModuleDetail: View {
         Spacer()
         Text("Max \(valid.max().map(format) ?? "—")")
       }
-      .font(.system(size: 8.5).monospacedDigit())
+      .font(.system(size: 11).monospacedDigit())
       .foregroundStyle(.tertiary)
     }
     .padding(9)
@@ -3610,10 +2837,10 @@ private struct HeliosModuleDetail: View {
     let valid = samples.compactMap(\.value).filter(\.isFinite)
     return VStack(alignment: .leading, spacing: 5) {
       HStack {
-        Text(title).font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
+        Text(title).font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
         Spacer()
         Text(current.map(format) ?? "—")
-          .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
+          .font(.system(size: 11, weight: .semibold).monospacedDigit())
       }
       timeChart(
         samples, fixedRange: fixedRange, tint: tint, valueStyle: valueStyle, label: title
@@ -3625,14 +2852,14 @@ private struct HeliosModuleDetail: View {
         Spacer()
         Text(activeGraphRange.label)
       }
-      .font(.system(size: 8.5).monospacedDigit())
+      .font(.system(size: 11).monospacedDigit())
       .foregroundStyle(.tertiary)
     }
   }
 
   private func compactValue(_ title: String, _ value: String) -> some View {
     VStack(alignment: .leading, spacing: 2) {
-      Text(title).font(.system(size: 10)).foregroundStyle(.secondary)
+      Text(title).font(.system(size: 11)).foregroundStyle(.secondary)
       Text(value).font(.system(size: 13, weight: .semibold).monospacedDigit())
     }
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -3648,7 +2875,7 @@ private struct HeliosModuleDetail: View {
         Spacer()
         Text(TelemetryFormatting.storageBytes(bytes)).monospacedDigit()
       }
-      .font(.system(size: 10.5))
+      .font(.system(size: 11))
       ProgressView(value: fraction)
         .progressViewStyle(.linear)
         .tint(tint)
@@ -3678,7 +2905,7 @@ private struct HeliosModuleDetail: View {
           return "Battery dropped \(String(format: "%.0f%%", abs(delta))) in this window"
         }
         if delta >= 0.5 {
-          return "Battery gained \(String(format: "%.0f%%", delta)) in this window"
+          return "Battery gained \(TelemetryFormatting.percent(delta)) in this window"
         }
         return "Battery level stayed nearly unchanged"
       }()
@@ -3691,26 +2918,26 @@ private struct HeliosModuleDetail: View {
         VStack(alignment: .leading, spacing: 3) {
           HStack {
             Text(headline)
-              .font(.system(size: 10.5, weight: .semibold))
+              .font(.system(size: 11, weight: .semibold))
             Spacer()
             Text(activeGraphRange.label)
-              .font(.system(size: 9.5, weight: .medium).monospacedDigit())
+              .font(.system(size: 11, weight: .medium).monospacedDigit())
               .foregroundStyle(.tertiary)
           }
           if let leader = energy.topOnBattery.first {
             let total = max(0.000_001, energy.topOnBattery.reduce(0) { $0 + $1.energyWattHours })
             let share = min(1, max(0, leader.energyWattHours / total))
             Text(
-              "Top tracked app: \(leader.displayName) · \(String(format: "%.0f%%", share * 100)) of attributed app energy · observed \(TelemetryFormatting.duration(energy.onBatteryCoverageSeconds))."
+              "Top tracked app: \(leader.displayName) · \(TelemetryFormatting.percent(share * 100)) of attributed app energy · observed \(TelemetryFormatting.duration(energy.onBatteryCoverageSeconds))."
             )
-            .font(.system(size: 9.5))
+            .font(.system(size: 11))
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
           } else {
             Text(
               "Per-app attribution will appear here after Helios observes on-battery activity in the selected range."
             )
-            .font(.system(size: 9.5))
+            .font(.system(size: 11))
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
           }
@@ -3728,7 +2955,7 @@ private struct HeliosModuleDetail: View {
     return VStack(alignment: .leading, spacing: 6) {
       HStack(spacing: 9) {
         Text("\(rank)")
-          .font(.system(size: 9.5, weight: .semibold).monospacedDigit())
+          .font(.system(size: 11, weight: .semibold).monospacedDigit())
           .foregroundStyle(.tertiary)
           .frame(width: 14, alignment: .trailing)
 
@@ -3736,7 +2963,7 @@ private struct HeliosModuleDetail: View {
 
         VStack(alignment: .leading, spacing: 2) {
           Text(entry.displayName)
-            .font(.system(size: 10.5, weight: .semibold))
+            .font(.system(size: 11, weight: .semibold))
             .lineLimit(1)
           HStack(spacing: 7) {
             Text("Tracked share")
@@ -3748,18 +2975,18 @@ private struct HeliosModuleDetail: View {
                 .foregroundStyle(.tertiary)
             }
           }
-          .font(.system(size: 8.75))
+          .font(.system(size: 11))
           .lineLimit(1)
         }
 
         Spacer(minLength: 8)
 
         VStack(alignment: .trailing, spacing: 2) {
-          Text(String(format: "%.0f%%", share * 100))
+          Text(TelemetryFormatting.percent(share * 100))
             .font(.system(size: 11, weight: .semibold).monospacedDigit())
           if let trendText = batteryTrendText(trend) {
             Text(trendText.text)
-              .font(.system(size: 8.5, weight: .medium).monospacedDigit())
+              .font(.system(size: 11, weight: .medium).monospacedDigit())
               .foregroundStyle(trendText.tint)
           }
         }
@@ -3855,7 +3082,7 @@ private struct HeliosModuleDetail: View {
         .truncationMode(.middle)
         .frame(maxWidth: 610, alignment: .trailing)
     }
-    .font(.system(size: 10.5))
+    .font(.system(size: 11))
     .padding(.horizontal, 8)
     .padding(.vertical, 5)
     .frame(maxWidth: 820, alignment: .leading)
@@ -3888,31 +3115,32 @@ private struct HeliosModuleDetail: View {
     HStack(spacing: 8) {
       VStack(alignment: .leading, spacing: 1) {
         Text(reading.key)
-          .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+          .font(.system(size: 11, weight: .semibold, design: .monospaced))
         Text(reading.group.rawValue)
           .font(.system(size: 7.5))
           .foregroundStyle(.tertiary)
           .lineLimit(1)
       }
       Spacer(minLength: 4)
-      Text(String(format: "%.1f°C", reading.celsius))
-        .font(.system(size: 10.5, weight: .medium).monospacedDigit())
+      Text(TelemetryFormatting.temperature(reading.celsius, decimals: 1))
+        .font(.system(size: 11, weight: .medium).monospacedDigit())
     }
     .padding(.horizontal, 8)
     .padding(.vertical, 6)
     .background(
       Color(nsColor: .textBackgroundColor).opacity(0.18),
       in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+    .heliosMetricCopyActions(name: reading.key, value: TelemetryFormatting.temperature(reading.celsius, decimals: 1))
   }
 
   private func diagnosticMiniMetric(_ title: String, _ value: String) -> some View {
     VStack(alignment: .leading, spacing: 2) {
       Text(title)
-        .font(.system(size: 8.5, weight: .medium))
+        .font(.system(size: 11, weight: .medium))
         .foregroundStyle(.tertiary)
         .lineLimit(1)
       Text(value)
-        .font(.system(size: 10.5, weight: .medium).monospacedDigit())
+        .font(.system(size: 11, weight: .medium).monospacedDigit())
         .foregroundStyle(.primary)
         .lineLimit(2)
         .truncationMode(.middle)
@@ -3938,7 +3166,7 @@ private struct HeliosModuleDetail: View {
             .lineLimit(1)
           if let subtitle {
             Text(subtitle)
-              .font(.system(size: 8.5, design: .monospaced))
+              .font(.system(size: 11, design: .monospaced))
               .foregroundStyle(.tertiary)
               .lineLimit(1)
               .truncationMode(.middle)
@@ -3973,6 +3201,7 @@ private struct HeliosModuleDetail: View {
       Text(value).monospacedDigit().multilineTextAlignment(.trailing)
     }
     .font(.system(size: 11))
+    .heliosMetricCopyActions(name: title, value: value)
   }
 
   private func big(_ value: String) -> some View {
@@ -3982,1770 +3211,4 @@ private struct HeliosModuleDetail: View {
   private func metric<Value>(_ result: MetricResult<Value>, _ formatter: (Value) -> String)
     -> String
   { DisplayValue(result, format: formatter).text }
-}
-
-private enum HeliosSettingsRoute: String, CaseIterable, Identifiable {
-  case general
-  case modules
-  case graphs
-  case fans
-  case battery
-  case privacy
-  case advanced
-  case about
-
-  var id: String { rawValue }
-
-  var title: String {
-    switch self {
-    case .general: "General"
-    case .modules: "Modules"
-    case .graphs: "Graphs & Colors"
-    case .fans: "Cooling"
-    case .battery: "Battery & Energy"
-    case .privacy: "Privacy & Diagnostics"
-    case .advanced: "Advanced"
-    case .about: "About"
-    }
-  }
-
-  var symbol: String {
-    switch self {
-    case .general: "gear"
-    case .modules: "square.grid.2x2"
-    case .graphs: "chart.xyaxis.line"
-    case .fans: "fan"
-    case .battery: "battery.75percent"
-    case .privacy: "hand.raised"
-    case .advanced: "slider.horizontal.3"
-    case .about: "info.circle"
-    }
-  }
-}
-
-private enum HeliosModuleSettingsTab: String, CaseIterable, Identifiable {
-  case collection = "Data Collection"
-  case menuBar = "Menu Bar"
-  case popover = "Dashboard"
-  case monitor = "Full Monitor"
-  var id: String { rawValue }
-}
-
-struct HeliosSettingsView: View {
-  @ObservedObject private var updateChecker = HeliosUpdatePresenter.shared.checker
-  @ObservedObject var preferences: HeliosPreferences
-  @ObservedObject var service: DaemonService
-  @ObservedObject var diagnostics: DiagnosticsController
-  @ObservedObject private var diagnosticsPreferences: DiagnosticsPreferences
-  @StateObject private var manualApproval = DiagnosticsManualApproval()
-  @State private var selection: HeliosSettingsRoute? = .general
-  @State private var moduleTab: HeliosModuleSettingsTab = .collection
-  @State private var showingPrepareRemoval = false
-  @State private var eraseLocalDataOnRemoval = false
-  @State private var removalStatus: String?
-  @State private var diagnosticsPreview: FrozenDiagnosticsPayload?
-  @State private var showingDiagnosticsPreview = false
-  @State private var previewAllowsSend = false
-  @State private var diagnosticsStatus: String?
-  @State private var showingCompatibilityConsent = false
-  @State private var generatingCompatibility = false
-  @State private var compatibilityStatus: String?
-  @State private var compatibilityTransitioningToPreview = false
-  @State private var manualSendCompleted = false
-
-  init(
-    preferences: HeliosPreferences, service: DaemonService, diagnostics: DiagnosticsController
-  ) {
-    self.preferences = preferences
-    self.service = service
-    self.diagnostics = diagnostics
-    diagnosticsPreferences = diagnostics.preferences
-  }
-
-  var body: some View {
-    NavigationSplitView {
-      List(HeliosSettingsRoute.allCases, selection: $selection) { route in
-        Label(route.title, systemImage: route.symbol).tag(route)
-      }
-      .navigationTitle("Settings")
-      .navigationSplitViewColumnWidth(min: 145, ideal: 160, max: 180)
-    } detail: {
-      ScrollView {
-        VStack(alignment: .leading, spacing: 16) {
-          settingsHeader
-          settingsDetail(selection ?? .modules)
-        }
-        .padding(22)
-        .frame(maxWidth: 600, alignment: .topLeading)
-      }
-      .background(Color(nsColor: .windowBackgroundColor))
-    }
-    .frame(minWidth: 720, minHeight: 520)
-    .sheet(isPresented: $showingDiagnosticsPreview, onDismiss: dismissDiagnosticsPreview) {
-      diagnosticsPreviewSheet
-    }
-    .sheet(isPresented: $showingCompatibilityConsent, onDismiss: compatibilityConsentDismissed) {
-      DiagnosticsCompatibilityConsentView(
-        generating: generatingCompatibility, status: compatibilityStatus,
-        onCancel: cancelCompatibilityReport,
-        onGenerate: generateCompatibilityPreview)
-    }
-  }
-
-  @ViewBuilder
-  private var diagnosticsPreviewSheet: some View {
-    if let diagnosticsPreview {
-      if previewAllowsSend {
-        DiagnosticsPayloadView(
-          title: "Confirm diagnostic report",
-          explanation:
-            "Review the complete request body, then choose Send report. This one-shot action does not enable automatic diagnostics.",
-          payload: diagnosticsPreview,
-          sendTitle: manualSendCompleted ? "Sent" : "Send report",
-          sending: diagnostics.sending,
-          sendDisabled: manualSendCompleted,
-          status: diagnosticsStatus,
-          onSend: sendApprovedManualReport,
-          onRegenerate: diagnosticsPreview.reportType == .manualCompatibility
-            ? generateCompatibilityPreview : showManualHealthPreview)
-      } else {
-        DiagnosticsPayloadView(
-          title: "Beta diagnostics preview",
-          explanation:
-            "This local preview shows the complete automatic diagnostics body. Viewing it sends nothing.",
-          payload: diagnosticsPreview,
-          status: diagnosticsStatus,
-          onRegenerate: showAutomaticPreview)
-      }
-    }
-  }
-
-  private var settingsHeader: some View {
-    VStack(alignment: .leading, spacing: 3) {
-      Text((selection ?? .modules).title).font(.system(size: 24, weight: .semibold))
-      Text(settingsSubtitle(selection ?? .modules))
-        .font(.system(size: 11))
-        .foregroundStyle(.secondary)
-    }
-  }
-
-  @ViewBuilder
-  private func settingsDetail(_ route: HeliosSettingsRoute) -> some View {
-    switch route {
-    case .general: general
-    case .modules: modules
-    case .graphs: graphs
-    case .fans: fans
-    case .battery: batterySettings
-    case .privacy: privacy
-    case .advanced: advanced
-    case .about: about
-    }
-  }
-
-  private func settingsSubtitle(_ route: HeliosSettingsRoute) -> String {
-    switch route {
-    case .general: "How Helios behaves as a macOS utility."
-    case .modules:
-      "Build the menu bar, module popups and Full Monitor around what you actually use."
-    case .graphs:
-      "Choose chart behavior, history ranges and a color for every module or data series."
-    case .fans: "Understand the safe fan-control boundary and helper status."
-    case .battery: "Read-only battery-life estimation and energy-history behavior."
-    case .privacy: "Control optional beta diagnostics and inspect every byte before a manual send."
-    case .advanced: "Diagnostics and interface reset options for experienced users."
-    case .about: "Version, author and project links."
-    }
-  }
-
-  private func setCoolingEnabled(_ enabled: Bool) {
-    if !enabled {
-      // Never hide the controls while leaving an invisible Helios override active.
-      service.fanControl.setMode(.system)
-    }
-    preferences.setCoolingFeaturesEnabled(enabled)
-  }
-
-  private func setTelemetryCollection(_ module: HeliosTelemetryModule, enabled: Bool) {
-    if module == .fans, !enabled, preferences.coolingFeaturesEnabled {
-      // Fan control depends on fresh fan inventory. Returning to System before
-      // stopping the read-only sampler keeps the write path impossible to
-      // strand behind hidden controls.
-      service.fanControl.setMode(.system)
-      preferences.setCoolingFeaturesEnabled(false)
-    }
-    preferences.setTelemetryModuleEnabled(module, enabled: enabled)
-  }
-
-  private var general: some View {
-    Form {
-      Section("Helios") {
-        LabeledContent("Interface", value: "Menu bar + optional Full Monitor")
-        LabeledContent("Telemetry", value: "Local native monitoring")
-        LabeledContent("Hardware writes", value: "Fan control only")
-        LabeledContent("Battery policy", value: "macOS-managed")
-      }
-      Section("Interface preset") {
-        Picker(
-          "Preset",
-          selection: Binding(
-            get: { preferences.dashboardMode },
-            set: { preferences.applyInterfacePreset($0) })
-        ) {
-          ForEach(HeliosDashboardMode.allCases) { mode in
-            Text(mode.label).tag(mode)
-          }
-        }
-        .pickerStyle(.segmented)
-        Text(preferences.dashboardMode.onboardingDetail)
-          .foregroundStyle(.secondary)
-        Text(
-          "Presets are starting configurations, not restrictions. Detailed enables the full diagnostic presentation and every normal telemetry sampler; manual module changes remain editable at any time."
-        )
-        .font(.system(size: 10))
-        .foregroundStyle(.secondary)
-      }
-      Section("Startup") {
-        HeliosLaunchAtLoginView(
-          enabled: service.launchAtLoginEnabled,
-          requiresApproval: service.launchAtLoginRequiresApproval,
-          busy: service.launchAtLoginBusy, message: service.launchAtLoginMessage,
-          setEnabled: { enabled in Task { await service.setLaunchAtLogin(enabled) } },
-          openSettings: { service.openApprovalSettings() })
-      }
-      Section("Interface behavior") {
-        Toggle(
-          "Compact dashboard card spacing",
-          isOn: Binding(
-            get: { preferences.compactCards },
-            set: { preferences.setCompactCards($0) })
-        )
-        Text(
-          "Helios follows macOS semantic colors, materials, typography and SF Symbols so future macOS appearance changes do not require a hard-coded theme rewrite."
-        )
-        .foregroundStyle(.secondary)
-      }
-    }
-    .formStyle(.grouped)
-  }
-
-  private var modules: some View {
-    VStack(alignment: .leading, spacing: 14) {
-      Picker("Module surface", selection: $moduleTab) {
-        ForEach(HeliosModuleSettingsTab.allCases) { tab in
-          Text(tab.rawValue).tag(tab)
-        }
-      }
-      .pickerStyle(.segmented)
-      switch moduleTab {
-      case .collection: dataCollection
-      case .menuBar: menuBar
-      case .popover: dashboard
-      case .monitor: monitor
-      }
-    }
-  }
-
-  private var dataCollection: some View {
-    VStack(alignment: .leading, spacing: 14) {
-      GroupBox("Collection vs. visibility") {
-        VStack(alignment: .leading, spacing: 7) {
-          Label("Stop work you do not need", systemImage: "bolt.slash")
-            .font(.system(size: 11, weight: .semibold))
-          Text(
-            "Hiding a module changes only the interface. Turning collection off stops that sampler and temporarily removes live surfaces that depend on it, without deleting their saved menu-bar, Dashboard or Full Monitor placement. Re-enable collection and the same modules regenerate in the same order. Trusted thermal health sampling stays available because Helios uses it for safety and system-health state."
-          )
-          .font(.system(size: 10)).foregroundStyle(.secondary)
-        }
-        .padding(4)
-      }
-
-      GroupBox("Cooling & fan control") {
-        VStack(alignment: .leading, spacing: 8) {
-          Toggle(
-            "Enable cooling controls",
-            isOn: Binding(
-              get: { preferences.coolingFeaturesEnabled },
-              set: { setCoolingEnabled($0) })
-          )
-          Text(
-            preferences.coolingFeaturesEnabled
-              ? "Fan-control writes are enabled. System remains the recommended mode; read-only fan telemetry is configured separately below."
-              : "Fan-control writes and helper-facing controls are disabled. Read-only fan RPM monitoring can stay enabled independently."
-          )
-          .font(.system(size: 10)).foregroundStyle(.secondary)
-          HeliosFanSafetyNotice(compact: true)
-            .opacity(preferences.coolingFeaturesEnabled ? 1 : 0.55)
-        }
-        .padding(4)
-      }
-
-      GroupBox("Telemetry samplers") {
-        VStack(spacing: 0) {
-          ForEach(HeliosTelemetryModule.allCases) { module in
-            HStack(alignment: .top, spacing: 10) {
-              Toggle(
-                module.label,
-                isOn: Binding(
-                  get: { preferences.isTelemetryEnabled(module) },
-                  set: { setTelemetryCollection(module, enabled: $0) })
-              )
-              .toggleStyle(.switch)
-              VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                  Text(module.detail)
-                    .font(.system(size: 9.5)).foregroundStyle(.secondary)
-                  Text(module.monitoringCost)
-                    .font(.system(size: 8.5, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 5).padding(.vertical, 1.5)
-                    .background(Color.secondary.opacity(0.08), in: Capsule())
-                }
-                Text(
-                  preferences.isTelemetryEnabled(module)
-                    ? "Collecting locally" : "Sampler stopped"
-                )
-                .font(.system(size: 8.5, weight: .medium))
-                .foregroundStyle(
-                  preferences.isTelemetryEnabled(module) ? Color.green : Color.secondary)
-              }
-              Spacer(minLength: 0)
-            }
-            .padding(.vertical, 7)
-            if module != HeliosTelemetryModule.allCases.filter({ $0 != .fans }).last {
-              Divider()
-            }
-          }
-        }
-        .padding(.horizontal, 4)
-      }
-
-      GroupBox("Always-on core") {
-        VStack(alignment: .leading, spacing: 6) {
-          LabeledContent("Trusted thermal health", value: "On")
-          LabeledContent("System metadata", value: "On")
-          Text(
-            "These lightweight reads support temperature health, capability discovery and safe UI state. Raw/advisory sensor inventory remains on a slower expert cadence and is never trusted blindly for fan safety."
-          )
-          .font(.system(size: 10)).foregroundStyle(.secondary)
-        }
-        .padding(4)
-      }
-    }
-  }
-
-  private var graphs: some View {
-    VStack(alignment: .leading, spacing: 14) {
-      GroupBox("Live charts") {
-        VStack(alignment: .leading, spacing: 12) {
-          Picker("Line shape", selection: $preferences.graphLineStyle) {
-            ForEach(HeliosGraphLineStyle.allCases) { style in
-              Text(style.label).tag(style)
-            }
-          }
-          .pickerStyle(.segmented)
-          Toggle("Continuous graph motion", isOn: $preferences.animateGraphUpdates)
-          Text(
-            "Helios still samples at the normal telemetry cadence. When a real sample arrives, the final path is rendered once and Core Animation glides it into its new position over the observed sample interval. No fake telemetry points are created and polling is not increased."
-          )
-          .font(.system(size: 10)).foregroundStyle(.secondary)
-          Label(
-            "Hover any chart to inspect the nearest real sample with its timestamp and exact value.",
-            systemImage: "scope"
-          )
-          .font(.system(size: 10)).foregroundStyle(.secondary)
-          Text(
-            "Smooth changes only the curve drawn between real samples. Raw shows straight sample-to-sample segments. Switching either option redraws the entire visible history immediately."
-          )
-          .font(.system(size: 10)).foregroundStyle(.secondary)
-        }
-        .padding(4)
-      }
-      GroupBox("Memory gauge") {
-        VStack(alignment: .leading, spacing: 8) {
-          Toggle(
-            "Color available memory in the gauge", isOn: $preferences.memoryGaugeShowsAvailable)
-          Text(
-            preferences.memoryGaugeShowsAvailable
-              ? "Available memory uses a muted green segment. App, wired and compressed memory keep their own fixed colors; swap and reclaimable cache remain separate and never reuse those colors."
-              : "Recommended: colored segments show only memory in use. The neutral remainder is available physical memory, so free headroom is visible without adding another bright status color."
-          )
-          .font(.system(size: 10))
-          .foregroundStyle(.secondary)
-        }
-        .padding(4)
-      }
-      GroupBox("Colors") {
-        VStack(alignment: .leading, spacing: 10) {
-          Text(
-            "Colors apply consistently to popups, the Quick Dashboard, Full Monitor and Energy Inspector. The macOS menu bar itself stays native monochrome."
-          )
-          .font(.system(size: 10)).foregroundStyle(.secondary)
-          colorRoleGroup(
-            "Modules", roles: HeliosColorRole.allCases.filter { $0.group == "Modules" })
-          Divider().opacity(0.45)
-          colorRoleGroup(
-            "Network", roles: HeliosColorRole.allCases.filter { $0.group == "Network" })
-          Divider().opacity(0.45)
-          colorRoleGroup(
-            "Memory breakdown",
-            roles: HeliosColorRole.allCases.filter { $0.group == "Memory breakdown" })
-          HStack {
-            Spacer()
-            Button("Reset Colors") { preferences.resetColors() }
-          }
-        }
-        .padding(4)
-      }
-      GroupBox("Default time range") {
-        VStack(alignment: .leading, spacing: 9) {
-          HeliosGraphRangePicker(
-            range: Binding(
-              get: { preferences.graphRange },
-              set: { preferences.setAllGraphRanges($0) }))
-          Text(
-            "This sets every chart to the same starting range. Afterwards each module remembers its own 1m–24h selection. Longer ranges merge the live tail with Helios' persistent 24-hour history instead of starting when a window opens."
-          )
-          .font(.system(size: 10)).foregroundStyle(.secondary)
-        }
-        .padding(4)
-      }
-    }
-  }
-
-  private var batterySettings: some View {
-    VStack(alignment: .leading, spacing: 14) {
-      GroupBox("Battery life") {
-        VStack(alignment: .leading, spacing: 8) {
-          Label("macOS estimate first", systemImage: "checkmark.circle")
-            .font(.system(size: 11, weight: .semibold))
-          Text(
-            "When macOS still reports Calculating, Helios can show an early ≈ estimate from read-only remaining capacity, voltage and recent discharge power. The system estimate automatically takes priority when it becomes available."
-          )
-          .font(.system(size: 10)).foregroundStyle(.secondary)
-        }
-        .padding(4)
-      }
-      GroupBox("Energy attribution") {
-        Text(
-          "Battery & Energy ranks the bounded per-app energy history that Helios already records locally. Rankings are intended for relative attribution and trends, not billing-grade joule measurement."
-        )
-        .font(.system(size: 10)).foregroundStyle(.secondary).padding(4)
-      }
-      GroupBox("Charging policy") {
-        Label("Always macOS-managed", systemImage: "lock.shield")
-          .font(.system(size: 11, weight: .semibold)).padding(4)
-        Text("Helios never changes charge limits, charger state, or optimized charging policy.")
-          .font(.system(size: 10)).foregroundStyle(.secondary).padding(.horizontal, 4).padding(
-            .bottom, 4)
-      }
-    }
-  }
-
-  private var dashboard: some View {
-    VStack(alignment: .leading, spacing: 14) {
-      GroupBox("Quick presets") {
-        VStack(alignment: .leading, spacing: 9) {
-          HStack(spacing: 8) {
-            ForEach(HeliosDashboardMode.allCases.filter { $0 != .custom }) { mode in
-              Button(mode.label) {
-                preferences.applyDashboardPreset(mode)
-              }
-              .frame(maxWidth: .infinity)
-              .help(mode.onboardingDetail)
-            }
-          }
-          Text(
-            "A preset replaces the visible module list once. After that, add, remove, or reorder anything below — Helios does not lock you into a mode."
-          )
-          .font(.system(size: 10)).foregroundStyle(.secondary)
-        }
-        .padding(4)
-      }
-
-      if preferences.isPopoverModuleEnabled(.summary) {
-        GroupBox("Summary metrics") {
-          VStack(spacing: 0) {
-            ForEach(preferences.dashboardMetrics) { metric in
-              configurableDashboardMetricRow(metric)
-              if preferences.dashboardMetrics.last != metric { Divider() }
-            }
-            let availableMetrics = HeliosDashboardMetric.allCases.filter {
-              !preferences.isDashboardMetricEnabled($0)
-            }
-            if !availableMetrics.isEmpty {
-              Divider().opacity(0.45)
-              HStack {
-                Text("Add")
-                  .font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
-                ForEach(availableMetrics) { metric in
-                  Button {
-                    preferences.setDashboardMetricEnabled(metric, enabled: true)
-                  } label: {
-                    Image(systemName: metric.symbolName)
-                  }
-                  .buttonStyle(.borderless)
-                  .help("Add \(metric.label)")
-                }
-                Spacer()
-              }
-              .padding(.vertical, 7)
-            }
-          }
-          .padding(.horizontal, 4)
-        }
-      }
-
-      GroupBox("Visible modules") {
-        VStack(spacing: 0) {
-          ForEach(preferences.popoverModules) { module in
-            configurablePopoverRow(module)
-            if preferences.popoverModules.last != module { Divider() }
-          }
-          if preferences.popoverModules.isEmpty {
-            Text("No dashboard modules are enabled.")
-              .font(.system(size: 11)).foregroundStyle(.secondary)
-              .frame(maxWidth: .infinity, alignment: .leading)
-              .padding(.vertical, 8)
-          }
-        }
-        .padding(.horizontal, 4)
-      }
-
-      let available = HeliosPopoverModule.allCases.filter {
-        !preferences.isPopoverModuleEnabled($0)
-      }
-      if !available.isEmpty {
-        GroupBox("Add a module") {
-          LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-            ForEach(available) { module in
-              Button {
-                preferences.setPopoverModuleEnabled(module, enabled: true)
-              } label: {
-                Label(module.label, systemImage: module.symbolName)
-                  .frame(maxWidth: .infinity, alignment: .leading)
-              }
-            }
-          }
-          .padding(4)
-        }
-      }
-
-      HStack {
-        Spacer()
-        Button("Reset Dashboard to Recommended") { preferences.resetDashboard() }
-      }
-    }
-  }
-
-  private func configurablePopoverRow(_ module: HeliosPopoverModule) -> some View {
-    HStack(spacing: 10) {
-      Label(module.label, systemImage: module.symbolName)
-      Spacer()
-      Button {
-        preferences.movePopoverModule(module, offset: -1)
-      } label: {
-        Image(systemName: "chevron.up")
-      }
-      .buttonStyle(.borderless)
-      .disabled(preferences.popoverModules.first == module)
-      .help("Move up")
-      Button {
-        preferences.movePopoverModule(module, offset: 1)
-      } label: {
-        Image(systemName: "chevron.down")
-      }
-      .buttonStyle(.borderless)
-      .disabled(preferences.popoverModules.last == module)
-      .help("Move down")
-      Button(role: .destructive) {
-        preferences.setPopoverModuleEnabled(module, enabled: false)
-      } label: {
-        Image(systemName: "minus.circle")
-      }
-      .buttonStyle(.borderless)
-      .help("Remove from dashboard")
-    }
-    .font(.system(size: 11))
-    .padding(.vertical, 7)
-  }
-
-  private var monitor: some View {
-    VStack(alignment: .leading, spacing: 14) {
-      GroupBox("Sidebar modules") {
-        VStack(spacing: 0) {
-          ForEach(preferences.monitorRoutes) { route in
-            configurableMonitorRow(route)
-            if preferences.monitorRoutes.last != route { Divider() }
-          }
-        }
-        .padding(.horizontal, 4)
-      }
-
-      let available = HeliosMonitorRoute.allCases.filter { !preferences.isMonitorRouteEnabled($0) }
-      if !available.isEmpty {
-        GroupBox("Add a module") {
-          LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-            ForEach(available) { route in
-              Button {
-                preferences.setMonitorRouteEnabled(route, enabled: true)
-              } label: {
-                Label(route.title, systemImage: route.symbol)
-                  .frame(maxWidth: .infinity, alignment: .leading)
-              }
-            }
-          }
-          .padding(4)
-        }
-      }
-
-      GroupBox("Behavior") {
-        VStack(alignment: .leading, spacing: 8) {
-          Toggle(
-            "Detailed Full Monitor content",
-            isOn: Binding(
-              get: { preferences.detailedMonitorContent },
-              set: { preferences.setDetailedMonitorContent($0) })
-          )
-          Text(
-            preferences.detailedMonitorContent
-              ? "Detailed content exposes per-core/process/diagnostic context by default. Detailed and Custom onboarding presets enable this automatically."
-              : "Essential content keeps Full Monitor focused. Hidden detail is not deleted and can be re-enabled at any time."
-          )
-          .font(.system(size: 10)).foregroundStyle(.secondary)
-          Text(
-            "Overview stays pinned as the landing page. Hidden sidebar modules are not deleted; you can add them back here at any time."
-          )
-          .font(.system(size: 10)).foregroundStyle(.secondary)
-          HStack {
-            Spacer()
-            Button("Show All Modules") { preferences.resetMonitor() }
-          }
-        }
-        .padding(4)
-      }
-    }
-  }
-
-  private func configurableMonitorRow(_ route: HeliosMonitorRoute) -> some View {
-    HStack(spacing: 10) {
-      Label(route.title, systemImage: route.symbol)
-      if route == .overview {
-        Text("Pinned").font(.system(size: 9, weight: .medium)).foregroundStyle(.tertiary)
-      }
-      Spacer()
-      Button {
-        preferences.moveMonitorRoute(route, offset: -1)
-      } label: {
-        Image(systemName: "chevron.up")
-      }
-      .buttonStyle(.borderless)
-      .disabled(route == .overview || preferences.monitorRoutes.firstIndex(of: route) == 1)
-      .help("Move up")
-      Button {
-        preferences.moveMonitorRoute(route, offset: 1)
-      } label: {
-        Image(systemName: "chevron.down")
-      }
-      .buttonStyle(.borderless)
-      .disabled(route == .overview || preferences.monitorRoutes.last == route)
-      .help("Move down")
-      Button(role: .destructive) {
-        preferences.setMonitorRouteEnabled(route, enabled: false)
-      } label: {
-        Image(systemName: "minus.circle")
-      }
-      .buttonStyle(.borderless)
-      .disabled(route == .overview)
-      .help(route == .overview ? "Overview is always available" : "Hide from Full Monitor")
-    }
-    .font(.system(size: 11))
-    .padding(.vertical, 7)
-  }
-
-  private var menuBar: some View {
-    VStack(alignment: .leading, spacing: 14) {
-      GroupBox("Layout") {
-        VStack(alignment: .leading, spacing: 9) {
-          Picker(
-            "Menu bar layout",
-            selection: Binding(
-              get: { preferences.menuBarLayout },
-              set: { preferences.setMenuBarLayout($0) })
-          ) {
-            ForEach(HeliosMenuBarLayout.allCases) { layout in
-              Text(layout.label).tag(layout)
-            }
-          }
-          .pickerStyle(.segmented)
-          Text(preferences.menuBarLayout.detail)
-            .font(.system(size: 10)).foregroundStyle(.secondary)
-          Label(
-            preferences.menuBarLayout == .nativeModules
-              ? "Separate modules can open their own metric popups. The Helios sun is an optional extra Dashboard hub."
-              : "The whole compact group is one Helios item and opens the Dashboard, so there is no separate hub icon.",
-            systemImage: preferences.menuBarLayout == .nativeModules
-              ? "rectangle.3.group" : "rectangle.compress.vertical"
-          )
-          .font(.system(size: 9.5))
-          .foregroundStyle(.secondary)
-          VStack(alignment: .leading, spacing: 4) {
-            HStack {
-              Text("Metric spacing")
-                .font(.system(size: 10, weight: .medium))
-              Spacer()
-              Text(String(format: "%.1f pt", preferences.menuBarSpacing))
-                .font(.system(size: 9.5).monospacedDigit())
-                .foregroundStyle(.secondary)
-            }
-            HStack(spacing: 8) {
-              Text("Compact").font(.system(size: 9)).foregroundStyle(.secondary)
-              Slider(
-                value: Binding(
-                  get: { preferences.menuBarSpacing },
-                  set: { preferences.setMenuBarSpacing($0) }),
-                in: 0...8, step: 0.5
-              )
-              .accessibilityLabel("Menu bar metric spacing")
-              Text("Roomy").font(.system(size: 9)).foregroundStyle(.secondary)
-            }
-            Text(
-              preferences.menuBarLayout == .nativeModules
-                ? "Removes Helios-owned padding down to the fixed text width. macOS still reserves its own separation between independent status items; Single compact group is the tightest layout."
-                : "Controls the internal gap and fixed padding inside the single Helios item. At Compact, Helios adds no extra gap between metric slots."
-            )
-            .font(.system(size: 9)).foregroundStyle(.secondary)
-          }
-          if preferences.menuBarLayout == .nativeModules {
-            Toggle(
-              "Show Helios dashboard hub",
-              isOn: Binding(
-                get: { preferences.showMenuBarHub },
-                set: { preferences.setMenuBarHubVisible($0) })
-            )
-            .disabled(preferences.menuBarMetricsForPresentation.isEmpty)
-            .help(
-              preferences.menuBarMetricsForPresentation.isEmpty
-                ? "The Helios hub stays visible when no metric modules are enabled so the app remains reachable."
-                : "Adds the Helios solar mark as a separate status item that opens the complete dashboard."
-            )
-            Label(
-              "Hold ⌘ and drag native modules directly in the menu bar to reorder them. macOS remembers each module's position.",
-              systemImage: "command"
-            )
-            .font(.system(size: 9.5))
-            .foregroundStyle(.secondary)
-          }
-        }
-        .padding(4)
-      }
-
-      GroupBox("Thermals in the menu bar") {
-        Label(
-          "Temperature & Fan is the combined two-line option. Use Temperature for a single temperature value, Fan for RPM only, or Temperature & Fan when you want one module instead of two.",
-          systemImage: "thermometer.medium"
-        )
-        .font(.system(size: 9.5))
-        .foregroundStyle(.secondary)
-        .padding(4)
-      }
-
-      GroupBox("Preview") {
-        HStack {
-          Spacer(minLength: 0)
-          HeliosMenuBarPreview(preferences: preferences)
-          Spacer(minLength: 0)
-        }
-        .padding(.vertical, 8)
-      }
-
-      GroupBox("Visible metrics") {
-        VStack(spacing: 0) {
-          ForEach(preferences.menuBarMetrics) { metric in
-            configurableMenuBarRow(metric)
-            if preferences.menuBarMetrics.last != metric { Divider() }
-          }
-          if preferences.menuBarMetrics.isEmpty {
-            Text(
-              "No metric modules are enabled. The optional Helios hub can still open the dashboard."
-            )
-            .font(.system(size: 11)).foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.vertical, 8)
-          }
-        }
-        .padding(.horizontal, 4)
-      }
-
-      let available = HeliosMenuBarMetric.allCases.filter { !preferences.isEnabled($0) }
-      if !available.isEmpty {
-        GroupBox("Add a metric") {
-          LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-            ForEach(available) { metric in
-              Button {
-                preferences.setEnabled(metric, enabled: true)
-              } label: {
-                Label(metric.label, systemImage: metric.symbolName)
-                  .frame(maxWidth: .infinity, alignment: .leading)
-              }
-            }
-          }
-          .padding(4)
-        }
-      }
-
-      HStack {
-        Spacer()
-        Button("Reset Menu Bar") { preferences.resetMenuBar() }
-      }
-    }
-  }
-
-  private func configurableMenuBarRow(_ metric: HeliosMenuBarMetric) -> some View {
-    let content = preferences.menuBarContent(for: metric)
-    return VStack(alignment: .leading, spacing: 7) {
-      HStack(spacing: 9) {
-        Label(metric.label, systemImage: metric.symbolName)
-          .frame(width: 120, alignment: .leading)
-        TextField(
-          "Label",
-          text: Binding(
-            get: { preferences.label(for: metric) },
-            set: { preferences.setLabel($0, for: metric) })
-        )
-        .textFieldStyle(.roundedBorder)
-        .frame(width: 76)
-        .disabled(!content.showLabel)
-        .help("Optional short label shown when Label is enabled")
-        Spacer(minLength: 4)
-        if preferences.menuBarLayout == .compactGroup {
-          Button {
-            preferences.move(metric, offset: -1)
-          } label: {
-            Image(systemName: "chevron.left")
-          }
-          .buttonStyle(.borderless)
-          .disabled(preferences.menuBarMetrics.first == metric)
-          .help("Move left inside the compact group")
-          Button {
-            preferences.move(metric, offset: 1)
-          } label: {
-            Image(systemName: "chevron.right")
-          }
-          .buttonStyle(.borderless)
-          .disabled(preferences.menuBarMetrics.last == metric)
-          .help("Move right inside the compact group")
-        }
-        Button(role: .destructive) {
-          preferences.setEnabled(metric, enabled: false)
-        } label: {
-          Image(systemName: "minus.circle")
-        }
-        .buttonStyle(.borderless)
-        .help("Remove from menu bar")
-      }
-
-      HStack(spacing: 15) {
-        Text("Show")
-          .font(.system(size: 9.5, weight: .medium))
-          .foregroundStyle(.secondary)
-          .frame(width: 120, alignment: .trailing)
-        Toggle(
-          "Icon",
-          isOn: Binding(
-            get: { preferences.menuBarContent(for: metric).showIcon },
-            set: { preferences.setMenuBarIconVisible($0, for: metric) })
-        )
-        Toggle(
-          "Label",
-          isOn: Binding(
-            get: { preferences.menuBarContent(for: metric).showLabel },
-            set: { preferences.setMenuBarLabelVisible($0, for: metric) })
-        )
-        Toggle(
-          "Value",
-          isOn: Binding(
-            get: { preferences.menuBarContent(for: metric).showValue },
-            set: { preferences.setMenuBarValueVisible($0, for: metric) })
-        )
-        Spacer()
-      }
-      .toggleStyle(.checkbox)
-      .controlSize(.small)
-      .font(.system(size: 10))
-    }
-    .font(.system(size: 11))
-    .padding(.vertical, 7)
-  }
-
-  private func configurableDashboardMetricRow(_ metric: HeliosDashboardMetric) -> some View {
-    HStack(spacing: 10) {
-      Label(metric.label, systemImage: metric.symbolName)
-      Spacer()
-      Button {
-        preferences.moveDashboardMetric(metric, offset: -1)
-      } label: {
-        Image(systemName: "chevron.up")
-      }
-      .buttonStyle(.borderless)
-      .disabled(preferences.dashboardMetrics.first == metric)
-      .help("Move up")
-      Button {
-        preferences.moveDashboardMetric(metric, offset: 1)
-      } label: {
-        Image(systemName: "chevron.down")
-      }
-      .buttonStyle(.borderless)
-      .disabled(preferences.dashboardMetrics.last == metric)
-      .help("Move down")
-      Button(role: .destructive) {
-        preferences.setDashboardMetricEnabled(metric, enabled: false)
-      } label: {
-        Image(systemName: "minus.circle")
-      }
-      .buttonStyle(.borderless)
-      .help("Hide from System summary")
-    }
-    .font(.system(size: 11))
-    .padding(.vertical, 7)
-  }
-
-  @ViewBuilder
-  private func colorRoleGroup(_ title: String, roles: [HeliosColorRole]) -> some View {
-    VStack(alignment: .leading, spacing: 6) {
-      Text(title)
-        .font(.system(size: 10, weight: .semibold))
-        .foregroundStyle(.secondary)
-      LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 7) {
-        ForEach(roles) { role in
-          HStack(spacing: 8) {
-            ColorPicker(
-              role.label,
-              selection: Binding(
-                get: { preferences.color(for: role) },
-                set: { preferences.setColorHex($0.heliosHex, for: role) }),
-              supportsOpacity: true
-            )
-            .labelsHidden()
-            .frame(width: 28)
-            Text(role.label)
-              .font(.system(size: 10))
-              .lineLimit(1)
-            Spacer(minLength: 0)
-          }
-        }
-      }
-    }
-  }
-
-  private var fans: some View {
-    VStack(alignment: .leading, spacing: 14) {
-      GroupBox("Cooling availability") {
-        VStack(alignment: .leading, spacing: 8) {
-          Toggle(
-            "Enable cooling controls",
-            isOn: Binding(
-              get: { preferences.coolingFeaturesEnabled },
-              set: { setCoolingEnabled($0) })
-          )
-          Text(
-            preferences.coolingFeaturesEnabled
-              ? "Cooling controls are available in the dashboard and Full Monitor. Fan RPM collection remains a separate read-only sampler."
-              : "Fan-control UI is disabled. Read-only fan RPM telemetry can remain visible if Fan telemetry is enabled under Modules → Data Collection."
-          )
-          .font(.system(size: 10)).foregroundStyle(.secondary)
-        }
-        .padding(4)
-      }
-
-      GroupBox("Safety model") {
-        VStack(alignment: .leading, spacing: 8) {
-          Label("System is the recommended default", systemImage: "checkmark.shield")
-            .font(.system(size: 12, weight: .semibold))
-          HeliosFanSafetyNotice()
-          HStack {
-            Spacer()
-            Button("Show first-use safety guide again") { preferences.resetFanSafetyGuide() }
-              .disabled(!preferences.fanSafetyGuideCompleted)
-          }
-        }
-        .padding(4)
-      }
-
-      GroupBox("Privileged fan helper") {
-        VStack(alignment: .leading, spacing: 8) {
-          DaemonServiceCard(service: service, client: service.client)
-          Text(
-            "The helper is a macOS-managed LaunchDaemon. If it is registered, macOS may start it at boot even when the Helios app is not open. Disable Cooling to stop Helios fan-control use; uninstall the helper here if you do not want it registered at all."
-          )
-          .font(.system(size: 10))
-          .foregroundStyle(.secondary)
-        }
-        .padding(4)
-      }
-      if preferences.coolingFeaturesEnabled {
-        Text("Edit complete Cooling Rules in Full Monitor → Thermals & Fans.")
-          .font(.system(size: 10)).foregroundStyle(.secondary)
-      }
-    }
-  }
-
-  private var privacy: some View {
-    Form {
-      Section("Local by design") {
-        LabeledContent("Analytics", value: "None")
-        LabeledContent(
-          "Background network",
-          value: diagnosticsPreferences.automaticEnabled
-            ? "Update checks + optional beta diagnostics" : "Update checks only")
-        LabeledContent("Battery", value: "Read-only telemetry")
-        Text(
-          "Automatic reports contain no page views, clicks, feature-use events, identities, raw monitoring samples, or fan commands. Raw hardware evidence is included only in a compatibility report you explicitly generate, preview, and send."
-        )
-        .foregroundStyle(.secondary)
-      }
-      Section("Update checks") {
-        Text("After Welcome Setup is complete, Helios may contact GitHub for release information on launch, at most roughly once per day. The request contains no Helios telemetry and no Helios device identifier. Beta diagnostics are a separate opt-in system.")
-          .foregroundStyle(.secondary)
-      }
-      Section("Privacy-preserving beta diagnostics") {
-        Toggle(
-          "Share beta diagnostics",
-          isOn: Binding(
-            get: { diagnosticsPreferences.automaticEnabled },
-            set: { diagnostics.setAutomaticEnabled($0) }))
-        LabeledContent(
-          "Last successful report", value: diagnosticsLastSuccessfulReport)
-        LabeledContent("Last report status", value: diagnosticsPreferences.lastReportStatus.label)
-        if diagnosticsPreferences.automaticEnabled {
-          LabeledContent("Next automatic opportunity", value:
-            diagnosticsPreferences.nextEligibleTime?.formatted(date: .abbreviated, time: .shortened)
-              ?? "Waiting for scheduling")
-          if diagnosticsPreferences.pendingRetryCount > 0 {
-            Text("Retry \(diagnosticsPreferences.pendingRetryCount) of 2 is scheduled.")
-              .foregroundStyle(.secondary)
-          }
-          Text("The first report is eligible after five minutes of this launch. Later reports are roughly daily; an app or macOS build change may allow an earlier report, at least one hour after the last success. Failed chains wait 24 hours before starting again.")
-            .font(.system(size: 10)).foregroundStyle(.secondary)
-        }
-        if diagnostics.sending { Text("Sending a report…").foregroundStyle(.secondary) }
-        if diagnosticsPreferences.lastReportStatus == .failed {
-          Text("Last failure category: \(diagnosticsPreferences.lastStatusCategory.rawValue)")
-            .font(.system(size: 10)).foregroundStyle(.secondary)
-        }
-        Button("View exactly what is shared", action: showAutomaticPreview)
-        Button("Send diagnostic report now", action: showManualHealthPreview)
-        Button("Create compatibility report", action: beginCompatibilityReport)
-        Button("Privacy information") { open("https://snejda.cz/helios/privacy") }
-        Text(
-          "Automatic diagnostics are off unless you enable them. Manual actions work while they are off, require an exact preview and separate Send confirmation, and never change this switch."
-        )
-        .foregroundStyle(.secondary)
-      }
-      Section("Protected resources") {
-        LabeledContent("Bluetooth", value: "Paired/connected inventory only")
-        LabeledContent("Microphone", value: "Not requested")
-        Text(
-          "Audio input details are intentionally not probed so Helios does not need microphone permission merely to inventory audio devices."
-        )
-        .foregroundStyle(.secondary)
-      }
-      Section("Privileged boundary") {
-        Text(
-          "The privileged helper is fan-only. Battery charging policy remains owned by macOS and is never modified by Helios."
-        )
-        .foregroundStyle(.secondary)
-        LabeledContent("Privacy & support", value: "helios@snejda.cz")
-      }
-    }
-    .formStyle(.grouped)
-  }
-
-  private var diagnosticsLastSuccessfulReport: String {
-    diagnosticsPreferences.lastSuccessfulReport?.formatted(date: .abbreviated, time: .shortened)
-      ?? "Never"
-  }
-
-  private func showAutomaticPreview() {
-    do {
-      diagnosticsPreview = try diagnostics.makeHealthPayload(
-        type: .automaticHealth,
-        reason: diagnosticsPreferences.lastSuccessfulAutomaticSend == nil ? .initialOptIn : .daily)
-      previewAllowsSend = false
-      manualSendCompleted = false
-      diagnosticsStatus = nil
-      manualApproval.invalidate()
-      showingDiagnosticsPreview = true
-    } catch {
-      diagnosticsStatus = "A safe diagnostics preview is not available yet. Nothing was sent."
-    }
-  }
-
-  private func showManualHealthPreview() {
-    do {
-      let payload = try diagnostics.makeHealthPayload(
-        type: .manualHealth, reason: .userInitiated)
-      manualApproval.setFrozen(payload)
-      diagnosticsPreview = manualApproval.payload
-      previewAllowsSend = true
-      manualSendCompleted = false
-      diagnosticsStatus = nil
-      showingDiagnosticsPreview = true
-    } catch {
-      diagnosticsStatus = "A safe manual report could not be created. Nothing was sent."
-    }
-  }
-
-  private func beginCompatibilityReport() {
-    manualApproval.invalidate()
-    diagnosticsPreview = nil
-    previewAllowsSend = false
-    manualSendCompleted = false
-    diagnosticsStatus = nil
-    compatibilityStatus = nil
-    compatibilityTransitioningToPreview = false
-    showingCompatibilityConsent = true
-  }
-
-  private func cancelCompatibilityReport() {
-    manualApproval.invalidate()
-    diagnosticsPreview = nil
-    previewAllowsSend = false
-    manualSendCompleted = false
-    compatibilityStatus = nil
-    compatibilityTransitioningToPreview = false
-    showingCompatibilityConsent = false
-  }
-
-  private func compatibilityConsentDismissed() {
-    if compatibilityTransitioningToPreview {
-      compatibilityTransitioningToPreview = false
-      return
-    }
-    manualApproval.invalidate()
-    diagnosticsPreview = nil
-    previewAllowsSend = false
-    manualSendCompleted = false
-    compatibilityStatus = nil
-  }
-
-  private func dismissDiagnosticsPreview() {
-    manualApproval.invalidate()
-    diagnosticsPreview = nil
-    previewAllowsSend = false
-    manualSendCompleted = false
-    diagnosticsStatus = nil
-  }
-
-  private func generateCompatibilityPreview() {
-    let transitioningFromConsent = showingCompatibilityConsent
-    manualApproval.invalidate()
-    diagnosticsPreview = nil
-    previewAllowsSend = false
-    manualSendCompleted = false
-    generatingCompatibility = true
-    compatibilityStatus = "Reading bounded compatibility metadata…"
-    Task {
-      do {
-        let payload = try await diagnostics.makeCompatibilityPayload()
-        manualApproval.setFrozen(payload)
-        diagnosticsPreview = manualApproval.payload
-        previewAllowsSend = true
-        diagnosticsStatus = nil
-        compatibilityStatus = nil
-        generatingCompatibility = false
-        if transitioningFromConsent {
-          compatibilityTransitioningToPreview = true
-          showingCompatibilityConsent = false
-        }
-        showingDiagnosticsPreview = true
-      } catch {
-        generatingCompatibility = false
-        compatibilityStatus =
-          "A safe compatibility preview could not be created. Nothing was sent."
-      }
-    }
-  }
-
-  private func sendApprovedManualReport() {
-    guard let payload = manualApproval.approve() else {
-      diagnosticsStatus = "This preview expired. Regenerate it before sending."
-      return
-    }
-    Task {
-      let result = await diagnostics.sendManual(payload)
-      switch result {
-      case .accepted:
-        diagnosticsStatus = "Report sent successfully."
-        manualSendCompleted = true
-      case .retryable:
-        diagnosticsStatus = "Send failed. The same frozen preview can be retried explicitly."
-      case .rejected:
-        diagnosticsStatus = "The report was rejected and was not accepted."
-      case .cancelled:
-        diagnosticsStatus = "Send cancelled."
-      }
-    }
-  }
-
-  private var advanced: some View {
-    Form {
-      Section("Diagnostics") {
-        LabeledContent("Complete diagnostics", value: "Full Monitor → Expert")
-        Text(
-          "Unknown/raw SMC channels stay expert-only and never enter fan safety or automatic cooling decisions unless separately validated."
-        )
-        .foregroundStyle(.secondary)
-      }
-      Section("Interface") {
-        Button("Reset Interface Settings") { preferences.resetInterface() }
-        Button("Show Welcome Setup on Next Launch") { preferences.markOnboardingIncomplete() }
-        Text(
-          "These actions affect only interface preferences. They do not reinstall the helper, alter fan ownership, change battery behavior, or erase monitoring history."
-        )
-        .foregroundStyle(.secondary)
-      }
-      Section("Removal") {
-        Toggle("Erase local Helios settings and monitoring history", isOn: $eraseLocalDataOnRemoval)
-        Text(
-          eraseLocalDataOnRemoval
-            ? "Complete cleanup removes Helios preferences and the local Application Support/Helios history files after fan control and launch services are released."
-            : "Leave this off if you may reinstall Helios and want to keep your layout and local monitoring history."
-        )
-        .foregroundStyle(.secondary)
-        Button("Prepare Helios for Removal…", role: .destructive) {
-          removalStatus = nil
-          showingPrepareRemoval = true
-        }
-        Text(
-          "Returns fan control to System, disables Launch at Login and unregisters the privileged helper. A registered helper is a RunAtLoad LaunchDaemon; uninstalling it is the supported way to stop helper startup at boot. Helios never deletes its own app bundle."
-        )
-        .foregroundStyle(.secondary)
-        if let removalStatus {
-          Text(removalStatus)
-            .font(.system(size: 10.5, weight: .medium))
-            .foregroundStyle(.secondary)
-            .textSelection(.enabled)
-        }
-      }
-    }
-    .formStyle(.grouped)
-    .alert("Prepare Helios for Removal?", isPresented: $showingPrepareRemoval) {
-      Button("Cancel", role: .cancel) {}
-      Button("Prepare", role: .destructive) {
-        Task { await prepareForRemoval() }
-      }
-    } message: {
-      Text(
-        eraseLocalDataOnRemoval
-          ? "Helios will return fan control to macOS, disable Launch at Login, unregister its helper, erase its local preferences/history and then quit. Move the app to Trash afterwards."
-          : "Helios will return fan control to macOS, disable Launch at Login and unregister its helper. Monitoring history and preferences will be kept."
-      )
-    }
-  }
-
-  private func prepareForRemoval() async {
-    removalStatus = "Preparing removal…"
-    service.fanControl.setMode(.system)
-
-    if service.launchAtLoginEnabled || service.launchAtLoginRequiresApproval {
-      guard await service.setLaunchAtLogin(false) else {
-        removalStatus =
-          "Removal stopped: Launch at Login could not be disabled. Resolve the Service Management state and try again; no local data was erased."
-        return
-      }
-    }
-
-    if service.state == .installed || service.state == .requiresApproval {
-      guard await service.uninstall() else {
-        removalStatus =
-          "Removal stopped: the privileged helper is still registered. Resolve the helper state and try again; no local data was erased."
-        return
-      }
-    }
-
-    guard eraseLocalDataOnRemoval else {
-      removalStatus =
-        "Helios is prepared for removal. The helper is unregistered and Launch at Login is off; you can move Helios.app to Trash."
-      return
-    }
-
-    eraseLocalHeliosData()
-    // Persistent/history services must not get another opportunity to recreate
-    // files after a complete cleanup. The app cannot delete its own bundle, so
-    // terminate cleanly and let the user move Helios.app to Trash.
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { NSApp.terminate(nil) }
-  }
-
-  private func eraseLocalHeliosData() {
-    let fileManager = FileManager.default
-    let base =
-      fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-      ?? fileManager.homeDirectoryForCurrentUser.appendingPathComponent(
-        "Library/Application Support", isDirectory: true)
-    let heliosDirectory = base.appendingPathComponent("Helios", isDirectory: true)
-    try? fileManager.removeItem(at: heliosDirectory)
-
-    let domain = Bundle.main.bundleIdentifier ?? HeliosServiceIdentity.appIdentifier
-    UserDefaults.standard.removePersistentDomain(forName: domain)
-    UserDefaults.standard.synchronize()
-  }
-
-  private var about: some View {
-    VStack(spacing: 14) {
-      Spacer()
-      HeliosApplicationIcon(size: 64)
-      Text("Helios").font(.system(size: 28, weight: .semibold))
-      Text("Native macOS system monitoring and fan control").foregroundStyle(.secondary)
-      Text("Created by Jakub Šnejda").font(.system(size: 13, weight: .medium))
-      Text(versionText).font(.system(size: 11)).foregroundStyle(.tertiary)
-      Button(updateChecker.isChecking ? "Checking for Updates…" : "Check for Updates…") {
-        HeliosUpdatePresenter.shared.check(manual: true)
-      }
-      .disabled(updateChecker.isChecking)
-
-      HStack {
-        Button("snejda.cz") { open("https://www.snejda.cz") }
-        Button("GitHub") { open("https://github.com/Snejdik/helios") }
-        Button("Report Issue") { open("https://github.com/Snejdik/helios/issues") }
-        Button("Contact") { open("mailto:helios@snejda.cz") }
-      }
-
-      VStack(spacing: 8) {
-        Label("Support Helios", systemImage: "cup.and.saucer")
-          .font(.system(size: 13, weight: .semibold))
-        Text(
-          "Helios is independently developed and free to use. If you find it useful and want to support continued development, you can buy me a coffee."
-        )
-        .font(.system(size: 11))
-        .foregroundStyle(.secondary)
-        .multilineTextAlignment(.center)
-        .frame(maxWidth: 420)
-        Button("Buy Me a Coffee") { open("https://buymeacoffee.com/snejda") }
-          .buttonStyle(.borderedProminent)
-      }
-      .padding(14)
-      .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
-
-      Text("Battery telemetry is read-only. Fan control is isolated in the privileged helper.")
-        .font(.system(size: 10)).foregroundStyle(.tertiary)
-      Spacer()
-    }
-    .frame(maxWidth: .infinity, minHeight: 390)
-  }
-
-  private var versionText: String {
-    HeliosReleaseVersion.aboutText(
-      tag: Bundle.main.object(forInfoDictionaryKey: "HeliosReleaseTag") as? String,
-      version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
-      build: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String)
-  }
-
-  private func open(_ value: String) {
-    guard let url = URL(string: value) else { return }
-    NSWorkspace.shared.open(url)
-  }
-}
-
-private struct HeliosMenuBarPreview: View {
-  @ObservedObject var preferences: HeliosPreferences
-
-  private var metrics: [HeliosMenuBarMetric] {
-    preferences.menuBarMetricsForPresentation
-  }
-
-  private var previewGap: CGFloat {
-    max(0, min(4, CGFloat(preferences.menuBarSpacing) * 0.45))
-  }
-
-  var body: some View {
-    HStack(spacing: preferences.menuBarLayout == .compactGroup ? previewGap : 1) {
-      if preferences.menuBarLayout == .nativeModules,
-        preferences.showMenuBarHub || metrics.isEmpty
-      {
-        HeliosBrandMark(size: 16, colored: false)
-          .frame(width: 24, height: 28)
-          .background(Color.secondary.opacity(0.10), in: Capsule())
-      }
-      if metrics.isEmpty, !preferences.showMenuBarHub {
-        Text("No menu-bar modules").font(.system(size: 10)).foregroundStyle(.secondary)
-      } else {
-        ForEach(metrics) { metric in
-          previewMetric(metric)
-            .fixedSize(horizontal: true, vertical: false)
-            .frame(
-              minWidth: max(
-                24,
-                CGFloat(metric.statusWidth)
-                  + CGFloat(preferences.menuBarSpacing) * 0.55 - 4),
-              minHeight: 28
-            )
-            .background(
-              preferences.menuBarLayout == .nativeModules
-                ? Color.secondary.opacity(0.08) : Color.clear,
-              in: Capsule())
-        }
-      }
-    }
-    .padding(.horizontal, 9).padding(.vertical, 5)
-    .foregroundStyle(.primary)
-    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 8, style: .continuous)
-        .strokeBorder(Color.secondary.opacity(0.18), lineWidth: 0.5)
-    )
-    .accessibilityLabel("Menu bar preview")
-  }
-
-  @ViewBuilder
-  private func previewMetric(_ metric: HeliosMenuBarMetric) -> some View {
-    let content = preferences.menuBarContent(for: metric)
-    if metric == .cooling {
-      HStack(spacing: 3) {
-        previewIdentity(metric, content: content)
-        if content.showValue {
-          VStack(spacing: -1) {
-            Text("48°C").font(.system(size: 9.5, weight: .semibold).monospacedDigit())
-            Text("Fan off").font(.system(size: 7.5, weight: .medium).monospacedDigit())
-          }
-        }
-      }
-    } else if content.showValue && (content.showIcon || content.showLabel) {
-      VStack(spacing: -1) {
-        previewIdentity(metric, content: content)
-        Text(sample(metric)).font(.system(size: 9.5, weight: .semibold).monospacedDigit())
-      }
-    } else if content.showValue {
-      Text(sample(metric)).font(.system(size: 9.5, weight: .semibold).monospacedDigit())
-    } else {
-      previewIdentity(metric, content: content)
-    }
-  }
-
-  @ViewBuilder
-  private func previewIdentity(_ metric: HeliosMenuBarMetric, content: HeliosMenuBarContent)
-    -> some View
-  {
-    HStack(spacing: 2) {
-      if content.showIcon {
-        Image(systemName: metric.symbolName).font(.system(size: 8.2, weight: .medium))
-      }
-      if content.showLabel {
-        Text(preferences.label(for: metric)).font(.system(size: 7.5, weight: .medium))
-      }
-    }
-  }
-
-  private func sample(_ metric: HeliosMenuBarMetric) -> String {
-    switch metric {
-    case .cpu: "8%"
-    case .memory: "58%"
-    case .gpu: "22%"
-    case .temperature: "48°"
-    case .cooling: "48°C"
-    case .fan: "Off"
-    case .battery: "92%"
-    case .power: "5W"
-    case .network: "650K"
-    }
-  }
-}
-
-struct HeliosLaunchAtLoginView: View {
-  let enabled: Bool
-  let requiresApproval: Bool
-  let busy: Bool
-  let message: String?
-  let setEnabled: (Bool) -> Void
-  let openSettings: () -> Void
-
-  var body: some View {
-    Toggle("Launch Helios at Login", isOn: Binding(get: { enabled }, set: { setEnabled($0) }))
-      .disabled(busy || requiresApproval)
-    Text(busy ? "Updating login setting…" : requiresApproval
-      ? "Waiting for approval in System Settings. Helios is not enabled at login yet."
-      : enabled ? "Helios will open when you sign in." : "Helios will not open automatically at login.")
-      .foregroundStyle(.secondary)
-    Text("Starts the Helios app after macOS login. This is separate from the optional privileged fan helper.")
-      .font(.system(size: 10)).foregroundStyle(.secondary)
-    if requiresApproval {
-      Button("Open Login Items Settings", action: openSettings)
-      Button("Cancel Login Registration") { setEnabled(false) }.disabled(busy)
-    }
-    if let message { Text(message).foregroundStyle(.secondary) }
-  }
-}
-
-/// Capture the route for this presentation: saving a choice must not change its Back path.
-@MainActor
-struct HeliosOnboardingFlow {
-  enum Page: String, CaseIterable { case interface, diagnostics, support }
-  private(set) var page: Page
-  let asksForDiagnostics: Bool
-
-  init(consent: DiagnosticsConsentState, initialPage: Page = .interface) {
-    asksForDiagnostics = consent == .notDecided
-    page = initialPage
-  }
-
-  mutating func back() {
-    page = page == .support && asksForDiagnostics ? .diagnostics : .interface
-  }
-
-  mutating func advance(diagnostics: DiagnosticsController, shareDiagnostics: Bool) -> Bool {
-    switch page {
-    case .interface:
-      page = asksForDiagnostics ? .diagnostics : .support
-    case .diagnostics:
-      diagnostics.setAutomaticEnabled(shareDiagnostics)
-      page = .support
-    case .support:
-      return true
-    }
-    return false
-  }
-}
-
-struct HeliosOnboardingView: View {
-  typealias Page = HeliosOnboardingFlow.Page
-
-  @ObservedObject var preferences: HeliosPreferences
-  @ObservedObject var diagnostics: DiagnosticsController
-  let onFinish: () -> Void
-  @State private var selection: HeliosDashboardMode = .advanced
-  @State private var flow: HeliosOnboardingFlow
-  @State private var shareDiagnostics = false
-  @State private var previewPayload: FrozenDiagnosticsPayload?
-  @State private var showingPreview = false
-  @State private var previewError: String?
-
-  init(
-    preferences: HeliosPreferences, diagnostics: DiagnosticsController,
-    initialPage: Page = .interface, onFinish: @escaping () -> Void
-  ) {
-    self.preferences = preferences
-    self.diagnostics = diagnostics
-    self.onFinish = onFinish
-    _flow = State(initialValue: HeliosOnboardingFlow(
-      consent: diagnostics.preferences.consent, initialPage: initialPage))
-  }
-
-  var body: some View {
-    VStack(spacing: 0) {
-      ScrollView {
-        Group {
-          switch flow.page {
-          case .interface: interfacePage
-          case .diagnostics: diagnosticsPage
-          case .support: supportPage
-          }
-        }
-        .frame(maxWidth: .infinity)
-      }
-      .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-      Divider()
-      HStack {
-        if flow.page == .interface {
-          Text("You can customize the menu bar and dashboard independently at any time.")
-            .font(.system(size: 10)).foregroundStyle(.secondary)
-        } else {
-          Button("Back") { flow.back() }
-          Text(flow.page == .diagnostics
-            ? "Diagnostics can be changed later in Privacy & Diagnostics."
-            : "Support is completely optional.")
-            .font(.system(size: 10)).foregroundStyle(.secondary)
-        }
-        Spacer()
-        Button(flow.page == .support ? "Finish Setup" : "Continue", action: continueAction)
-          .keyboardShortcut(.defaultAction)
-      }
-      .padding(18)
-    }
-    .frame(minWidth: 600, idealWidth: 720, minHeight: 440, idealHeight: 560)
-    .background(.regularMaterial)
-    .onAppear { shareDiagnostics = diagnostics.preferences.automaticEnabled }
-    .sheet(isPresented: $showingPreview) {
-      if let previewPayload {
-        DiagnosticsPayloadView(
-          title: "Beta diagnostics preview",
-          explanation: "This local preview shows the exact automatic diagnostics body. It is not sent from this screen.",
-          payload: previewPayload)
-      }
-    }
-  }
-
-  private var interfacePage: some View {
-    VStack(spacing: 0) {
-      VStack(spacing: 8) {
-        HeliosApplicationIcon(size: 54)
-        Text("Welcome to Helios").font(.system(size: 26, weight: .semibold))
-        Text(
-          "Choose a starting point. Nothing is locked in — every module can be changed later in Settings."
-        )
-        .font(.system(size: 12))
-        .foregroundStyle(.secondary)
-        .multilineTextAlignment(.center)
-        .frame(maxWidth: 520)
-      }
-      .padding(.top, 28)
-      .padding(.bottom, 22)
-
-      LazyVGrid(
-        columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)],
-        spacing: 12
-      ) {
-        ForEach(HeliosDashboardMode.allCases) { mode in onboardingCard(mode) }
-      }
-      .padding(.horizontal, 24)
-
-      HStack(alignment: .center) {
-        Label("Battery stays macOS-managed", systemImage: "battery.100percent")
-        Text("·").foregroundStyle(.tertiary)
-        Label("System fan mode is the safe default", systemImage: "checkmark.shield")
-      }
-      .font(.system(size: 10))
-      .foregroundStyle(.secondary)
-      .padding(.vertical, 16)
-    }
-  }
-
-  private var diagnosticsPage: some View {
-    VStack(spacing: 22) {
-      HeliosApplicationIcon(size: 54)
-      Text("Help improve Helios Beta").font(.system(size: 26, weight: .semibold))
-      Text(
-        "Helios is being tested across different Apple Silicon Macs. You can optionally share privacy-preserving technical diagnostics to help improve hardware compatibility and stability. No diagnostic information is sent unless you enable this option."
-      )
-      .font(.system(size: 13))
-      .foregroundStyle(.secondary)
-      .multilineTextAlignment(.center)
-      .frame(maxWidth: 520)
-
-      VStack(alignment: .leading, spacing: 12) {
-        Toggle("Share beta diagnostics", isOn: $shareDiagnostics)
-          .toggleStyle(.checkbox)
-          .font(.system(size: 13, weight: .medium))
-        Button("View exactly what is shared", action: showAutomaticPreview)
-          .buttonStyle(.link)
-        if let previewError {
-          Text(previewError).font(.system(size: 10)).foregroundStyle(.secondary)
-        }
-      }
-      .padding(18)
-      .frame(width: 440, alignment: .leading)
-      .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 13))
-
-      Text("The checkbox is off by default. Your choice does not affect any Helios feature.")
-        .font(.system(size: 10)).foregroundStyle(.secondary)
-    }
-    .padding(24)
-  }
-
-  private var supportPage: some View {
-    VStack(spacing: 22) {
-      HeliosApplicationIcon(size: 54)
-      Text("Support Helios").font(.system(size: 26, weight: .semibold))
-      Text("I develop Helios independently alongside my university studies. Your support helps fund development time, testing hardware, and continued improvements to the app.")
-        .font(.system(size: 13))
-        .foregroundStyle(.secondary)
-        .multilineTextAlignment(.center)
-        .frame(maxWidth: 520)
-      Button("Support Helios") {
-        guard let url = URL(string: "https://buymeacoffee.com/snejda") else { return }
-        NSWorkspace.shared.open(url)
-      }
-      .buttonStyle(.borderedProminent)
-      Text("Completely optional. Helios remains fully usable without supporting.")
-        .font(.system(size: 10))
-        .foregroundStyle(.secondary)
-        .multilineTextAlignment(.center)
-    }
-    .padding(28)
-  }
-
-  private func continueAction() {
-    guard flow.advance(diagnostics: diagnostics, shareDiagnostics: shareDiagnostics) else { return }
-    preferences.completeOnboarding(with: selection)
-    onFinish()
-  }
-
-  private func showAutomaticPreview() {
-    do {
-      previewPayload = try diagnostics.makeHealthPayload(
-        type: .automaticHealth, reason: .initialOptIn)
-      previewError = nil
-      showingPreview = true
-    } catch {
-      previewError = "A safe diagnostics preview is not available yet. Nothing was sent."
-    }
-  }
-
-  private func onboardingCard(_ mode: HeliosDashboardMode) -> some View {
-    Button {
-      selection = mode
-    } label: {
-      VStack(alignment: .leading, spacing: 10) {
-        HStack {
-          Image(systemName: onboardingSymbol(mode))
-            .font(.system(size: 19, weight: .semibold))
-          Spacer()
-          Image(systemName: selection == mode ? "checkmark.circle.fill" : "circle")
-            .foregroundStyle(selection == mode ? Color.accentColor : Color.secondary)
-        }
-        HStack(spacing: 6) {
-          Text(mode.onboardingTitle).font(.system(size: 13, weight: .semibold))
-          if mode == .advanced {
-            Text("Best default")
-              .font(.system(size: 8.5, weight: .semibold))
-              .foregroundStyle(.green)
-              .padding(.horizontal, 6).padding(.vertical, 2)
-              .background(Color.green.opacity(0.10), in: Capsule())
-          }
-        }
-        Text(mode.onboardingDetail)
-          .font(.system(size: 10))
-          .foregroundStyle(.secondary)
-          .fixedSize(horizontal: false, vertical: true)
-        Text(onboardingModules(mode))
-          .font(.system(size: 9, weight: .medium))
-          .foregroundStyle(.secondary)
-      }
-      .padding(14)
-      .frame(maxWidth: .infinity, minHeight: 118, alignment: .topLeading)
-      .background(
-        selection == mode ? Color.accentColor.opacity(0.10) : Color.primary.opacity(0.035),
-        in: RoundedRectangle(cornerRadius: 13, style: .continuous)
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 13, style: .continuous)
-          .strokeBorder(
-            selection == mode ? Color.accentColor.opacity(0.65) : Color.secondary.opacity(0.18),
-            lineWidth: selection == mode ? 1.25 : 0.7)
-      )
-    }
-    .buttonStyle(.plain)
-  }
-
-  private func onboardingSymbol(_ mode: HeliosDashboardMode) -> String {
-    switch mode {
-    case .simple: "leaf"
-    case .advanced: "gauge.with.dots.needle.50percent"
-    case .all: "slider.horizontal.3"
-    case .custom: "square.grid.2x2"
-    }
-  }
-
-  private func onboardingModules(_ mode: HeliosDashboardMode) -> String {
-    switch mode {
-    case .simple:
-      "Menu bar: CPU + Temperature\nDashboard: Summary + Cooling\nFull Monitor: essentials"
-    case .advanced:
-      "Menu bar: CPU + Memory + Temperature\nDashboard: performance + network context\nFull Monitor: daily-use modules"
-    case .all:
-      "Menu bar: CPU + Memory + Temperature + Power\nDashboard: richer monitoring\nFull Monitor: every module + Expert"
-    case .custom:
-      "Start rich, then choose each menu-bar item, label/icon/value, dashboard module and Full Monitor section yourself"
-    }
-  }
 }

@@ -3,31 +3,73 @@ import IOKit.ps
 import OSLog
 
 struct TelemetrySnapshot: Sendable {
-  var cpu = MetricSample<CPUMetrics>(.failure(.warmingUp))
-  var memory = MetricSample<MemoryMetrics>(.failure(.unavailable("Memory readings pending")))
-  var gpu = MetricSample<GPUMetrics>(.failure(.unavailable("GPU readings pending")))
-  var systemPower = MetricSample<SystemPowerMetrics>(
-    .failure(.unavailable("System power readings pending")))
-  var system = MetricSample<SystemMetrics>(.failure(.unavailable("System readings pending")))
-  var network = MetricSample<NetworkMetrics>(.failure(.unavailable("Network readings pending")))
-  var wifi = MetricSample<WiFiMetrics>(.failure(.unavailable("Wi-Fi readings pending")))
-  var processes = MetricSample<ProcessMetrics>(.failure(.unavailable("Process readings pending")))
-  var battery = MetricSample<BatteryMetrics>(.failure(.unavailable("Battery readings pending")))
-  var storage = MetricSample<StorageMetrics>(.failure(.unavailable("Storage readings pending")))
-  var thermals = MetricSample<ThermalMetrics>(.failure(.unavailable("Thermal readings pending")))
-  var fans = MetricSample<FanInventory>(.failure(.unavailable("Fan readings pending")))
-  var fanOwnershipPreflight = MetricSample<FanOwnershipPreflightSnapshot>(
-    .failure(.unavailable("Fan ownership preflight pending")))
-  var displays = MetricSample<DisplayMetrics>(.failure(.unavailable("Display inventory pending")))
-  var volumes = MetricSample<VolumeMetrics>(
-    .failure(.unavailable("Mounted volume inventory pending")))
-  var usb = MetricSample<USBMetrics>(.failure(.unavailable("USB inventory pending")))
-  var bluetooth = MetricSample<BluetoothMetrics>(
-    .failure(.unavailable("Bluetooth inventory pending")))
-  var audio = MetricSample<AudioMetrics>(.failure(.unavailable("Audio inventory pending")))
-  var powerAssertions = MetricSample<PowerAssertionsMetrics>(
-    .failure(.unavailable("Power assertions pending")))
-  var clock = MetricSample<ClockMetrics>(.failure(.unavailable("Clock metadata pending")))
+  /// Lifecycle context for presentation/alerts; never a fan-control input.
+  var isSuspended = false
+  var cpu: MetricSample<CPUMetrics>
+  var memory: MetricSample<MemoryMetrics>
+  var gpu: MetricSample<GPUMetrics>
+  var systemPower: MetricSample<SystemPowerMetrics>
+  var system: MetricSample<SystemMetrics>
+  var network: MetricSample<NetworkMetrics>
+  var wifi: MetricSample<WiFiMetrics>
+  var processes: MetricSample<ProcessMetrics>
+  var battery: MetricSample<BatteryMetrics>
+  var storage: MetricSample<StorageMetrics>
+  var thermals: MetricSample<ThermalMetrics>
+  var fans: MetricSample<FanInventory>
+  var fanOwnershipPreflight: MetricSample<FanOwnershipPreflightSnapshot>
+  var displays: MetricSample<DisplayMetrics>
+  var volumes: MetricSample<VolumeMetrics>
+  var usb: MetricSample<USBMetrics>
+  var bluetooth: MetricSample<BluetoothMetrics>
+  var audio: MetricSample<AudioMetrics>
+  var powerAssertions: MetricSample<PowerAssertionsMetrics>
+  var clock: MetricSample<ClockMetrics>
+
+  /// Explicit clocks permit pure deterministic fixtures. Runtime callers retain
+  /// the current wall/host clocks and the existing pending failure semantics.
+  init(capturedAt: Date = Date(), capturedTicks: UInt64 = HostClock.now) {
+    cpu = MetricSample(.failure(.warmingUp),
+      capturedAt: capturedAt, capturedTicks: capturedTicks)
+    memory = MetricSample(.failure(.unavailable("Memory readings pending")),
+      capturedAt: capturedAt, capturedTicks: capturedTicks)
+    gpu = MetricSample(.failure(.unavailable("GPU readings pending")),
+      capturedAt: capturedAt, capturedTicks: capturedTicks)
+    systemPower = MetricSample(.failure(.unavailable("System power readings pending")),
+      capturedAt: capturedAt, capturedTicks: capturedTicks)
+    system = MetricSample(.failure(.unavailable("System readings pending")),
+      capturedAt: capturedAt, capturedTicks: capturedTicks)
+    network = MetricSample(.failure(.unavailable("Network readings pending")),
+      capturedAt: capturedAt, capturedTicks: capturedTicks)
+    wifi = MetricSample(.failure(.unavailable("Wi-Fi readings pending")),
+      capturedAt: capturedAt, capturedTicks: capturedTicks)
+    processes = MetricSample(.failure(.unavailable("Process readings pending")),
+      capturedAt: capturedAt, capturedTicks: capturedTicks)
+    battery = MetricSample(.failure(.unavailable("Battery readings pending")),
+      capturedAt: capturedAt, capturedTicks: capturedTicks)
+    storage = MetricSample(.failure(.unavailable("Storage readings pending")),
+      capturedAt: capturedAt, capturedTicks: capturedTicks)
+    thermals = MetricSample(.failure(.unavailable("Thermal readings pending")),
+      capturedAt: capturedAt, capturedTicks: capturedTicks)
+    fans = MetricSample(.failure(.unavailable("Fan readings pending")),
+      capturedAt: capturedAt, capturedTicks: capturedTicks)
+    fanOwnershipPreflight = MetricSample(.failure(.unavailable("Fan ownership preflight pending")),
+      capturedAt: capturedAt, capturedTicks: capturedTicks)
+    displays = MetricSample(.failure(.unavailable("Display inventory pending")),
+      capturedAt: capturedAt, capturedTicks: capturedTicks)
+    volumes = MetricSample(.failure(.unavailable("Mounted volume inventory pending")),
+      capturedAt: capturedAt, capturedTicks: capturedTicks)
+    usb = MetricSample(.failure(.unavailable("USB inventory pending")),
+      capturedAt: capturedAt, capturedTicks: capturedTicks)
+    bluetooth = MetricSample(.failure(.unavailable("Bluetooth inventory pending")),
+      capturedAt: capturedAt, capturedTicks: capturedTicks)
+    audio = MetricSample(.failure(.unavailable("Audio inventory pending")),
+      capturedAt: capturedAt, capturedTicks: capturedTicks)
+    powerAssertions = MetricSample(.failure(.unavailable("Power assertions pending")),
+      capturedAt: capturedAt, capturedTicks: capturedTicks)
+    clock = MetricSample(.failure(.unavailable("Clock metadata pending")),
+      capturedAt: capturedAt, capturedTicks: capturedTicks)
+  }
 }
 
 @MainActor
@@ -57,6 +99,20 @@ final class TelemetryMonitor: NSObject {
   private var loggedFailures: [String: String] = [:]
   private var tasks: [Task<Void, Never>] = []
   private var batteryRefresh: Task<Void, Never>?
+  private var rawRefreshRequested = false
+  private(set) var detailDemand: TelemetryDetailDemand = []
+  private var detailWaiters: [UUID: (demand: TelemetryDetailDemand, task: Task<Void, Never>)] = [:]
+
+  func setDetailDemand(_ demand: TelemetryDetailDemand) {
+    let newlyVisible = demand.subtracting(detailDemand)
+    detailDemand = demand
+    if newlyVisible.contains(.rawSensors) { rawRefreshRequested = true }
+    // Wake existing collectors, rather than creating a competing refresh task.
+    // If a collector is already reading, its imminent result is the refresh.
+    for waiter in detailWaiters.values where !waiter.demand.intersection(newlyVisible).isEmpty {
+      waiter.task.cancel()
+    }
+  }
   private var powerSource: CFRunLoopSource?
   private(set) var snapshot = TelemetrySnapshot()
   var onChange: ((TelemetrySnapshot) -> Void)?
@@ -90,6 +146,7 @@ final class TelemetryMonitor: NSObject {
 
   func start() {
     guard tasks.isEmpty else { return }
+    snapshot.isSuspended = false
     // Independent actors/tasks isolate driver calls from other providers and UI.
     tasks = [
       loop(
@@ -108,7 +165,7 @@ final class TelemetryMonitor: NSObject {
           self?.snapshot.memory = sample
           self?.log(sample.result, module: "Memory")
           if case .success(let value) = sample.result {
-            self?.log(value.pressure, module: "Memory pressure")
+            self?.log(value.pressure, module: "Memory pressure", field: true)
           }
         }),
       loop(
@@ -119,7 +176,7 @@ final class TelemetryMonitor: NSObject {
           self?.snapshot.gpu = sample
           self?.log(sample.result, module: "GPU")
           if case .success(let value) = sample.result {
-            self?.log(value.deviceUtilizationPercent, module: "GPU utilization")
+            self?.log(value.deviceUtilizationPercent, module: "GPU utilization", field: true)
           }
         }),
       loop(
@@ -145,7 +202,7 @@ final class TelemetryMonitor: NSObject {
           self?.snapshot.network = sample
           self?.log(sample.result, module: "Network")
           if case .success(let value) = sample.result {
-            self?.log(value.throughput, module: "Network throughput")
+            self?.log(value.throughput, module: "Network throughput", field: true)
           }
         }),
       loop(
@@ -158,6 +215,7 @@ final class TelemetryMonitor: NSObject {
         }),
       loop(
         interval: .seconds(5), prepare: { [processes] in await processes.reset() },
+        detailGroup: .processes, backgroundInterval: TelemetryDetailPolicy.backgroundProcessInterval,
         enabled: { [telemetryEnabled] in telemetryEnabled(.processes) },
         read: { [processes] in await processes.sample() },
         apply: { [weak self] sample in
@@ -179,8 +237,8 @@ final class TelemetryMonitor: NSObject {
           self?.snapshot.storage = sample
           self?.log(sample.result, module: "Storage")
           if case .success(let value) = sample.result {
-            self?.log(value.rootVolume, module: "Storage root volume")
-            self?.log(value.throughput, module: "Storage throughput")
+            self?.log(value.rootVolume, module: "Storage root volume", field: true)
+            self?.log(value.throughput, module: "Storage throughput", field: true)
           }
         }),
       loop(
@@ -203,21 +261,27 @@ final class TelemetryMonitor: NSObject {
       loop(
         interval: .seconds(2), prepare: { [thermals] in await thermals.reset() },
         dynamicInterval: { [weak self] in self?.thermalInterval ?? .seconds(2) },
-        read: { [thermals] in await thermals.sample() },
+        read: { [weak self, thermals] in
+          let visible = self?.detailDemand.contains(.rawSensors) ?? false
+          let forceRefresh = self?.rawRefreshRequested ?? false
+          self?.rawRefreshRequested = false
+          return await thermals.sample(rawDetailsVisible: visible, forceRawRefresh: forceRefresh)
+        },
         apply: { [weak self] sample in
           self?.snapshot.thermals = sample
           self?.onThermalSample?(sample)
           self?.log(sample.result, module: "Thermals")
           if case .success(let value) = sample.result {
-            self?.log(value.maximumSoCCelsius, module: "SoC temperature")
+            self?.log(value.maximumSoCCelsius, module: "SoC temperature", field: true)
             let details = value.failures.keys.sorted().map {
               "\($0): \(value.failures[$0]?.localizedDescription ?? "Unavailable")"
             }.joined(separator: "; ")
-            self?.logFailure(details, module: "Individual sensors")
+            self?.logFailure(details, module: "Individual sensors", field: true)
           }
         }),
       loop(
         interval: .seconds(30),
+        detailGroup: .devices, backgroundInterval: TelemetryDetailPolicy.backgroundDeviceInterval,
         enabled: { [telemetryEnabled] in telemetryEnabled(.devices) },
         read: { [displays] in await displays.sample() },
         apply: { [weak self] sample in
@@ -226,6 +290,7 @@ final class TelemetryMonitor: NSObject {
         }),
       loop(
         interval: .seconds(30),
+        detailGroup: .devices, backgroundInterval: TelemetryDetailPolicy.backgroundDeviceInterval,
         enabled: { [telemetryEnabled] in telemetryEnabled(.devices) },
         read: { [volumes] in await volumes.sample() },
         apply: { [weak self] sample in
@@ -234,6 +299,7 @@ final class TelemetryMonitor: NSObject {
         }),
       loop(
         interval: .seconds(60),
+        detailGroup: .devices, backgroundInterval: TelemetryDetailPolicy.backgroundDeviceInterval,
         enabled: { [telemetryEnabled] in telemetryEnabled(.devices) },
         read: { [usb] in await usb.sample() },
         apply: { [weak self] sample in
@@ -242,6 +308,7 @@ final class TelemetryMonitor: NSObject {
         }),
       loop(
         interval: .seconds(60),
+        detailGroup: .devices, backgroundInterval: TelemetryDetailPolicy.backgroundDeviceInterval,
         enabled: { [telemetryEnabled] in telemetryEnabled(.devices) },
         read: { [bluetooth] in await bluetooth.sample() },
         apply: { [weak self] sample in
@@ -250,6 +317,7 @@ final class TelemetryMonitor: NSObject {
         }),
       loop(
         interval: .seconds(30),
+        detailGroup: .devices, backgroundInterval: TelemetryDetailPolicy.backgroundDeviceInterval,
         enabled: { [telemetryEnabled] in telemetryEnabled(.devices) },
         read: { [audio] in await audio.sample() },
         apply: { [weak self] sample in
@@ -258,6 +326,7 @@ final class TelemetryMonitor: NSObject {
         }),
       loop(
         interval: .seconds(15),
+        detailGroup: .devices, backgroundInterval: TelemetryDetailPolicy.backgroundDeviceInterval,
         enabled: { [telemetryEnabled] in telemetryEnabled(.devices) },
         read: { [powerAssertions] in await powerAssertions.sample() },
         apply: { [weak self] sample in
@@ -266,6 +335,7 @@ final class TelemetryMonitor: NSObject {
         }),
       loop(
         interval: .seconds(60),
+        detailGroup: .devices, backgroundInterval: TelemetryDetailPolicy.backgroundDeviceInterval,
         enabled: { [telemetryEnabled] in telemetryEnabled(.devices) },
         read: { [clock] in await clock.sample() },
         apply: { [weak self] sample in
@@ -302,8 +372,10 @@ final class TelemetryMonitor: NSObject {
     interval: Duration,
     prepare: @escaping @Sendable () async -> Void = {},
     dynamicInterval: (@MainActor () -> Duration)? = nil,
+    detailGroup: TelemetryDetailDemand = [],
+    backgroundInterval: Duration? = nil,
     enabled: @escaping @MainActor () -> Bool = { true },
-    read: @escaping @Sendable () async -> MetricSample<Value>,
+    read: @escaping @MainActor () async -> MetricSample<Value>,
     apply: @escaping @MainActor (MetricSample<Value>) -> Void
   ) -> Task<Void, Never> {
     Task {
@@ -318,16 +390,33 @@ final class TelemetryMonitor: NSObject {
         }
         if !wasEnabled {
           await prepare()
+          guard !Task.isCancelled else { return }
           wasEnabled = true
         }
         let sample = await read()
         guard !Task.isCancelled else { return }
         apply(sample)
-        let delay = dynamicInterval?() ?? interval
-        do {
-          try await Task.sleep(
-            for: delay, tolerance: delay < .seconds(1) ? .milliseconds(25) : .milliseconds(100))
-        } catch { return }
+        let delay = dynamicInterval?() ?? TelemetryDetailPolicy.interval(
+          visible: detailGroup.isEmpty || detailDemand.contains(detailGroup),
+          foreground: interval, background: backgroundInterval ?? interval)
+        if detailGroup.isEmpty {
+          do {
+            try await Task.sleep(
+              for: delay, tolerance: delay < .seconds(1) ? .milliseconds(25) : .milliseconds(100))
+          } catch { return }
+        } else {
+          let id = UUID()
+          let waiter = Task<Void, Never> {
+            do { try await Task.sleep(for: delay, tolerance: .milliseconds(100)) } catch {}
+          }
+          detailWaiters[id] = (detailGroup, waiter)
+          await withTaskCancellationHandler {
+            await waiter.value
+          } onCancel: {
+            waiter.cancel()
+          }
+          detailWaiters.removeValue(forKey: id)
+        }
       }
     }
   }
@@ -337,12 +426,15 @@ final class TelemetryMonitor: NSObject {
       task.cancel()
     }
     tasks.removeAll()
+    for waiter in detailWaiters.values { waiter.task.cancel() }
+    detailWaiters.removeAll()
     batteryRefresh?.cancel()
     batteryRefresh = nil
   }
 
   @objc private func willSleep() {
     stop()
+    snapshot.isSuspended = true
     let paused = TelemetryError.unavailable("Paused during sleep")
     snapshot.cpu = MetricSample(.failure(paused))
     snapshot.memory = MetricSample(.failure(paused))
@@ -393,39 +485,45 @@ final class TelemetryMonitor: NSObject {
     snapshot.battery = sample
     log(sample.result, module: "Battery")
     if case .success(let value) = sample.result {
-      log(value.designCapacityMAh, module: "Battery design capacity")
-      log(value.maximumCapacityMAh, module: "Battery full charge capacity")
-      log(value.currentCapacityMAh, module: "Battery current capacity")
-      log(value.systemChargePercent, module: "Battery system state of charge")
-      log(value.cycleCount, module: "Battery cycles")
-      log(value.temperatureCelsius, module: "Battery temperature")
-      log(value.power, module: "Battery power")
-      log(value.voltageVolts, module: "Battery voltage")
-      log(value.currentAmps, module: "Battery current")
-      log(value.adapterVoltageVolts, module: "Battery adapter voltage")
-      log(value.chargingCurrentAmps, module: "Battery charging current")
-      log(value.chargingVoltageVolts, module: "Battery charging voltage")
-      log(value.cellVoltagesVolts, module: "Battery cell voltages")
-      log(value.notChargingReasonRaw, module: "Battery not-charging reason")
-      log(value.timeRemaining, module: "Battery time remaining")
+      log(value.designCapacityMAh, module: "Battery design capacity", field: true)
+      log(value.maximumCapacityMAh, module: "Battery full charge capacity", field: true)
+      log(value.currentCapacityMAh, module: "Battery current capacity", field: true)
+      log(value.systemChargePercent, module: "Battery system state of charge", field: true)
+      log(value.cycleCount, module: "Battery cycles", field: true)
+      log(value.temperatureCelsius, module: "Battery temperature", field: true)
+      log(value.power, module: "Battery power", field: true)
+      log(value.voltageVolts, module: "Battery voltage", field: true)
+      log(value.currentAmps, module: "Battery current", field: true)
+      log(value.adapterVoltageVolts, module: "Battery adapter voltage", field: true)
+      log(value.chargingCurrentAmps, module: "Battery charging current", field: true)
+      log(value.chargingVoltageVolts, module: "Battery charging voltage", field: true)
+      log(value.cellVoltagesVolts, module: "Battery cell voltages", field: true)
+      log(value.notChargingReasonRaw, module: "Battery not-charging reason", field: true)
+      log(value.timeRemaining, module: "Battery time remaining", field: true)
     }
   }
 
   private func publish() { onChange?(snapshot) }
 
-  private func log<Value>(_ result: MetricResult<Value>, module: String) {
+  /// `field` marks a nested reading inside an otherwise working provider. Many
+  /// Macs legitimately lack some fields (battery temperature, raw sensors), so
+  /// those are notices; whole-provider failures stay errors.
+  private func log<Value>(_ result: MetricResult<Value>, module: String, field: Bool = false) {
     if case .failure(let error) = result, error != .warmingUp {
-      logFailure(error.localizedDescription, module: module)
+      logFailure(error.localizedDescription, module: module, field: field)
     } else {
-      logFailure("", module: module)
+      logFailure("", module: module, field: field)
     }
   }
 
-  private func logFailure(_ message: String, module: String) {
+  private func logFailure(_ message: String, module: String, field: Bool = false) {
     guard loggedFailures[module] != message else { return }
     loggedFailures[module] = message
-    if !message.isEmpty {
-      logger.error("\(module, privacy: .public): \(message, privacy: .public)")
+    guard !message.isEmpty else { return }
+    if field {
+      logger.notice("\(module, privacy: .public): \(message, privacy: .private)")
+    } else {
+      logger.error("\(module, privacy: .public): \(message, privacy: .private)")
     }
   }
 }

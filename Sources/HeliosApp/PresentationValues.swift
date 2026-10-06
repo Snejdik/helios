@@ -22,11 +22,87 @@ struct ThermalGroupSummary: Sendable {
   let maximum: Double
 
   static func summarize(_ metrics: ThermalMetrics, group: ThermalGroup) throws -> Self {
-    let values = metrics.readings.filter { $0.group == group }.map(\.celsius)
-    guard group != .unclassified, let maximum = values.max(), !values.isEmpty else {
+    guard group != .unclassified else {
       throw TelemetryError.unavailable("No temperature readings available for this sensor group")
     }
-    return Self(average: values.reduce(0, +) / Double(values.count), maximum: maximum)
+    var count = 0
+    var total = 0.0
+    var maximum = -Double.infinity
+    for reading in metrics.readings where reading.group == group {
+      guard reading.celsius.isFinite else {
+        throw TelemetryError.invalidData("Non-finite sensor group temperature")
+      }
+      count += 1
+      total += reading.celsius
+      maximum = max(maximum, reading.celsius)
+    }
+    guard count > 0 else {
+      throw TelemetryError.unavailable("No temperature readings available for this sensor group")
+    }
+    guard total.isFinite else {
+      throw TelemetryError.invalidData("Sensor group temperature total is not finite")
+    }
+    return Self(average: total / Double(count), maximum: maximum)
+  }
+}
+
+/// Value-only expert inventory partitioning. Classification labels do not confer
+/// trust; the provider's canonical group remains the source of truth.
+struct ThermalInventoryPresentation: Sendable {
+  struct GroupSummary: Sendable, Identifiable {
+    let group: ThermalGroup
+    let values: ThermalGroupSummary
+    var id: String { group.rawValue }
+  }
+
+  let identified: [ThermalReading]
+  let raw: [ThermalReading]
+  let auxiliary: [ThermalDisplayReading]
+  let unknown: [ThermalDisplayReading]
+  let advisoryFailures: [String: TelemetryError]
+  let summaries: [GroupSummary]
+
+  init(_ metrics: ThermalMetrics) {
+    identified = metrics.readings.filter { $0.group != .unclassified }.sorted { $0.key < $1.key }
+    let raw = metrics.readings.filter { $0.group == .unclassified }.sorted {
+      $0.celsius == $1.celsius ? $0.key < $1.key : $0.celsius > $1.celsius
+    }
+    self.raw = raw
+    let classified = ThermalDisplayClassifier.classify(raw)
+    auxiliary = classified.filter { $0.info.kind == .knownAuxiliary }
+    unknown = classified.filter { $0.info.kind == .unknown }
+    advisoryFailures = metrics.failures.filter { metrics.trustedFailures[$0.key] == nil }
+    summaries = ThermalGroup.allCases.compactMap { group in
+      guard let values = try? ThermalGroupSummary.summarize(metrics, group: group) else { return nil }
+      return GroupSummary(group: group, values: values)
+    }
+  }
+}
+
+/// Derived once when an explicit inventory completes, not on each telemetry redraw.
+struct ApplicationsInventoryPresentation: Sendable {
+  let appleSiliconCount: Int
+  let universalCount: Int
+  let intelCount: Int
+  let largestFirst: [InstalledApplicationMetrics]
+
+  init(_ metrics: ApplicationsMetrics) {
+    var arm = 0, universal = 0, intel = 0
+    for application in metrics.applications {
+      switch application.architecture {
+      case .appleSilicon: arm += 1
+      case .universal: universal += 1
+      case .intel: intel += 1
+      case .unknown: break
+      }
+    }
+    appleSiliconCount = arm
+    universalCount = universal
+    intelCount = intel
+    // Preserve the existing order policy, without converting absent sizes to data.
+    largestFirst = metrics.applications.sorted {
+      ($0.estimatedSizeBytes ?? 0) > ($1.estimatedSizeBytes ?? 0)
+    }
   }
 }
 
@@ -72,7 +148,9 @@ struct OverviewPresentation {
     usb = TelemetryFormatting.fresh(snapshot.usb, maxAge: 150, now: now)
     bluetooth = TelemetryFormatting.fresh(snapshot.bluetooth, maxAge: 150, now: now)
     audio = TelemetryFormatting.fresh(snapshot.audio, maxAge: 90, now: now)
-    powerAssertions = TelemetryFormatting.fresh(snapshot.powerAssertions, maxAge: 45, now: now)
+    // Hidden device detail is sampled every 60 seconds; allow the same 90-second
+    // envelope as other 60-second inventories rather than expiring between polls.
+    powerAssertions = TelemetryFormatting.fresh(snapshot.powerAssertions, maxAge: 90, now: now)
     clock = TelemetryFormatting.fresh(snapshot.clock, maxAge: 150, now: now)
   }
 

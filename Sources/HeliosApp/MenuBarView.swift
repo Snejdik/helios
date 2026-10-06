@@ -1,6 +1,6 @@
 import AppKit
 
-/// Next23 menu-bar renderer. Width changes only when the user changes modules;
+/// Menu-bar renderer. Width changes only when the user changes modules;
 /// live values use fixed per-module geometry and can never jitter the status item.
 @MainActor
 final class MenuBarView: NSView {
@@ -12,17 +12,17 @@ final class MenuBarView: NSView {
       + compactGroupGap(for: defaultModuleSpacing)
   }
   static let valueFont = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
-  private static let secondaryValueFont = NSFont.monospacedDigitSystemFont(
-    ofSize: 9, weight: .medium)
-  private static let compactValueFont = NSFont.monospacedDigitSystemFont(
-    ofSize: 10, weight: .semibold)
   private static let captionFont = NSFont.systemFont(ofSize: 8, weight: .medium)
+  /// "Fan off" / "1556 RPM": the cooling item's dynamic top line, in the caption's place.
+  private static let fanStateFont = NSFont.monospacedDigitSystemFont(ofSize: 8, weight: .medium)
   private static let iconPointSize: CGFloat = 9
   private static let defaultModuleSpacing: CGFloat = 2
 
   private(set) var cpuText = "—"
   private(set) var temperatureText = "—"
   private(set) var coolingFanText = "—"
+  /// "average/hottest" shown under the fan state in the cooling item.
+  private(set) var coolingTemperatureText = "—"
   private var values: [HeliosMenuBarMetric: String] = [:]
   private var metrics: [HeliosMenuBarMetric]
   private var identityStyle: HeliosMenuBarIdentityStyle
@@ -30,8 +30,8 @@ final class MenuBarView: NSView {
   private var contentOptions: [HeliosMenuBarMetric: HeliosMenuBarContent] = [:]
   private var identityLabels: [HeliosMenuBarMetric: String] = [:]
   private var moduleSpacing: CGFloat = MenuBarView.defaultModuleSpacing
-  /// Kept for deterministic presentation fixtures. Next23 deliberately does
-  /// not invert menu-bar telemetry while the popover is open.
+  /// Set by presentation fixtures. The live item deliberately does not invert its
+  /// text while a popover is open.
   var isHighlighted = false { didSet { needsDisplay = true } }
 
   init(
@@ -86,15 +86,10 @@ final class MenuBarView: NSView {
     let padding = modulePadding(for: spacing)
     let identity = identityWidth(label: label, content: content)
 
-    if metric == .cooling {
-      guard content.showValue else { return max(16, ceil(identity) + padding * 2) }
-      let temperature = textWidth("100°C", font: compactValueFont)
-      let fan = textWidth("6550 RPM", font: secondaryValueFont)
-      let values = max(temperature, fan)
-      let identityGap: CGFloat = identity > 0 ? 2 : 0
-      return max(28, ceil(identity + identityGap + values + padding * 2))
+    if metric == .cooling, content.showValue {
+      let core = max(textWidth("6550 RPM", font: fanStateFont), textWidth("100/110°", font: valueFont))
+      return ceil(core + padding * 2)
     }
-
     let value = content.showValue ? fixedValueWidth(for: metric) : 0
     let core = max(identity, value)
     return max(content.showValue ? 18 : 16, ceil(core + padding * 2))
@@ -112,11 +107,10 @@ final class MenuBarView: NSView {
     let template: String
     switch metric {
     case .cpu, .memory, .gpu, .battery: template = "100%"
-    case .temperature: template = "100°"
+    case .temperature, .cooling: template = "100°"
     case .power: template = "999W"
     case .fan: template = "No fan"
     case .network: template = "999M"
-    case .cooling: template = "6550 RPM"
     }
     return textWidth(template, font: valueFont)
   }
@@ -203,7 +197,18 @@ final class MenuBarView: NSView {
     ) { String(format: "%.0f%%", $0) }
     let temp = display(
       TelemetryFormatting.fresh(snapshot.thermals, maxAge: 6, now: now).flatMap(\.maximumSoCCelsius)
-    ) { String(format: "%.0f°", $0) }
+    ) { String(format: "%.0f°", TemperatureUnit.current.convert($0)) }
+    // The cooling item shows "average/hottest" like TG Pro; without CPU sensors it falls back to the hottest alone.
+    let thermals = TelemetryFormatting.fresh(snapshot.thermals, maxAge: 6, now: now)
+    let temperatureRange: String
+    if case .success(let average) = thermals.flatMap(\.averageCPUCelsius),
+      case .success(let hottest) = thermals.flatMap(\.maximumSoCCelsius)
+    {
+      let unit = TemperatureUnit.current
+      temperatureRange = String(format: "%.0f/%.0f°", unit.convert(average), unit.convert(hottest))
+    } else {
+      temperatureRange = temp
+    }
     let memory = display(
       TelemetryFormatting.fresh(snapshot.memory, maxAge: 5, now: now).map(\.usagePercent)
     ) { String(format: "%.0f%%", $0) }
@@ -245,7 +250,6 @@ final class MenuBarView: NSView {
         coolingFan = "—"
       }
     }
-    let coolingTemperature = temp == "—" ? "—" : temp.replacingOccurrences(of: "°", with: "°C")
     let network = display(
       TelemetryFormatting.fresh(snapshot.network, maxAge: 5, now: now).flatMap(\.throughput)
     ) { rate in
@@ -254,13 +258,14 @@ final class MenuBarView: NSView {
 
     let next: [HeliosMenuBarMetric: String] = [
       .cpu: cpu, .memory: memory, .gpu: gpu, .temperature: temp,
-      .cooling: "\(coolingTemperature)\n\(coolingFan)",
+      .cooling: "\(temperatureRange)\n\(coolingFan)",
       .fan: fan, .battery: battery, .power: power, .network: network,
     ]
     cpuText = cpu
-    // Retain the Next22 public test surface while the visual display uses a shorter degree suffix.
-    temperatureText = temp == "—" ? "—" : temp.replacingOccurrences(of: "°", with: "°C")
+    // The text surface used by tests carries the unit suffix; the drawn value is the bare number.
+    temperatureText = temp == "—" ? "—" : temp.replacingOccurrences(of: "°", with: TemperatureUnit.current.suffix)
     coolingFanText = coolingFan
+    coolingTemperatureText = temperatureRange == "—" ? "—" : temperatureRange.replacingOccurrences(of: "°", with: TemperatureUnit.current.suffix)
     // Each native item displays only its configured metrics. Changes to another
     // module must not redraw this item (or the static dashboard hub).
     let visibleValueChanged = metrics.contains { metric in
@@ -300,14 +305,19 @@ final class MenuBarView: NSView {
   private func drawMetric(
     _ metric: HeliosMenuBarMetric, value: String, in rect: NSRect, color: NSColor
   ) {
-    if metric == .cooling {
-      drawCoolingMetric(value, in: rect, color: color)
-      return
-    }
-
     let presentation = content(for: metric)
     let hasIdentity = presentation.showIcon || presentation.showLabel
-    if presentation.showValue && hasIdentity {
+    if metric == .cooling, presentation.showValue {
+      // The fan state takes the label's place; the temperature is the value.
+      let top = floor(rect.midY - 11)
+      let lines = value.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+      drawText(
+        lines.count > 1 ? lines[1] : "—", in: NSRect(x: rect.minX + 1, y: top, width: max(0, rect.width - 2), height: 9),
+        font: Self.fanStateFont, color: color)
+      drawText(
+        lines.first ?? "—", in: NSRect(x: rect.minX + 1, y: top + 8, width: max(0, rect.width - 2), height: 14),
+        font: Self.valueFont, color: color)
+    } else if presentation.showValue && hasIdentity {
       let top = floor(rect.midY - 11)
       drawIdentity(
         metric, content: presentation,
@@ -328,44 +338,6 @@ final class MenuBarView: NSView {
         in: NSRect(x: rect.minX + 2, y: rect.midY - 7, width: max(0, rect.width - 4), height: 14),
         color: color)
     }
-  }
-
-  /// Temperature and fan belong together, but their identity is independently
-  /// configurable like every other module. The values remain a compact two-line
-  /// pair; icon/label live beside them rather than stealing their numeric width.
-  private func drawCoolingMetric(_ value: String, in rect: NSRect, color: NSColor) {
-    let lines = value.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-    let temperature = lines.first ?? "—"
-    let fan = lines.count > 1 ? lines[1] : "—"
-    let presentation = content(for: .cooling)
-    let hasIdentity = presentation.showIcon || presentation.showLabel
-
-    guard presentation.showValue else {
-      drawIdentity(
-        .cooling, content: presentation,
-        in: NSRect(x: rect.minX + 2, y: rect.midY - 7, width: max(0, rect.width - 4), height: 14),
-        color: color)
-      return
-    }
-
-    let identityWidth =
-      hasIdentity ? min(rect.width * 0.46, identityWidth(for: .cooling, content: presentation)) : 0
-    let spacing: CGFloat = hasIdentity ? 3 : 0
-    let valueWidth = max(22, rect.width - identityWidth - spacing)
-    let totalWidth = identityWidth + spacing + valueWidth
-    var x = rect.midX - totalWidth / 2
-    if hasIdentity {
-      drawIdentity(
-        .cooling, content: presentation,
-        in: NSRect(x: x, y: rect.midY - 7, width: identityWidth, height: 14), color: color)
-      x += identityWidth + spacing
-    }
-    drawText(
-      temperature, in: NSRect(x: x, y: rect.midY - 10, width: valueWidth, height: 11),
-      font: Self.compactValueFont, color: color)
-    drawText(
-      fan, in: NSRect(x: x, y: rect.midY + 1, width: valueWidth, height: 10),
-      font: Self.secondaryValueFont, color: color)
   }
 
   private func identityWidth(

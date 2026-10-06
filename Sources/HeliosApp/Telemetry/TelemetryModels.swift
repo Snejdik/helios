@@ -284,6 +284,7 @@ struct ThermalReading: Sendable {
 }
 
 struct ThermalMetrics: Sendable {
+    static let primaryExplanation = "Hottest valid reading among Helios’s identified CPU/GPU and validated SoC hotspot sensors. This is not CPU Core Average and may be higher. Unclassified raw sensors are excluded."
     let readings: [ThermalReading]
 
     /// Complete per-key evidence for expert/raw telemetry. This intentionally
@@ -291,8 +292,10 @@ struct ThermalMetrics: Sendable {
     let failures: [String: TelemetryError]
 
     /// Failures belonging to classifier-trusted thermal channels only.
-    /// Health, safety readiness and ordinary user-facing warnings must use this
-    /// instead of treating every raw T-prefixed SMC key as a thermal failure.
+    /// Health and ordinary user-facing warnings use this instead of treating
+    /// every raw T-prefixed SMC key as a thermal failure. Frozen fan readiness
+    /// also retains its older conservative Tp/Te/Tg failure guard; those raw
+    /// prefixes do not confer trust or contribute to the main temperature.
     let trustedFailures: [String: TelemetryError]
 
     /// Raw/unclassified SMC inventory is intentionally sampled less often than
@@ -326,5 +329,16 @@ struct ThermalMetrics: Sendable {
 
     var maximumSoCCelsius: MetricResult<Double> {
         maximumSoCReading.map(\.celsius)
+    }
+
+    /// Mean of the identified P- and E-core sensors. It ignores the GPU and the
+    /// validated hotspots, so under load it sits well below `maximumSoCCelsius`
+    /// and is closer to what other monitors report as the CPU temperature.
+    var averageCPUCelsius: MetricResult<Double> {
+        let cores = readings.filter { $0.group == .performanceCPU || $0.group == .efficiencyCPU }
+        guard !cores.isEmpty else {
+            return .failure(.unavailable("No trusted CPU temperature sensors available"))
+        }
+        return .success(cores.map(\.celsius).reduce(0, +) / Double(cores.count))
     }
 }

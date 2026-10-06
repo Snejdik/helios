@@ -199,7 +199,7 @@ enum ProcessRateCalculator {
             diskWriteBytesPerSecond: Double(writeDelta) / elapsedSeconds,
             diskReadBytesDelta: readDelta,
             diskWriteBytesDelta: writeDelta,
-            wakeupsPerSecond: Double((current.packageIdleWakeups - previous.packageIdleWakeups) + (current.interruptWakeups - previous.interruptWakeups)) / elapsedSeconds,
+            wakeupsPerSecond: (Double(current.packageIdleWakeups - previous.packageIdleWakeups) + Double(current.interruptWakeups - previous.interruptWakeups)) / elapsedSeconds,
             instructionsPerSecond: instructionsDelta / elapsedSeconds,
             cyclesPerSecond: cyclesDelta / elapsedSeconds,
             instructionsPerCycle: ipc
@@ -233,14 +233,6 @@ actor ProcessProvider {
         previousTicks = nil
     }
 
-    func resetSession() {
-        reset()
-        session.removeAll(keepingCapacity: true)
-        identityCache.removeAll(keepingCapacity: true)
-        sessionAccountedReadBytes = 0
-        sessionAccountedWriteBytes = 0
-    }
-
     func sample() -> MetricSample<ProcessMetrics> {
         let ticks = HostClock.now
         let elapsed = previousTicks.map { HostClock.seconds(from: $0, to: ticks) }
@@ -256,7 +248,7 @@ actor ProcessProvider {
         candidates.reserveCapacity(min(pids.count, 256))
 
         // rusage is the only per-process syscall on the broad enumeration path.
-        // Resolve names/paths only for displayed leaders. This keeps the 5-second
+        // Resolve names/paths only for displayed leaders. This keeps the 5/10-second
         // process sampler cheap even when hundreds of sandboxed processes exist.
         for pid in pids.prefix(1_024) where pid > 0 {
             guard let counters = Self.rusage(pid: pid) else { continue }
@@ -292,6 +284,12 @@ actor ProcessProvider {
             session = Dictionary(uniqueKeysWithValues: keep.map { ($0.key, $0.value) })
             identityCache = identityCache.filter { session[$0.key] != nil }
         }
+
+        // CPU/memory leaders can have zero I/O and therefore never enter the
+        // session ledger. Their exited identities otherwise accumulate forever
+        // without triggering ledger compaction. Retain only live/ledger keys.
+        let liveKeys = Set(candidates.map(\.key))
+        identityCache = identityCache.filter { liveKeys.contains($0.key) || session[$0.key] != nil }
 
         // Only a tiny leader set is presented. Avoid repeatedly sorting the complete
         // process population for every ranking; bounded insertion is O(n*k) with

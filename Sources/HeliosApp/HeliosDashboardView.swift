@@ -11,7 +11,7 @@ struct HeliosPopoverView: View {
   var openRoute: (HeliosMonitorRoute) -> Void = { _ in }
   @State private var editingDashboard = false
 
-  private var presentation: OverviewPresentation { OverviewPresentation(model.snapshot) }
+  private var presentation: OverviewPresentation { model.presentation }
 
   /// The 420×600 popover is a glance surface, not the 24-hour history viewer.
   /// Bound its tiny sparklines to the most recent two minutes so opening Helios
@@ -107,6 +107,7 @@ struct HeliosPopoverView: View {
       .menuStyle(.borderlessButton)
       .fixedSize()
       .help("More Helios actions")
+      .accessibilityLabel("More Helios actions")
     }
     .padding(.horizontal, 14)
     .padding(.vertical, 11)
@@ -196,35 +197,35 @@ struct HeliosPopoverView: View {
     case .cpu:
       dashboardTile(
         metric: .cpu, route: .cpu, title: "CPU", symbol: "cpu",
-        value: metricValue(presentation.cpu.map(\.usagePercent), { String(format: "%.0f%%", $0) }),
+        value: metricValue(presentation.cpu.map(\.usagePercent), { TelemetryFormatting.percent($0) }),
         trend: dashboardHistoryTail.map(\.cpuPercent), fixedRange: 0...100,
         tint: preferences.color(for: .cpu))
     case .memory:
       dashboardTile(
         metric: .memory, route: .memory, title: "Memory", symbol: "memorychip",
         value: metricValue(
-          presentation.memory.map(\.usagePercent), { String(format: "%.0f%%", $0) }),
+          presentation.memory.map(\.usagePercent), { TelemetryFormatting.percent($0) }),
         trend: dashboardHistoryTail.map(\.memoryPercent), fixedRange: 0...100,
         tint: preferences.color(for: .memory))
     case .gpu:
       dashboardTile(
         metric: .gpu, route: .gpu, title: "GPU", symbol: "display",
         value: metricValue(
-          presentation.gpu.flatMap(\.deviceUtilizationPercent), { String(format: "%.0f%%", $0) }),
+          presentation.gpu.flatMap(\.deviceUtilizationPercent), { TelemetryFormatting.percent($0) }),
         trend: dashboardHistoryTail.map(\.gpuPercent), fixedRange: 0...100,
         tint: preferences.color(for: .gpu))
     case .temperature:
       dashboardTile(
-        metric: .temperature, route: .thermals, title: "Temperature", symbol: "thermometer.medium",
+        metric: .temperature, route: .thermals, title: "Max SoC", symbol: "thermometer.medium",
         value: metricValue(
-          presentation.thermals.flatMap(\.maximumSoCCelsius), { String(format: "%.0f°C", $0) }),
+          presentation.thermals.flatMap(\.maximumSoCCelsius), { TelemetryFormatting.temperature($0) }),
         trend: dashboardHistoryTail.map(\.maxSoCCelsius), fixedRange: 20...100,
         tint: preferences.color(for: .temperature))
     case .battery:
       dashboardTile(
         metric: .battery, route: .battery, title: "Battery", symbol: "battery.75percent",
         value: metricValue(
-          presentation.battery.flatMap(\.stateOfChargePercent), { String(format: "%.0f%%", $0) }),
+          presentation.battery.flatMap(\.stateOfChargePercent), { TelemetryFormatting.percent($0) }),
         trend: dashboardHistoryTail.map(\.batteryPercent), fixedRange: 0...100,
         tint: preferences.color(for: .battery))
     case .energy:
@@ -237,7 +238,7 @@ struct HeliosPopoverView: View {
       dashboardTile(
         metric: .power, route: .energy, title: "Power", symbol: "bolt.fill",
         value: metricValue(
-          presentation.systemPower.flatMap(\.totalSystemWatts), { String(format: "%.1f W", $0) }),
+          presentation.systemPower.flatMap(\.totalSystemWatts), { TelemetryFormatting.watts($0) }),
         trend: dashboardHistoryTail.map(\.systemPowerWatts), fixedRange: nil,
         tint: preferences.color(for: .power))
     }
@@ -263,6 +264,7 @@ struct HeliosPopoverView: View {
             Image(systemName: "xmark")
           }
           .help("Hide \(title)")
+          .accessibilityLabel("Hide \(title)")
         }
         .buttonStyle(.borderless)
         .controlSize(.mini)
@@ -348,6 +350,7 @@ struct HeliosPopoverView: View {
       }
       .disabled(preferences.popoverModules.first == module)
       .help("Move module up")
+      .accessibilityLabel("Move module up")
       Button {
         preferences.movePopoverModule(module, offset: 1)
       } label: {
@@ -355,12 +358,14 @@ struct HeliosPopoverView: View {
       }
       .disabled(preferences.popoverModules.last == module)
       .help("Move module down")
+      .accessibilityLabel("Move module down")
       Button {
         preferences.setPopoverModuleEnabled(module, enabled: false)
       } label: {
         Image(systemName: "xmark")
       }
       .help("Hide \(module.label)")
+      .accessibilityLabel("Hide \(module.label)")
     }
     .buttonStyle(.borderless)
     .controlSize(.mini)
@@ -381,16 +386,19 @@ struct HeliosPopoverView: View {
         : preferences.dashboardMetrics.last == metric
     )
     .help(offset < 0 ? "Move earlier" : "Move later")
+    .accessibilityLabel(offset < 0 ? "Move earlier" : "Move later")
   }
 
   private var coolingCard: some View {
     HeliosPanel(title: "Temperature & Fan", symbol: "thermometer.medium", trailing: fanSummary) {
+      Text(ThermalMetrics.primaryExplanation)
+        .font(.system(size: 10)).foregroundStyle(.secondary)
       HStack(spacing: 12) {
         compactMetric(
-          "Temperature",
+          "Max SoC",
           metricValue(
             presentation.thermals.flatMap(\.maximumSoCCelsius),
-            { String(format: "%.0f°C", $0) }))
+            { TelemetryFormatting.temperature($0) }))
         compactMetric("Fan", fanSummary)
       }
       if preferences.coolingFeaturesEnabled {
@@ -422,11 +430,11 @@ struct HeliosPopoverView: View {
         compactMetric(
           "GPU",
           metricValue(
-            presentation.gpu.flatMap(\.deviceUtilizationPercent), { String(format: "%.0f%%", $0) }))
+            presentation.gpu.flatMap(\.deviceUtilizationPercent), { TelemetryFormatting.percent($0) }))
         compactMetric(
           "Power",
           metricValue(
-            presentation.systemPower.flatMap(\.totalSystemWatts), { String(format: "%.1f W", $0) }))
+            presentation.systemPower.flatMap(\.totalSystemWatts), { TelemetryFormatting.watts($0) }))
         compactMetric(
           "Pressure", metricValue(presentation.memory.flatMap(\.pressure), { $0.rawValue }))
       }
@@ -503,7 +511,7 @@ struct HeliosPopoverView: View {
           HeliosAppIdentityIcon(appKey: leader.appKey, size: 20)
           Text(leader.displayName).lineLimit(1)
           Spacer()
-          Text(String(format: "%.0f%%", share * 100))
+          Text(TelemetryFormatting.percent(share * 100))
             .monospacedDigit().foregroundStyle(.secondary)
         }
         .font(.system(size: 10.5))
@@ -608,9 +616,7 @@ struct HeliosPopoverView: View {
 
   private var fanSummary: String {
     guard case .success(let inventory) = presentationSnapshotFans else { return "—" }
-    guard let fan = inventory.fans.first else { return "Fanless" }
-    guard let rpm = try? fan.actualRPM.get() else { return "—" }
-    return rpm < 50 ? "Fan off" : String(format: "%.0f RPM", rpm)
+    return TelemetryFormatting.fanSummary(inventory)
   }
 
   private var presentationSnapshotFans: MetricResult<FanInventory> {
@@ -763,7 +769,7 @@ private struct HeliosCoolingQuickControl: View {
           HeliosFanSafetyNotice(compact: true)
         }
 
-        if model.selection == .override, let bounds = model.sliderBounds {
+        if model.selection == .override, let bounds = model.limitBounds {
           Divider().opacity(0.5)
           HStack(spacing: 8) {
             Slider(
@@ -887,7 +893,7 @@ private struct HeliosCoolingQuickControl: View {
 
   private func manualValue(_ bounds: ClosedRange<Double>) -> String {
     guard model.targetRPM.isFinite, bounds.upperBound > bounds.lowerBound else { return "— RPM" }
-    return String(format: "%.0f RPM", model.targetRPM)
+    return TelemetryFormatting.rpm(model.targetRPM)
   }
 }
 
@@ -968,7 +974,7 @@ struct HeliosPanel<Content: View>: View {
   }
 }
 
-/// Lightweight native SwiftUI sparkline used throughout the Next23 interface.
+/// Lightweight native SwiftUI sparkline used throughout the dashboard.
 /// Missing/stale samples deliberately break the line rather than inventing data.
 struct HeliosMiniChart: View {
   let values: [Double?]

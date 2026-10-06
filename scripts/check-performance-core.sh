@@ -9,7 +9,12 @@ network="Sources/HeliosApp/Telemetry/NetworkProvider.swift"
 energy="Sources/HeliosApp/Telemetry/AppEnergyHistory.swift"
 history="Sources/HeliosApp/Telemetry/PersistentHistory.swift"
 ioaudit="Sources/HeliosApp/Telemetry/IOActivityAudit.swift"
-windows="Sources/HeliosApp/HeliosWindows.swift"
+windows="$(mktemp "${TMPDIR:-/tmp}/helios-windows.XXXXXX")"
+trap 'rm -f "$windows"' EXIT
+# The window code lives in Sources/HeliosApp/Windows; read it as one text in its former file order.
+for name in HeliosWindowCoordinator HeliosEnergyInspector HeliosMonitorWindow HeliosModuleDetail HeliosSettings HeliosOnboarding HeliosWindowChrome; do
+  cat "Sources/HeliosApp/Windows/$name.swift" >> "$windows"
+done
 status="Sources/HeliosApp/StatusItemController.swift"
 
 required_process=(

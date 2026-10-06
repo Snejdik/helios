@@ -5,7 +5,7 @@ import SwiftUI
 @MainActor
 final class StatusItemController: NSObject, NSPopoverDelegate {
   private let preferences: HeliosPreferences
-  private let model = OverviewViewModel()
+  private let model: OverviewViewModel
   private let service: DaemonService
   private let diagnostics: DiagnosticsController
   private lazy var windows = HeliosWindowCoordinator(
@@ -20,6 +20,8 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
   private var hubStatusItem: NSStatusItem?
   private var hubReadout: MenuBarView?
   private var nativeItems: [HeliosMenuBarMetric: NSStatusItem] = [:]
+  private var lastItemText: [HeliosMenuBarMetric: String] = [:]
+  private var lastAccessibilitySummary: String?
   private var nativeReadouts: [HeliosMenuBarMetric: MenuBarView] = [:]
   private var nativeTargets: [HeliosMenuBarMetric: MetricStatusTarget] = [:]
 
@@ -35,6 +37,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
   ) {
     self.service = service
     self.preferences = preferences
+    model = OverviewViewModel(alertConfiguration: { [preferences] in preferences.healthAlerts })
     self.diagnostics = diagnostics
     super.init()
 
@@ -47,7 +50,27 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         // objectWillChange fires before the preference mutates. Defer once, then
         // rebuild only when a menu-bar-specific fingerprint actually changed.
         // Graph range/style changes must never churn native status items.
-        DispatchQueue.main.async { [weak self] in self?.rebuildMenuBarIfNeeded() }
+        DispatchQueue.main.async { [weak self] in
+          self?.rebuildMenuBarIfNeeded()
+          self?.windows.refreshDetailDemand()
+          self?.refreshPopoverDetailDemand()
+        }
+      }
+      .store(in: &subscriptions)
+
+    // Interface switch: drop the old style's popover tree and swap the open main
+    // window. Only presentation changes; the shared model and collectors remain.
+    preferences.interface.$style
+      .removeDuplicates()
+      .dropFirst()
+      .sink { [weak self] _ in
+        DispatchQueue.main.async { [weak self] in self?.interfaceStyleDidChange() }
+      }
+      .store(in: &subscriptions)
+    preferences.interface.$popoverSections
+      .dropFirst()
+      .sink { [weak self] _ in
+        DispatchQueue.main.async { [weak self] in self?.refreshPopoverDetailDemand() }
       }
       .store(in: &subscriptions)
 
@@ -57,22 +80,30 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
 
   func update(_ snapshot: TelemetrySnapshot) {
     self.snapshot = snapshot
-    // UI8 keeps one shared presentation/history model alive for menu popups,
-    // Full Monitor and the compact dashboard. No surface duplicates persistence.
+    // One shared presentation/history model serves the popovers, the main window
+    // and the compact dashboard; no surface duplicates persistence.
     model.accept(snapshot)
 
     compactReadout?.update(snapshot)
     hubReadout?.update(snapshot)
     for readout in nativeReadouts.values { readout.update(snapshot) }
 
-    windows.update(snapshot)
-    let summary = accessibilitySummary(snapshot)
-    compactStatusItem?.button?.toolTip = summary
-    compactStatusItem?.button?.setAccessibilityValue(summary)
+    // One freshness-evaluated presentation per publication, shared by every item.
+    let presentation = model.presentation
+    let summary = accessibilitySummary(presentation, snapshot: snapshot)
+    // Tooltips and accessibility values are only touched when their text changes.
+    if summary != lastAccessibilitySummary {
+      lastAccessibilitySummary = summary
+      compactStatusItem?.button?.toolTip = summary
+      compactStatusItem?.button?.setAccessibilityValue(summary)
+    }
     hubStatusItem?.button?.toolTip = "Helios dashboard"
     for (metric, item) in nativeItems {
-      let text = accessibilityValue(metric, snapshot: snapshot)
-      item.button?.toolTip = "\(metric.label): \(text)"
+      let text = accessibilityValue(metric, presentation: presentation, snapshot: snapshot)
+      guard lastItemText[metric] != text else { continue }
+      lastItemText[metric] = text
+      item.button?.toolTip = "\(metric.label): \(text)" +
+        (metric == .temperature || metric == .cooling ? "\n" + ThermalMetrics.primaryExplanation : "")
       item.button?.setAccessibilityValue(text)
     }
 
@@ -83,15 +114,45 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     }
   }
 
+  func setDetailDemandHandler(_ handler: @escaping (TelemetryDetailDemand) -> Void) {
+    model.onDetailDemandChange = handler
+    handler(model.detailDemand)
+  }
+
+  func shutdown() {
+    forceCloseAllPopovers()
+    model.shutdown()
+  }
+
   func showOnboardingIfNeeded() { windows.showOnboardingIfNeeded() }
+
+  func showSettings(route: HeliosSettingsRoute? = nil) {
+    forceCloseAllPopovers()
+    windows.showSettings(route: route)
+  }
+
+  /// Main window at a page (menu commands, Dock reopen). Legacy maps to its monitor.
+  func showMainWindow(page: HeliosPage? = nil) {
+    forceCloseAllPopovers()
+    windows.showMain(page: page)
+  }
+
+  private func interfaceStyleDidChange() {
+    forceCloseAllPopovers()
+    dashboardPopover.contentViewController = nil
+    model.setDetailDemand([], owner: demandOwner(for: dashboardPopover))
+    windows.interfaceStyleDidChange()
+  }
 
   func popoverDidClose(_ notification: Notification) {
     guard let popover = notification.object as? NSPopover else { return }
+    model.setDetailDemand([], owner: demandOwner(for: popover))
     // Popovers are cheap to rebuild and their SwiftUI trees can retain charts,
     // diagnostic arrays and observation state. Drop the tree as soon as the
     // transient surface closes instead of keeping hidden presentation memory.
     popover.contentViewController = nil
     HeliosAppIconCache.shared.purge()
+    HeliosMemoryRelief.schedule()
     guard highlightedPopover === popover else { return }
     clearHighlight()
     stopDismissMonitoring()
@@ -139,6 +200,8 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     hubStatusItem = nil
     hubReadout = nil
     nativeItems.removeAll()
+    lastItemText.removeAll()
+    lastAccessibilitySummary = nil
     nativeReadouts.removeAll()
     nativeTargets.removeAll()
     for popover in metricPopovers.values { popover.contentViewController = nil }
@@ -239,6 +302,11 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     closeMetricPopovers(except: popover)
     setHighlighted(sender, for: popover)
 
+    if preferences.interface.style == .helios {
+      showHeliosMetricPopover(metric, popover: popover, from: sender)
+      return
+    }
+
     // Service state is already monitored continuously. Opening a menu-bar
     // surface must stay presentation-only and avoid synchronous registration/XPC
     // work on the click path.
@@ -267,6 +335,8 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     popover.contentSize = NSSize(
       width: 344, height: HeliosMetricPopoverView.preferredHeight(for: metric))
     popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
+    model.setDetailDemand(metric == .cpu || metric == .memory ? .processes : [],
+      owner: demandOwner(for: popover))
     startDismissMonitoring(sourceButton: sender, popover: popover)
     DispatchQueue.main.async { [weak hosting] in
       guard let view = hosting?.view, let window = view.window else { return }
@@ -276,6 +346,22 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
       window.makeKey()
       window.makeFirstResponder(view)
     }
+  }
+
+  private func refreshPopoverDetailDemand() {
+    let wantsProcesses = preferences.interface.style == .helios
+      ? preferences.interface.isPopoverSectionEnabled(.processes)
+      : preferences.popoverModulesForPresentation.contains(.topCPU)
+    model.setDetailDemand(dashboardPopover.isShown && wantsProcesses ? .processes : [],
+      owner: demandOwner(for: dashboardPopover))
+    for (metric, popover) in metricPopovers {
+      model.setDetailDemand(popover.isShown && (metric == .cpu || metric == .memory) ? .processes : [],
+        owner: demandOwner(for: popover))
+    }
+  }
+
+  private func demandOwner(for popover: NSPopover) -> String {
+    "popover-\(ObjectIdentifier(popover))"
   }
 
   private func metricPopover(for metric: HeliosMenuBarMetric) -> NSPopover {
@@ -318,6 +404,10 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
       (sender as? NSStatusBarButton) ?? compactStatusItem?.button ?? hubStatusItem?.button
     guard let button = sourceButton else { return }
     setHighlighted(button, for: dashboardPopover)
+    if preferences.interface.style == .helios {
+      showHeliosPopover(from: button)
+      return
+    }
 
     // Keep menu interaction presentation-only; DaemonService refreshes its
     // registration/connection state independently in the background.
@@ -344,15 +434,78 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     dashboardPopover.contentViewController = overview
     dashboardPopover.contentSize = NSSize(width: 420, height: 600)
     dashboardPopover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+    refreshPopoverDetailDemand()
+    // Match metric popovers: give native menu shortcuts a key window after a
+    // status-item click, which need not otherwise activate an accessory app.
+    dashboardPopover.contentViewController?.view.window?.makeKey()
     startDismissMonitoring(sourceButton: button, popover: dashboardPopover)
+  }
+
+  private func heliosActions() -> HeliosActions {
+    HeliosActions(
+      openSettings: { [weak self] in self?.showSettings() },
+      openSettingsRoute: { [weak self] route in self?.showSettings(route: route) },
+      openEnergyInspector: { [weak self] in
+        self?.forceCloseAllPopovers()
+        self?.windows.showEnergyInspector()
+      },
+      openPage: { [weak self] page in self?.showMainWindow(page: page) },
+      copySystemSnapshot: { [weak self] in self?.windows.copySystemSnapshot() })
+  }
+
+  /// Helios popover for one menu-bar metric; released on close like the others.
+  private func showHeliosMetricPopover(
+    _ metric: HeliosMenuBarMetric, popover: NSPopover, from sender: NSStatusBarButton
+  ) {
+    let context = HeliosContext(
+      model: model, preferences: preferences, service: service,
+      feed: HeliosActivityFeed(fixedEvents: []), actions: heliosActions())
+    let hosting = NSHostingController(rootView: HeliosMetricStatusPopover(metric: metric, context: context))
+    hosting.sizingOptions = .preferredContentSize
+    popover.contentViewController = hosting
+    popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
+    model.setDetailDemand(metric == .cpu || metric == .memory ? .processes : [],
+      owner: demandOwner(for: popover))
+    startDismissMonitoring(sourceButton: sender, popover: popover)
+    DispatchQueue.main.async { [weak hosting] in
+      hosting?.view.window?.makeKey()
+    }
+  }
+
+  /// Helios popover. Its tree and Activity feed are released on close by
+  /// popoverDidClose, like the Legacy dashboard.
+  private func showHeliosPopover(from button: NSStatusBarButton) {
+    let actions = heliosActions()
+    let context = HeliosContext(
+      model: model, preferences: preferences, service: service,
+      feed: HeliosActivityFeed(model: model), actions: actions)
+    let hosting = NSHostingController(rootView: HeliosStatusPopoverView(context: context))
+    hosting.sizingOptions = .preferredContentSize
+    dashboardPopover.contentViewController = hosting
+    dashboardPopover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+    refreshPopoverDetailDemand()
+    dashboardPopover.contentViewController?.view.window?.makeKey()
+    startDismissMonitoring(sourceButton: button, popover: dashboardPopover)
+  }
+
+  /// Bumped whenever a popover is shown. A dismiss decided on a mouse-down is
+  /// applied asynchronously; if another popover opened in between (a click on a
+  /// neighbouring status item runs its action on that same mouse-down), the stale
+  /// dismissal must not close the popover that was just opened.
+  private var popoverGeneration = 0
+
+  private func closeAllPopoversUnlessReopened(since generation: Int) {
+    guard popoverGeneration == generation else { return }
+    closeAllPopovers()
   }
 
   private func startDismissMonitoring(sourceButton: NSStatusBarButton, popover: NSPopover) {
     stopDismissMonitoring()
+    popoverGeneration &+= 1
 
     // NSPopover.transient normally handles outside clicks. Tahoe can still leave
     // a status-item popover alive when focus moves between status-bar windows,
-    // so UI8 adds a tiny defensive monitor. It never consumes events; it only
+    // so a small defensive monitor backs it up. It never consumes events; it only
     // closes the currently owned popover after an outside click or Escape.
     localDismissMonitor = NSEvent.addLocalMonitorForEvents(
       matching: [.leftMouseDown, .rightMouseDown, .keyDown]
@@ -366,7 +519,8 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
       let popoverWindow = popover.contentViewController?.view.window
       let sourceWindow = sourceButton?.window
       if event.window !== popoverWindow, event.window !== sourceWindow {
-        DispatchQueue.main.async { [weak self] in self?.closeAllPopovers() }
+        let generation = self.popoverGeneration
+        DispatchQueue.main.async { [weak self] in self?.closeAllPopoversUnlessReopened(since: generation) }
       }
       return event
     }
@@ -374,7 +528,9 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     globalDismissMonitor = NSEvent.addGlobalMonitorForEvents(
       matching: [.leftMouseDown, .rightMouseDown]
     ) { [weak self] _ in
-      DispatchQueue.main.async { [weak self] in self?.closeAllPopovers() }
+      guard let self else { return }
+      let generation = self.popoverGeneration
+      DispatchQueue.main.async { [weak self] in self?.closeAllPopoversUnlessReopened(since: generation) }
     }
   }
 
@@ -389,8 +545,8 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     clearHighlight()
     highlightedButton = button
     highlightedPopover = popover
-    // UI8 deliberately uses AppKit's transient selected-state pill only while
-    // this popover is open. The state is cleared on close, rebuild, or before
+    // AppKit's transient selected-state pill is used only while this popover is
+    // open. The state is cleared on close, rebuild, or before
     // another status item becomes active.
     button.highlight(true)
   }
@@ -402,17 +558,18 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     highlightedPopover = nil
   }
 
-  private func accessibilitySummary(_ snapshot: TelemetrySnapshot) -> String {
+  private func accessibilitySummary(_ presentation: OverviewPresentation, snapshot: TelemetrySnapshot)
+    -> String
+  {
     let parts = preferences.menuBarMetricsForPresentation.map {
-      "\($0.label) \(accessibilityValue($0, snapshot: snapshot))"
+      "\($0.label) \(accessibilityValue($0, presentation: presentation, snapshot: snapshot))"
     }
     return parts.isEmpty ? "Helios" : parts.joined(separator: ", ")
   }
 
-  private func accessibilityValue(_ metric: HeliosMenuBarMetric, snapshot: TelemetrySnapshot)
-    -> String
-  {
-    let presentation = OverviewPresentation(snapshot)
+  private func accessibilityValue(
+    _ metric: HeliosMenuBarMetric, presentation: OverviewPresentation, snapshot: TelemetrySnapshot
+  ) -> String {
     switch metric {
     case .cpu:
       return DisplayValue(presentation.cpu.map(\.usagePercent)) {
@@ -428,11 +585,11 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
       }.text
     case .temperature:
       return DisplayValue(presentation.thermals.flatMap(\.maximumSoCCelsius)) {
-        String(format: "%.0f degrees Celsius", $0)
+        String(format: "%.0f degrees %@", TemperatureUnit.current.convert($0), TemperatureUnit.current.title)
       }.text
     case .cooling:
       let temperature = DisplayValue(presentation.thermals.flatMap(\.maximumSoCCelsius)) {
-        String(format: "%.0f degrees Celsius", $0)
+        String(format: "%.0f degrees %@", TemperatureUnit.current.convert($0), TemperatureUnit.current.title)
       }.text
       if let rpm = presentationSnapshotFan(snapshot) {
         return rpm < 50

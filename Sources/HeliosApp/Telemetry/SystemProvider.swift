@@ -46,14 +46,14 @@ struct SystemMetrics: Sendable {
 }
 
 enum SystemInfoReader {
-    static func read() -> SystemMetrics {
+    static func read(cachedIdentity: SystemMetrics? = nil) -> SystemMetrics {
         let info = ProcessInfo.processInfo
         let loads = loadAverages()
         return SystemMetrics(
-            modelIdentifier: captureMetric { try sysctlString("hw.model", label: "Mac model identifier") },
-            chipName: captureMetric { try sysctlString("machdep.cpu.brand_string", label: "Chip name") },
+            modelIdentifier: cached(cachedIdentity?.modelIdentifier) { try sysctlString("hw.model", label: "Mac model identifier") },
+            chipName: cached(cachedIdentity?.chipName) { try sysctlString("machdep.cpu.brand_string", label: "Chip name") },
             osVersion: info.operatingSystemVersionString,
-            osBuild: captureMetric { try sysctlString("kern.osversion", label: "macOS build") },
+            osBuild: cached(cachedIdentity?.osBuild) { try sysctlString("kern.osversion", label: "macOS build") },
             uptimeSeconds: max(0, info.systemUptime),
             logicalProcessorCount: max(1, info.processorCount),
             physicalMemoryBytes: info.physicalMemory,
@@ -63,6 +63,11 @@ enum SystemInfoReader {
             thermalState: thermalState(info.thermalState),
             lowPowerModeEnabled: info.isLowPowerModeEnabled
         )
+    }
+
+    private static func cached(_ value: MetricResult<String>?, read: () throws -> String) -> MetricResult<String> {
+        if let value, case .success = value { return value }
+        return captureMetric(read)
     }
 
     static func loadAverages() -> MetricResult<(Double, Double, Double)> {
@@ -115,6 +120,13 @@ enum SystemInfoReader {
 }
 
 actor SystemProvider {
+    private var cachedIdentity: SystemMetrics?
+    // Hardware/OS identity is immutable for a launch. Failed reads are retried;
+    // thermal pressure, uptime, low-power mode and load averages remain live.
     func reset() {}
-    func sample() -> MetricSample<SystemMetrics> { MetricSample(.success(SystemInfoReader.read())) }
+    func sample() -> MetricSample<SystemMetrics> {
+        let metrics = SystemInfoReader.read(cachedIdentity: cachedIdentity)
+        cachedIdentity = metrics
+        return MetricSample(.success(metrics))
+    }
 }

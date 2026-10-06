@@ -20,7 +20,14 @@ struct CleanupMetrics: Sendable, Equatable {
 }
 
 actor CleanupProvider {
-    func sample() -> MetricSample<CleanupMetrics> { MetricSample(.success(Self.read())) }
+    func sample() -> MetricSample<CleanupMetrics> {
+        MetricSample(captureMetric {
+            try Task.checkCancellation()
+            let value = Self.read()
+            try Task.checkCancellation()
+            return value
+        })
+    }
 
     static func read(home: URL = FileManager.default.homeDirectoryForCurrentUser, entryBudget: Int = 200_000) -> CleanupMetrics {
         let roots: [(String, String)] = [
@@ -33,9 +40,14 @@ actor CleanupProvider {
         var remaining = max(1, entryBudget)
         var candidates: [CleanupCandidate] = []
         for (label, relative) in roots where remaining > 0 {
+            guard !Task.isCancelled else { break }
             let url = home.appendingPathComponent(relative, isDirectory: true)
             guard FileManager.default.fileExists(atPath: url.path) else { continue }
-            let result = directorySize(url, entryBudget: remaining)
+            // Keep the existing separate Homebrew row without measuring its
+            // files again inside the broader User caches row.
+            let excluded = relative == "Library/Caches"
+                ? Set([home.appendingPathComponent("Library/Caches/Homebrew").path]) : Set<String>()
+            let result = directorySize(url, entryBudget: remaining, excludedDirectories: excluded)
             remaining = max(0, remaining - result.entries)
             candidates.append(CleanupCandidate(
                 id: relative,
@@ -49,27 +61,48 @@ actor CleanupProvider {
         return CleanupMetrics(candidates: candidates)
     }
 
-    private static func directorySize(_ root: URL, entryBudget: Int) -> (bytes: UInt64, entries: Int, truncated: Bool) {
-        let keys: [URLResourceKey] = [.isRegularFileKey, .fileAllocatedSizeKey, .totalFileAllocatedSizeKey]
+    private static func directorySize(_ root: URL, entryBudget: Int,
+        excludedDirectories: Set<String>) -> (bytes: UInt64, entries: Int, truncated: Bool) {
+        let keys: [URLResourceKey] = [.isDirectoryKey, .isRegularFileKey, .fileAllocatedSizeKey, .totalFileAllocatedSizeKey]
+        let keySet = Set(keys)
+        var truncated = false
         guard let enumerator = FileManager.default.enumerator(
             at: root,
             includingPropertiesForKeys: keys,
             options: [.skipsHiddenFiles, .skipsPackageDescendants],
-            errorHandler: { _, _ in true }
-        ) else { return (0, 0, false) }
+            errorHandler: { _, _ in truncated = true; return true }
+        ) else { return (0, 0, true) }
         var total: UInt64 = 0
         var entries = 0
-        var truncated = false
-        while let url = enumerator.nextObject() as? URL {
+        while !Task.isCancelled, let url = enumerator.nextObject() as? URL {
             if entries >= entryBudget { truncated = true; break }
             entries += 1
-            guard let values = try? url.resourceValues(forKeys: Set(keys)), values.isRegularFile == true else { continue }
+            guard let values = try? url.resourceValues(forKeys: keySet) else {
+                truncated = true
+                continue
+            }
+            if values.isDirectory == true, excludedDirectories.contains(where: { excluded in
+                if excluded == url.path { return true }
+                // Case-insensitive volumes can enumerate a differently cased
+                // name. Confirm identity, rather than excluding a distinct folder
+                // on a case-sensitive volume or normalizing its displayed path.
+                let other = URL(fileURLWithPath: excluded, isDirectory: true)
+                guard other.lastPathComponent.caseInsensitiveCompare(url.lastPathComponent) == .orderedSame,
+                  let first = (try? other.resourceValues(forKeys: [.fileResourceIdentifierKey]))?.fileResourceIdentifier as? NSObject,
+                  let second = (try? url.resourceValues(forKeys: [.fileResourceIdentifierKey]))?.fileResourceIdentifier as? NSObject
+                else { return false }
+                return first == second
+            }) {
+                enumerator.skipDescendants()
+                continue
+            }
+            guard values.isRegularFile == true else { continue }
             let size = values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0
             guard size > 0 else { continue }
             let (next, overflow) = total.addingReportingOverflow(UInt64(size))
             total = overflow ? .max : next
         }
-        return (total, entries, truncated)
+        return (total, entries, truncated || Task.isCancelled)
     }
 }
 
@@ -88,7 +121,7 @@ struct InstalledApplicationMetrics: Sendable, Identifiable, Equatable {
     let architecture: AppBinaryArchitecture
     /// Best-effort recursively allocated bytes observed during the explicit
     /// maintenance scan. Nil means the scan budget was exhausted before this
-    /// bundle could be measured.
+    /// bundle could be measured, or its contents could not be observed.
     let estimatedSizeBytes: UInt64?
     let sizeTruncated: Bool
 
@@ -100,7 +133,14 @@ struct ApplicationsMetrics: Sendable, Equatable {
 }
 
 actor ApplicationsProvider {
-    func sample() -> MetricSample<ApplicationsMetrics> { MetricSample(.success(Self.read())) }
+    func sample() -> MetricSample<ApplicationsMetrics> {
+        MetricSample(captureMetric {
+            try Task.checkCancellation()
+            let value = Self.read()
+            try Task.checkCancellation()
+            return value
+        })
+    }
 
     static func read(home: URL = FileManager.default.homeDirectoryForCurrentUser, entryBudget: Int = 500_000) -> ApplicationsMetrics {
         let roots = [URL(fileURLWithPath: "/Applications", isDirectory: true), home.appendingPathComponent("Applications", isDirectory: true)]
@@ -108,12 +148,14 @@ actor ApplicationsProvider {
         var apps: [InstalledApplicationMetrics] = []
         var remainingEntries = max(0, entryBudget)
         for root in roots {
+            guard !Task.isCancelled else { break }
             guard let urls = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else { continue }
             for url in urls where url.pathExtension.lowercased() == "app" {
+                guard !Task.isCancelled else { break }
                 guard seen.insert(url.path).inserted else { continue }
                 let bundle = Bundle(url: url)
                 let executable = bundle?.executableURL
-                let measured: (bytes: UInt64, entries: Int, truncated: Bool)?
+                let measured: (bytes: UInt64?, entries: Int, truncated: Bool)?
                 if remainingEntries > 0 {
                     let result = bundleAllocatedSize(url, entryBudget: remainingEntries)
                     remainingEntries = max(0, remainingEntries - result.entries)
@@ -140,25 +182,30 @@ actor ApplicationsProvider {
     }
 
 
-    private static func bundleAllocatedSize(_ root: URL, entryBudget: Int) -> (bytes: UInt64, entries: Int, truncated: Bool) {
-        guard entryBudget > 0 else { return (0, 0, true) }
+    private static func bundleAllocatedSize(_ root: URL, entryBudget: Int) -> (bytes: UInt64?, entries: Int, truncated: Bool) {
+        guard entryBudget > 0 else { return (nil, 0, true) }
         let keys: Set<URLResourceKey> = [.isRegularFileKey, .fileAllocatedSizeKey, .totalFileAllocatedSizeKey]
+        var truncated = false
         guard let enumerator = FileManager.default.enumerator(
-            at: root, includingPropertiesForKeys: Array(keys), options: [.skipsHiddenFiles], errorHandler: { _, _ in true }
-        ) else { return (0, 0, false) }
+            at: root, includingPropertiesForKeys: Array(keys), options: [.skipsHiddenFiles],
+            errorHandler: { _, _ in truncated = true; return true }
+        ) else { return (nil, 0, true) }
         var bytes: UInt64 = 0
         var entries = 0
-        var truncated = false
-        while let item = enumerator.nextObject() as? URL {
+        while !Task.isCancelled, let item = enumerator.nextObject() as? URL {
             if entries >= entryBudget { truncated = true; break }
             entries += 1
-            guard let values = try? item.resourceValues(forKeys: keys), values.isRegularFile == true else { continue }
+            guard let values = try? item.resourceValues(forKeys: keys) else {
+                truncated = true
+                continue
+            }
+            guard values.isRegularFile == true else { continue }
             let allocated = values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0
             guard allocated > 0 else { continue }
             let (next, overflow) = bytes.addingReportingOverflow(UInt64(allocated))
             bytes = overflow ? .max : next
         }
-        return (bytes, entries, truncated)
+        return (entries == 0 && truncated ? nil : bytes, entries, truncated || Task.isCancelled)
     }
 
     static func binaryArchitecture(_ url: URL) -> AppBinaryArchitecture {

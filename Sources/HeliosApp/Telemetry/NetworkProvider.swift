@@ -83,6 +83,42 @@ struct NetworkRawSnapshot: Sendable {
     let searchDomains: [String]
 }
 
+private func networkWrappedDelta(current: UInt32, previous: UInt32) -> UInt64 {
+    if current >= previous { return UInt64(current - previous) }
+    return UInt64(UInt32.max - previous) + 1 + UInt64(current)
+}
+
+/// Pure app-session accounting. Missing link evidence resets only the baseline;
+/// totals survive gaps, interface handoffs and sleep/wake.
+struct NetworkSessionAccounting: Sendable {
+    private var previousName: String?
+    private var previous: NetworkLinkCounters?
+    private(set) var downloadedBytes: UInt64 = 0
+    private(set) var uploadedBytes: UInt64 = 0
+
+    mutating func resetBaseline() {
+        previousName = nil
+        previous = nil
+    }
+
+    mutating func consume(name: String, counters: NetworkLinkCounters) -> (UInt64, UInt64) {
+        defer { previousName = name; previous = counters }
+        guard previousName == name, let previous else {
+            return (downloadedBytes, uploadedBytes)
+        }
+        downloadedBytes = Self.saturatingAdd(downloadedBytes,
+            networkWrappedDelta(current: counters.receivedBytes, previous: previous.receivedBytes))
+        uploadedBytes = Self.saturatingAdd(uploadedBytes,
+            networkWrappedDelta(current: counters.transmittedBytes, previous: previous.transmittedBytes))
+        return (downloadedBytes, uploadedBytes)
+    }
+
+    private static func saturatingAdd(_ lhs: UInt64, _ rhs: UInt64) -> UInt64 {
+        let (value, overflow) = lhs.addingReportingOverflow(rhs)
+        return overflow ? UInt64.max : value
+    }
+}
+
 struct NetworkRateCalculator: Sendable {
     private var previousName: String?
     private var previous: NetworkLinkCounters?
@@ -102,10 +138,10 @@ struct NetworkRateCalculator: Sendable {
         }
         guard previousName == name, let previous else { return .failure(.warmingUp) }
 
-        let down = wrappedDelta(current: counters.receivedBytes, previous: previous.receivedBytes)
-        let up = wrappedDelta(current: counters.transmittedBytes, previous: previous.transmittedBytes)
-        let rxPackets = wrappedDelta(current: counters.receivedPackets, previous: previous.receivedPackets)
-        let txPackets = wrappedDelta(current: counters.transmittedPackets, previous: previous.transmittedPackets)
+        let down = networkWrappedDelta(current: counters.receivedBytes, previous: previous.receivedBytes)
+        let up = networkWrappedDelta(current: counters.transmittedBytes, previous: previous.transmittedBytes)
+        let rxPackets = networkWrappedDelta(current: counters.receivedPackets, previous: previous.receivedPackets)
+        let txPackets = networkWrappedDelta(current: counters.transmittedPackets, previous: previous.transmittedPackets)
         let result = NetworkThroughput(
             downloadBytesPerSecond: Double(down) / elapsedSeconds,
             uploadBytesPerSecond: Double(up) / elapsedSeconds,
@@ -119,11 +155,6 @@ struct NetworkRateCalculator: Sendable {
             return .failure(.invalidData("Network throughput outside plausible range"))
         }
         return .success(result)
-    }
-
-    private func wrappedDelta(current: UInt32, previous: UInt32) -> UInt64 {
-        if current >= previous { return UInt64(current - previous) }
-        return UInt64(UInt32.max - previous) + 1 + UInt64(current)
     }
 }
 
@@ -227,25 +258,6 @@ enum NetworkInterfaceReader {
         }
         return NetworkLinkInventory(linksByName: linkByName, activeInterfaces: activeNames.sorted())
     }
-
-    /// Compatibility helper used by deterministic tests/preflights. The live
-    /// provider below keeps dynamic route/DNS metadata on a slower cache while
-    /// preserving 1 Hz interface counters.
-    static func read() throws -> NetworkRawSnapshot {
-        let route = NetworkDynamicStoreReader.primaryInterfaceAndAddresses()
-        let links = try readLinks()
-        return NetworkRawSnapshot(
-            primaryInterface: route.name,
-            ipv4Address: route.ipv4,
-            ipv6Address: route.ipv6,
-            link: route.name.flatMap { links.linksByName[$0] },
-            activeInterfaceCount: links.activeInterfaces.count,
-            activeInterfaces: links.activeInterfaces,
-            gatewayIPv4: route.gateway,
-            dnsServers: route.dns,
-            searchDomains: route.search
-        )
-    }
 }
 
 actor NetworkProvider {
@@ -255,10 +267,7 @@ actor NetworkProvider {
     private var tracker = NetworkThroughputTracker()
     private var cachedRoute: RouteMetadata?
     private var nextRouteRefresh: ContinuousClock.Instant?
-    private var sessionName: String?
-    private var sessionPrevious: NetworkLinkCounters?
-    private var sessionDownloadedBytes: UInt64 = 0
-    private var sessionUploadedBytes: UInt64 = 0
+    private var session = NetworkSessionAccounting()
 
     /// Reset only short-term rate calculation. Session transfer accounting is
     /// intentionally kept across sleep/wake for the lifetime of the app.
@@ -266,8 +275,7 @@ actor NetworkProvider {
         tracker.reset()
         cachedRoute = nil
         nextRouteRefresh = nil
-        sessionName = nil
-        sessionPrevious = nil
+        session.resetBaseline()
     }
 
     private func refreshRoute(now: ContinuousClock.Instant) -> RouteMetadata {
@@ -277,28 +285,14 @@ actor NetworkProvider {
         return value
     }
 
-    private func updateSession(name: String, counters: NetworkLinkCounters) -> (UInt64, UInt64) {
-        defer { sessionName = name; sessionPrevious = counters }
-        guard sessionName == name, let previous = sessionPrevious else {
-            return (sessionDownloadedBytes, sessionUploadedBytes)
-        }
-        sessionDownloadedBytes = Self.saturatingAdd(sessionDownloadedBytes, Self.wrappedDelta(current: counters.receivedBytes, previous: previous.receivedBytes))
-        sessionUploadedBytes = Self.saturatingAdd(sessionUploadedBytes, Self.wrappedDelta(current: counters.transmittedBytes, previous: previous.transmittedBytes))
-        return (sessionDownloadedBytes, sessionUploadedBytes)
-    }
-
-    private static func wrappedDelta(current: UInt32, previous: UInt32) -> UInt64 {
-        if current >= previous { return UInt64(current - previous) }
-        return UInt64(UInt32.max - previous) + 1 + UInt64(current)
-    }
-
-    private static func saturatingAdd(_ lhs: UInt64, _ rhs: UInt64) -> UInt64 {
-        let (value, overflow) = lhs.addingReportingOverflow(rhs)
-        return overflow ? UInt64.max : value
-    }
-
     func sample() -> MetricSample<NetworkMetrics> {
         let result = captureMetric { try read() }
+        if case .failure = result {
+            // A failed collection provides no continuity evidence. Preserve
+            // session totals, but do not interpret a later reset as a rollover.
+            tracker.reset()
+            session.resetBaseline()
+        }
         return MetricSample(result)
     }
 
@@ -332,6 +326,7 @@ actor NetworkProvider {
 
         guard let link = raw.link else {
             tracker.reset()
+            session.resetBaseline()
             let unavailable = TelemetryError.unavailable("Primary link statistics unavailable")
             return NetworkMetrics(
                 primaryInterface: primary,
@@ -346,13 +341,13 @@ actor NetworkProvider {
                 activeInterfaceCount: raw.activeInterfaceCount, activeInterfaces: raw.activeInterfaces,
                 gatewayIPv4: raw.gatewayIPv4.map(MetricResult<String>.success) ?? .failure(.unavailable("Default gateway unavailable")),
                 dnsServers: raw.dnsServers, searchDomains: raw.searchDomains,
-                sessionDownloadedBytes: .success(sessionDownloadedBytes),
-                sessionUploadedBytes: .success(sessionUploadedBytes)
+                sessionDownloadedBytes: .success(session.downloadedBytes),
+                sessionUploadedBytes: .success(session.uploadedBytes)
             )
         }
 
         let throughput = tracker.update(name: link.name, counters: link.counters, ticks: HostClock.now)
-        let sessionTotals = updateSession(name: link.name, counters: link.counters)
+        let sessionTotals = session.consume(name: link.name, counters: link.counters)
         return NetworkMetrics(
             primaryInterface: primary,
             ipv4Address: ipv4,

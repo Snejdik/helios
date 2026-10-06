@@ -34,7 +34,7 @@ struct HeliosMetricPopoverView: View {
     self.openEnergyInspector = openEnergyInspector
   }
 
-  private var p: OverviewPresentation { OverviewPresentation(model.snapshot) }
+  private var p: OverviewPresentation { model.presentation }
 
   static func preferredHeight(for metric: HeliosMenuBarMetric) -> CGFloat {
     switch metric {
@@ -153,7 +153,7 @@ struct HeliosMetricPopoverView: View {
   private var cpu: some View {
     VStack(alignment: .leading, spacing: 10) {
       HStack(alignment: .firstTextBaseline) {
-        hero(value(p.cpu.map(\.usagePercent)) { String(format: "%.0f%%", $0) })
+        hero(value(p.cpu.map(\.usagePercent)) { TelemetryFormatting.percent($0) })
         Spacer()
         if case .success(let cpu) = p.cpu {
           Text(String(format: "%.0f%% idle", cpu.idlePercent))
@@ -168,9 +168,9 @@ struct HeliosMetricPopoverView: View {
       .frame(height: 74)
       if case .success(let cpu) = p.cpu {
         HStack(spacing: 8) {
-          mini("User", String(format: "%.0f%%", cpu.userPercent))
-          mini("System", String(format: "%.0f%%", cpu.systemPercent))
-          mini("Idle", String(format: "%.0f%%", cpu.idlePercent))
+          mini("User", TelemetryFormatting.percent(cpu.userPercent))
+          mini("System", TelemetryFormatting.percent(cpu.systemPercent))
+          mini("Idle", TelemetryFormatting.percent(cpu.idlePercent))
         }
       }
       if case .success(let processes) = p.processes, !processes.topByCPU.isEmpty {
@@ -179,7 +179,7 @@ struct HeliosMetricPopoverView: View {
         VStack(spacing: 5) {
           ForEach(processes.topByCPU.prefix(3)) { process in
             processRow(
-              process.name,
+              process,
               TelemetryFormatting.processCPUShareText(process.cpuPercent))
           }
         }
@@ -196,7 +196,7 @@ struct HeliosMetricPopoverView: View {
             segments: composition.gaugeSegments(
               showAvailable: preferences.memoryGaugeShowsAvailable, preferences: preferences),
             progress: composition.usedFraction,
-            valueText: String(format: "%.0f%%", memory.usagePercent),
+            valueText: TelemetryFormatting.percent(memory.usagePercent),
             subtitle: "Used"
           )
           .frame(width: 118, height: 106)
@@ -267,7 +267,7 @@ struct HeliosMetricPopoverView: View {
         Divider().opacity(0.35)
         compactSectionLabel("Top memory processes")
         ForEach(processes.topByMemory.prefix(3)) { process in
-          processRow(process.name, TelemetryFormatting.storageBytes(process.physicalFootprintBytes))
+          processRow(process, TelemetryFormatting.storageBytes(process.physicalFootprintBytes))
         }
       }
     }
@@ -275,15 +275,15 @@ struct HeliosMetricPopoverView: View {
 
   private var gpu: some View {
     VStack(alignment: .leading, spacing: 10) {
-      hero(value(p.gpu.flatMap(\.deviceUtilizationPercent)) { String(format: "%.0f%%", $0) })
+      hero(value(p.gpu.flatMap(\.deviceUtilizationPercent)) { TelemetryFormatting.percent($0) })
       chart(
         samples: gpuSamples, fixedRange: 0...100, tint: preferences.color(for: .gpu),
         valueStyle: .percent, label: "GPU"
       ).frame(height: 78)
       if case .success(let gpu) = p.gpu {
         HStack(spacing: 8) {
-          mini("Renderer", value(gpu.rendererUtilizationPercent) { String(format: "%.0f%%", $0) })
-          mini("Tiler", value(gpu.tilerUtilizationPercent) { String(format: "%.0f%%", $0) })
+          mini("Renderer", value(gpu.rendererUtilizationPercent) { TelemetryFormatting.percent($0) })
+          mini("Tiler", value(gpu.tilerUtilizationPercent) { TelemetryFormatting.percent($0) })
           mini("Cores", value(gpu.coreCount) { String($0) })
         }
       }
@@ -294,8 +294,8 @@ struct HeliosMetricPopoverView: View {
     VStack(alignment: .leading, spacing: 9) {
       HStack(alignment: .firstTextBaseline) {
         VStack(alignment: .leading, spacing: 1) {
-          hero(value(p.thermals.flatMap(\.maximumSoCCelsius)) { String(format: "%.0f°C", $0) })
-          Text("Max SoC")
+          hero(value(p.thermals.flatMap(\.maximumSoCCelsius)) { TelemetryFormatting.temperature($0) })
+          Text("Max SoC").help(ThermalMetrics.primaryExplanation)
             .font(.system(size: 9))
             .foregroundStyle(.secondary)
         }
@@ -324,7 +324,7 @@ struct HeliosMetricPopoverView: View {
         HStack {
           compactSectionLabel("Temperature")
           Spacer()
-          Text("Max SoC").font(.system(size: 8.5)).foregroundStyle(.tertiary)
+          Text("Max SoC").help(ThermalMetrics.primaryExplanation).font(.system(size: 8.5)).foregroundStyle(.tertiary)
         }
         chart(
           samples: temperatureSamples, fixedRange: 20...100,
@@ -364,7 +364,7 @@ struct HeliosMetricPopoverView: View {
               get: { fanControl.selection },
               set: { requestFanSelection($0) }),
             targetRPM: $fanControl.targetRPM,
-            bounds: fanControl.sliderBounds,
+            bounds: fanControl.limitBounds,
             boostEnabled: fanControl.canSelectBoost,
             overrideEnabled: fanControl.canSelectOverride,
             autoEnabled: fanControl.canSelectAuto
@@ -418,7 +418,7 @@ struct HeliosMetricPopoverView: View {
 
       HStack(alignment: .center, spacing: 14) {
         VStack(alignment: .leading, spacing: 2) {
-          hero(value(p.battery.flatMap(\.stateOfChargePercent)) { String(format: "%.0f%%", $0) })
+          hero(value(p.battery.flatMap(\.stateOfChargePercent)) { TelemetryFormatting.percent($0) })
           Text("Battery")
             .font(.system(size: 9.5))
             .foregroundStyle(.secondary)
@@ -435,7 +435,7 @@ struct HeliosMetricPopoverView: View {
         Spacer()
         if case .success(let battery) = p.battery {
           VStack(alignment: .trailing, spacing: 2) {
-            Text(value(battery.power) { String(format: "%+.1f W", $0.signedWatts) })
+            Text(value(battery.power) { TelemetryFormatting.watts($0.signedWatts, signed: true) })
               .font(.system(size: 12, weight: .semibold).monospacedDigit())
             Text(batteryFlowDetail)
               .font(.system(size: 9.5))
@@ -495,9 +495,9 @@ struct HeliosMetricPopoverView: View {
 
       if case .success(let battery) = p.battery {
         HStack(spacing: 8) {
-          mini("Health", value(battery.healthPercent) { String(format: "%.0f%%", $0) })
+          mini("Health", value(battery.healthPercent) { TelemetryFormatting.percent($0) })
           mini("Cycles", value(battery.cycleCount) { String($0) })
-          mini("Temp", value(battery.temperatureCelsius) { String(format: "%.0f°C", $0) })
+          mini("Temp", value(battery.temperatureCelsius) { TelemetryFormatting.temperature($0) })
         }
       }
     }
@@ -505,14 +505,16 @@ struct HeliosMetricPopoverView: View {
 
   private var power: some View {
     VStack(alignment: .leading, spacing: 10) {
-      hero(value(p.systemPower.flatMap(\.totalSystemWatts)) { String(format: "%.1f W", $0) })
+      hero(value(p.systemPower.flatMap(\.totalSystemWatts)) { TelemetryFormatting.watts($0) })
       chart(
         samples: powerSamples, fixedRange: nil, tint: preferences.color(for: .power),
         valueStyle: .watts, label: "Power"
       ).frame(height: 78)
       if case .success(let battery) = p.battery {
         HStack(spacing: 8) {
-          mini("Battery flow", value(battery.power) { String(format: "%+.1f W", $0.signedWatts) })
+          mini("Battery flow", value(battery.power) {
+            TelemetryFormatting.watts($0.signedWatts, signed: true)
+          })
           mini("Source", value(battery.powerSource) { $0.rawValue })
         }
       }
@@ -585,7 +587,7 @@ struct HeliosMetricPopoverView: View {
     switch metric {
     case .cooling: "Cooling"
     case .fan: "Fan"
-    case .temperature: "Temperature"
+    case .temperature: "Max SoC Temperature"
     case .power: "System Power"
     default: metric.label
     }
@@ -604,13 +606,8 @@ struct HeliosMetricPopoverView: View {
 
   private var fanText: String {
     let fans = TelemetryFormatting.fresh(model.snapshot.fans, maxAge: 6)
-    guard case .success(let inventory) = fans, let fan = inventory.fans.first,
-      case .success(let rpm) = fan.actualRPM
-    else {
-      if case .success(let inventory) = fans, inventory.fans.isEmpty { return "Fanless" }
-      return "—"
-    }
-    return rpm < 50 ? "Fan off" : String(format: "%.0f RPM", rpm)
+    guard case .success(let inventory) = fans else { return "—" }
+    return TelemetryFormatting.fanSummary(inventory)
   }
 
   private var thermalStateText: String {
@@ -721,15 +718,16 @@ struct HeliosMetricPopoverView: View {
       .foregroundStyle(.secondary)
   }
 
-  private func processRow(_ name: String, _ value: String) -> some View {
+  private func processRow(_ process: ProcessActivity, _ value: String) -> some View {
     HStack(spacing: 8) {
-      Text(name).lineLimit(1)
+      Text(process.name).lineLimit(1)
       Spacer(minLength: 8)
       Text(value)
         .foregroundStyle(.secondary)
         .monospacedDigit()
     }
     .font(.system(size: 10.25))
+    .heliosProcessCopyActions(process)
   }
 
   private func memorySummaryRow(_ title: String, bytes: UInt64, tint: Color) -> some View {
@@ -760,7 +758,7 @@ struct HeliosMetricPopoverView: View {
           Text(TelemetryFormatting.storageBytes(bytes))
             .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
           if let percent {
-            Text(String(format: "%.0f%%", percent))
+            Text(TelemetryFormatting.percent(percent))
               .font(.system(size: 8.5).monospacedDigit())
               .foregroundStyle(.tertiary)
           }
@@ -779,7 +777,7 @@ struct HeliosMetricPopoverView: View {
           Text(entry.displayName)
             .lineLimit(1)
           Spacer(minLength: 8)
-          Text(String(format: "%.0f%%", share * 100))
+          Text(TelemetryFormatting.percent(share * 100))
             .monospacedDigit()
             .foregroundStyle(.secondary)
         }
@@ -961,10 +959,10 @@ struct HeliosSegmentedArcGauge: View {
       let span = 0.75 * segment.fraction * scale
       let isFirst = index == 0
       let reachesTrackEnd = index == valid.count - 1 && total * scale >= 0.999
-      // The first colored segment begins exactly at the rounded track cap. RC4
-      // inset it by half a gap, which left a visible neutral crescent under the
-      // color. Round the exposed outer cap(s), while keeping internal boundaries
-      // crisp enough to read as separate memory categories.
+      // The first colored segment begins exactly at the rounded track cap (an
+      // inset would leave a neutral crescent under the color). Round the exposed
+      // outer cap(s) and keep internal boundaries crisp enough to read as
+      // separate memory categories.
       let start = cursor + (isFirst ? 0 : gap / 2)
       let end = cursor + span - (reachesTrackEnd ? 0 : gap / 2)
       cursor += span

@@ -20,8 +20,8 @@ struct WiFiMetrics: Sendable {
         captureMetric {
             let rssi = try rssiDBm.get()
             let noise = try noiseDBm.get()
-            let value = rssi - noise
-            guard (-20...100).contains(value) else { throw TelemetryError.invalidData("Wi-Fi SNR outside plausible range") }
+            let (value, overflow) = rssi.subtractingReportingOverflow(noise)
+            guard !overflow, (-20...100).contains(value) else { throw TelemetryError.invalidData("Wi-Fi SNR outside plausible range") }
             return value
         }
     }

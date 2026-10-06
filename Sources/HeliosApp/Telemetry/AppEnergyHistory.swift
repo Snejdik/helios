@@ -75,10 +75,108 @@ private struct MutableAppEnergy {
     }
 }
 
+/// Decoded history repeats the same few dozen app keys/names hundreds of
+/// thousands of times; each decoded String owns separate storage. Interning
+/// makes every repetition share one buffer (tens of MB for a week of history).
+struct AppEnergyStringTable: Sendable {
+    private var table: [String: String] = [:]
+
+    mutating func intern(_ value: String) -> String {
+        if let existing = table[value] { return existing }
+        table[value] = value
+        return value
+    }
+
+    mutating func intern(_ entry: AppEnergyEntry) -> AppEnergyEntry {
+        AppEnergyEntry(appKey: intern(entry.appKey), displayName: intern(entry.displayName),
+                       energyWattHours: entry.energyWattHours, cpuCoreSeconds: entry.cpuCoreSeconds,
+                       wakeups: entry.wakeups, peakMemoryBytes: entry.peakMemoryBytes)
+    }
+
+    mutating func intern(_ bucket: AppEnergyBucket) -> AppEnergyBucket {
+        AppEnergyBucket(capturedAt: bucket.capturedAt, durationSeconds: bucket.durationSeconds,
+                        onBattery: bucket.onBattery, batteryPercent: bucket.batteryPercent,
+                        entries: bucket.entries.map { intern($0) })
+    }
+}
+
 enum AppEnergyHistoryEngine {
     static let rawRetention: TimeInterval = 7 * 24 * 60 * 60
     static let maximumBuckets = 10_500
     static let flushInterval: TimeInterval = 60
+
+    /// Age tiers keep the in-memory (and on-disk) history small: the last three
+    /// hours stay at one-minute resolution (trends, charge delta), up to a day is
+    /// merged into five-minute buckets, older data into hourly ones. Sums are
+    /// preserved, so rankings and coverage do not change; only the time resolution
+    /// of old data does. Seven days of one-minute buckets would cost tens of MB.
+    static let fineRetention: TimeInterval = 3 * 3_600
+    static let mediumRetention: TimeInterval = 24 * 3_600
+    static let mediumSlot: TimeInterval = 300
+    static let coarseSlot: TimeInterval = 3_600
+    /// Longest valid bucket (an hourly merge).
+    static let maximumBucketSeconds: TimeInterval = 3_600
+
+    static func slotLength(forAge age: TimeInterval) -> TimeInterval? {
+        if age < fineRetention { return nil }
+        return age < mediumRetention ? mediumSlot : coarseSlot
+    }
+
+    /// Merges consecutive buckets that share an age-tier time slot and power
+    /// state. Idempotent: coarsening coarsened data changes nothing.
+    static func coarsened(_ buckets: [AppEnergyBucket], now: Date) -> [AppEnergyBucket] {
+        var result: [AppEnergyBucket] = []
+        result.reserveCapacity(buckets.count)
+        var open: AppEnergyBucket?
+        var openSlot: (length: TimeInterval, index: Int64)?
+        for bucket in buckets {
+            guard let length = slotLength(forAge: now.timeIntervalSince(bucket.capturedAt)) else {
+                if let open { result.append(open) }
+                open = nil; openSlot = nil
+                result.append(bucket)
+                continue
+            }
+            let index = Int64((bucket.capturedAt.timeIntervalSince1970 / length).rounded(.down))
+            if let current = open, let slot = openSlot, slot.length == length, slot.index == index,
+               current.onBattery == bucket.onBattery,
+               current.durationSeconds + bucket.durationSeconds <= length {
+                open = merged(current, bucket)
+            } else {
+                if let open { result.append(open) }
+                open = bucket
+                openSlot = (length, index)
+            }
+        }
+        if let open { result.append(open) }
+        return result
+    }
+
+    static func merged(_ first: AppEnergyBucket, _ second: AppEnergyBucket) -> AppEnergyBucket {
+        var map: [String: AppEnergyEntry] = [:]
+        map.reserveCapacity(first.entries.count + second.entries.count)
+        for entry in first.entries { map[entry.appKey] = entry }
+        for entry in second.entries {
+            if let existing = map[entry.appKey] {
+                map[entry.appKey] = AppEnergyEntry(
+                    appKey: existing.appKey, displayName: entry.displayName,
+                    energyWattHours: existing.energyWattHours + entry.energyWattHours,
+                    cpuCoreSeconds: existing.cpuCoreSeconds + entry.cpuCoreSeconds,
+                    wakeups: existing.wakeups + entry.wakeups,
+                    peakMemoryBytes: max(existing.peakMemoryBytes, entry.peakMemoryBytes))
+            } else {
+                map[entry.appKey] = entry
+            }
+        }
+        let entries = map.values.sorted {
+            $0.energyWattHours != $1.energyWattHours
+                ? $0.energyWattHours > $1.energyWattHours : $0.appKey < $1.appKey
+        }
+        return AppEnergyBucket(
+            capturedAt: second.capturedAt,
+            durationSeconds: first.durationSeconds + second.durationSeconds,
+            onBattery: second.onBattery, batteryPercent: second.batteryPercent ?? first.batteryPercent,
+            entries: entries)
+    }
 
     static func sanitized(_ buckets: [AppEnergyBucket], now: Date) -> [AppEnergyBucket] {
         let cutoff = now.addingTimeInterval(-rawRetention)
@@ -87,7 +185,8 @@ enum AppEnergyHistoryEngine {
         var last = Date.distantPast
         for bucket in buckets where bucket.capturedAt >= cutoff && bucket.capturedAt <= now.addingTimeInterval(300) {
             guard bucket.capturedAt >= last,
-                  bucket.durationSeconds.isFinite, bucket.durationSeconds > 0, bucket.durationSeconds <= 300 else { continue }
+                  bucket.durationSeconds.isFinite, bucket.durationSeconds > 0,
+                  bucket.durationSeconds <= maximumBucketSeconds else { continue }
             let entries = bucket.entries.filter {
                 !$0.appKey.isEmpty && !$0.displayName.isEmpty && $0.energyWattHours.isFinite && $0.energyWattHours >= 0 &&
                 $0.cpuCoreSeconds.isFinite && $0.cpuCoreSeconds >= 0 && $0.wakeups.isFinite && $0.wakeups >= 0
@@ -128,6 +227,16 @@ enum AppEnergyHistoryEngine {
             recentHourTrends: trends,
             recentHourOnBatteryChargeDeltaPercent: recentOnBatteryChargeDelta(buckets)
         )
+    }
+
+    /// Energy per app over all buckets, not cut to the leaders list: a comparison
+    /// window must know every app's earlier use, however low it ranked.
+    static func energyByApp(_ buckets: [AppEnergyBucket], onBatteryOnly: Bool) -> [String: Double] {
+        var totals: [String: MutableAppEnergy] = [:]
+        for bucket in buckets where !onBatteryOnly || bucket.onBattery == true {
+            for entry in bucket.entries { merge(entry, into: &totals) }
+        }
+        return totals.mapValues(\.energyWattHours)
     }
 
     /// Compare the most recent hour with the directly preceding hour. Buckets
@@ -221,10 +330,44 @@ enum AppEnergyHistoryEngine {
     }
 
     static func decodeLines(_ data: Data, decoder: JSONDecoder) -> [AppEnergyBucket] {
-        data.split(separator: 0x0A).compactMap { line in
-            guard !line.isEmpty else { return nil }
-            return try? decoder.decode(AppEnergyBucket.self, from: Data(line))
+        var strings = AppEnergyStringTable()
+        return decodeLines(data, decoder: decoder, strings: &strings)
+    }
+
+    /// Interns each bucket as it is decoded, so a week of history never holds a
+    /// separate copy of every repeated app key/name at once.
+    static func decodeLines(_ data: Data, decoder: JSONDecoder, strings: inout AppEnergyStringTable)
+        -> [AppEnergyBucket]
+    {
+        var decodedCount = 0
+        return decodeLines(data, decoder: decoder, strings: &strings, coarseningAt: nil, decodedCount: &decodedCount)
+    }
+
+    /// Interns each bucket as it is decoded, so a week of history never holds a
+    /// separate copy of every repeated app key/name at once. With `coarseningAt`
+    /// the buckets are also merged by age tier every thousand records, so even a
+    /// large minute-resolution file never exists in memory at full size.
+    static func decodeLines(
+        _ data: Data, decoder: JSONDecoder, strings: inout AppEnergyStringTable,
+        coarseningAt now: Date?, decodedCount: inout Int
+    ) -> [AppEnergyBucket] {
+        var result: [AppEnergyBucket] = []
+        var sinceCoarsening = 0
+        for line in data.split(separator: 0x0A) where !line.isEmpty {
+            // Foundation decoding autoreleases intermediates; drain them per line
+            // instead of holding a week's worth until the actor job ends.
+            let decoded = autoreleasepool { try? decoder.decode(AppEnergyBucket.self, from: Data(line)) }
+            guard let bucket = decoded else { continue }
+            decodedCount += 1
+            result.append(strings.intern(bucket))
+            sinceCoarsening += 1
+            if let now, sinceCoarsening >= 1_000 {
+                result = coarsened(result, now: now)
+                sinceCoarsening = 0
+            }
         }
+        if let now { result = coarsened(result, now: now) }
+        return result
     }
 }
 
@@ -242,6 +385,10 @@ actor AppEnergyHistoryStore {
     private var cachedSummary: AppEnergySummary?
     private var appendHandle: FileHandle?
     private var knownFileSize: Int?
+    /// File size after the last load or rewrite; compaction is relative to it.
+    private var compactedFileSize = 0
+    /// One shared storage per distinct app key/name across all retained buckets.
+    private var strings = AppEnergyStringTable()
 
     init(url: URL = AppEnergyHistoryStore.defaultURL()) {
         self.url = url
@@ -264,7 +411,17 @@ actor AppEnergyHistoryStore {
         return summary
     }
 
-    /// Consumes the 5-second native process deltas in memory and writes one small
+    /// Backpressure can deliberately discard superseded samples. Do not extend
+    /// the newest power estimate across an interval we did not consume.
+    func resetSamplingBaseline() {
+        previousSampleAt = nil
+        pending.removeAll(keepingCapacity: true)
+        pendingDuration = 0
+        pendingOnBattery = nil
+        pendingBatteryPercent = nil
+    }
+
+    /// Consumes the demand-aware 5/10-second native process deltas in memory and writes one small
     /// aggregate bucket per minute. This keeps long-term attribution useful without
     /// turning Helios itself into a storage workload.
     func consume(snapshot: TelemetrySnapshot, now: Date = Date()) -> AppEnergySummary {
@@ -301,15 +458,25 @@ actor AppEnergyHistoryStore {
         pendingDuration += elapsed
         if pendingDuration < AppEnergyHistoryEngine.flushInterval { return summary(for: loaded) }
 
-        let entries = pending.map { $0.value.frozen(key: $0.key) }
+        let entries = pending.map { strings.intern($0.value.frozen(key: $0.key)) }
             .sorted { $0.energyWattHours > $1.energyWattHours }
         let bucket = AppEnergyBucket(capturedAt: sample.capturedAt, durationSeconds: pendingDuration,
                                      onBattery: pendingOnBattery, batteryPercent: pendingBatteryPercent, entries: entries)
         loaded.append(bucket)
-        loaded = AppEnergyHistoryEngine.sanitized(loaded, now: now)
+        loaded = AppEnergyHistoryEngine.coarsened(
+            AppEnergyHistoryEngine.sanitized(loaded, now: now), now: now)
         buckets = loaded
         appendLine(bucket)
-        if loaded.count >= AppEnergyHistoryEngine.maximumBuckets || fileSize() > 24_000_000 { rewrite(loaded) }
+        // The file keeps one-minute lines until it has grown by this slack past its
+        // last compaction; compaction rewrites the (small) tiered content.
+        if HistoryCompactionPolicy.shouldCompact(
+            fileSize: fileSize(), compactedSize: compactedFileSize, slack: 4_000_000) {
+            rewrite(loaded)
+            // Drop table entries for apps that aged out of retention.
+            strings = AppEnergyStringTable()
+            loaded = loaded.map { strings.intern($0) }
+            buckets = loaded
+        }
         pending.removeAll(keepingCapacity: true); pendingDuration = 0
         pendingOnBattery = nil; pendingBatteryPercent = nil
         let result = AppEnergyHistoryEngine.summary(loaded)
@@ -336,13 +503,20 @@ actor AppEnergyHistoryStore {
 
     private func loadIfNeeded(now: Date) -> [AppEnergyBucket] {
         if let buckets { return buckets }
-        let data = (try? Data(contentsOf: url)) ?? Data()
-        let decoded = AppEnergyHistoryEngine.decodeLines(data, decoder: decoder)
-        let clean = AppEnergyHistoryEngine.sanitized(decoded, now: now)
+        HistoryCompactionPolicy.removeStaleTemporaries(for: url)
+        let data = HistoryCompactionPolicy.read(url)
+        var decodedCount = 0
+        let tiered = AppEnergyHistoryEngine.decodeLines(
+            data, decoder: decoder, strings: &strings, coarseningAt: now, decodedCount: &decodedCount)
+        let clean = AppEnergyHistoryEngine.sanitized(tiered, now: now)
         buckets = clean
         knownFileSize = data.count
-        let records = data.split(separator: 0x0A).filter { !$0.isEmpty }.count
-        if clean.count != decoded.count || decoded.count != records || (!data.isEmpty && data.last != 0x0A) { rewrite(clean) }
+        compactedFileSize = data.count
+        let records = data.split(separator: 0x0A).reduce(into: 0) { count, line in if !line.isEmpty { count += 1 } }
+        // Rewrite for real repairs (torn/malformed lines, missing newline) or when
+        // tiering/expiry shrank the content enough to be worth a (small) rewrite.
+        let repair = decodedCount != records || (!data.isEmpty && data.last != 0x0A)
+        if repair || decodedCount - clean.count >= 100 { rewrite(clean) }
         return clean
     }
 
@@ -395,13 +569,13 @@ actor AppEnergyHistoryStore {
         do {
             try? appendHandle?.close()
             appendHandle = nil
-            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            var data = Data()
-            for value in values { data.append(try encoder.encode(value)); data.append(0x0A) }
-            try data.write(to: url, options: .atomic)
-            knownFileSize = data.count
+            let written = try HistoryCompactionPolicy.writeLines(values, encoder: encoder, to: url)
+            knownFileSize = written
+            compactedFileSize = written
         } catch {
-            knownFileSize = nil
+            // Do not retry the full rewrite on every append while it keeps failing
+            // (disk full, read-only volume): wait for another slack of growth.
+            compactedFileSize = fileSizeFromDisk()
         }
     }
 

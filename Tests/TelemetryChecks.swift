@@ -11,6 +11,36 @@ private func require(_ condition: @autoclosure () throws -> Bool, _ message: Str
   if try !condition() { throw CheckFailure(description: message) }
 }
 
+/// Owns only fixture task handles, including tasks canceled before their first turn.
+@MainActor
+private final class NotificationFixtureTasks {
+  private(set) var tasks: [Task<Void, Never>] = []
+
+  func observe(_ task: Task<Void, Never>) { tasks.append(task) }
+
+  func drain() async {
+    let pending = tasks
+    tasks.removeAll()
+    let deadline = Task { @MainActor in
+      do { try await Task.sleep(for: .seconds(5)) } catch { return }
+      fatalError("Notification fixture tasks did not complete within five seconds")
+    }
+    defer { deadline.cancel() }
+    for task in pending { await task.value }
+  }
+}
+
+@MainActor
+private final class NotificationFixtureConfiguration {
+  var value = HealthAlertConfiguration.defaults
+}
+
+@MainActor
+private final class NotificationFixtureClock {
+  var now: Date
+  init(_ now: Date) { self.now = now }
+}
+
 private func expectTelemetryFailure<Value>(_ operation: () throws -> Value) throws {
   do { _ = try operation() } catch is TelemetryError { return }
   throw CheckFailure(description: "Expected a typed telemetry failure")
@@ -37,11 +67,13 @@ private final class FixtureTransport: SMCReadTransport {
   var failingIndexes = Set<UInt32>()
   var countOverride: UInt32?
   var replyOverride: [UInt8]?
+  var onExchange: ((SMCReadRequest) -> Void)?
 
   init(_ sensors: [SensorFixture]) { self.sensors = sensors }
 
   func exchange(_ request: SMCReadRequest) throws -> [UInt8] {
     requests.append(request)
+    onExchange?(request)
     if let replyOverride { return replyOverride }
     var reply = [UInt8](repeating: 0, count: 80)
     func put(_ bytes: [UInt8], at offset: Int) {
@@ -93,6 +125,9 @@ private struct TelemetryChecks {
 
   @MainActor private static func run() async throws {
     if CommandLine.arguments.contains("--persistence-only") {
+      try await historyCompactionChecks()
+      try appEnergyTieringChecks()
+      try await batteryHealthChecks()
       try await persistentHistoryChecks()
       try await ioAuditChecks()
       try await persistenceLifecycleChecks()
@@ -108,6 +143,7 @@ private struct TelemetryChecks {
       return
     }
 
+    try adaptiveDetailChecks()
     try cpuChecks()
     print("PASS CPU deltas, rollover, warm-up and reset")
     try batteryChecks()
@@ -125,6 +161,7 @@ private struct TelemetryChecks {
       "PASS bounded per-app energy aggregation, 1h trend comparison, retention and on-battery separation"
     )
     try maintenanceChecks()
+    try await maintenanceCancellationChecks()
     print(
       "PASS read-only maintenance scanners, bounded cleanup discovery and Mach-O architecture classification"
     )
@@ -136,6 +173,9 @@ private struct TelemetryChecks {
     print("PASS Wi-Fi radio formatting, SNR validation and privacy-safe partial fields")
     try historyChecks()
     print("PASS 60-minute rolling history, gap-safe PSTR energy integration and sample bounds")
+    try await historyCompactionChecks()
+    try appEnergyTieringChecks()
+    try await batteryHealthChecks()
     try await persistentHistoryChecks()
     print(
       "PASS 24-hour append-friendly persistent history, retention, battery trends, CSV export, clock ordering and gap-safe energy"
@@ -151,6 +191,8 @@ private struct TelemetryChecks {
     )
     try healthChecks()
     try await healthEventChecks()
+    try await notificationDeliveryChecks()
+    try await notificationObservationChecks()
     print(
       "PASS independent health thresholds, transition history, crash-tolerant event persistence and notification-free safety isolation"
     )
@@ -161,10 +203,102 @@ private struct TelemetryChecks {
       "PASS storage capacity/counters, throughput deltas, rollover rejection, and SMART capability classification"
     )
     try smcChecks()
+    try await numericCancellationChecks()
     print("PASS SMC discovery, ABI, decoding, isolation and recovery")
     try formattingChecks()
     print("PASS pressure decoding and stale/unavailable display")
     if CommandLine.arguments.contains("--live") { try await liveChecks() }
+  }
+
+  private static func adaptiveDetailChecks() throws {
+    var registry = TelemetryDetailDemandRegistry()
+    try require(registry.set(.processes, owner: "monitor"), "First visible owner must request fresh detail")
+    try require(!registry.set(.processes, owner: "inspector"), "Second consumer must share collection")
+    try require(!registry.set([], owner: "monitor") && registry.demand == .processes,
+      "Closing one consumer stopped another's sampler")
+    _ = registry.set([.devices, .rawSensors], owner: "monitor")
+    try require(registry.demand == .all, "Independent detail demands did not union")
+    _ = registry.set([], owner: "inspector")
+    try require(registry.demand == [.devices, .rawSensors], "Process demand leaked after closing final consumer")
+    _ = registry.set([], owner: "monitor")
+    try require(registry.demand.isEmpty, "Detail demand leaked after teardown")
+    try require(registry.set(.processes, owner: "monitor"), "Reopen must establish fresh demand")
+    try require(TelemetryDetailPolicy.backgroundProcessInterval < .seconds(15),
+      "Hidden process cadence violates counter/energy integration freshness")
+    try require(TelemetryDetailPolicy.interval(visible: false, foreground: .seconds(5),
+      background: TelemetryDetailPolicy.backgroundProcessInterval) == .seconds(10), "Hidden process work did not relax")
+
+    let transport = FixtureTransport([
+      SensorFixture(key: "Tp01", type: "sp78", bytes: [60, 0]),
+      SensorFixture(key: "Tzzz", type: "sp78", bytes: [110, 0]),
+    ])
+    let reader = SMCThermalReader(client: SMCClient(transport: transport),
+      classifier: ThermalClassifier(cpuBrand: "Apple M4"))
+    _ = try reader.read(rawDetailsVisible: false)
+    transport.requests.removeAll()
+    let hidden = try reader.read(rawDetailsVisible: false)
+    try require(transport.requests.filter { $0.command == .bytes && $0.key == "Tp01" }.count == 1,
+      "Hidden detail suppressed trusted safety sampling")
+    try require(!transport.requests.contains { $0.command == .bytes && $0.key == "Tzzz" },
+      "Hidden detail unnecessarily reread raw sensors")
+    try require(try hidden.maximumSoCCelsius.get() == 60, "Unknown hot reading entered Max SoC")
+    transport.requests.removeAll()
+    _ = try reader.read(rawDetailsVisible: true)
+    try require(transport.requests.contains { $0.command == .bytes && $0.key == "Tzzz" },
+      "Newly visible raw surface waited for the background deadline")
+    transport.requests.removeAll()
+    _ = try reader.read(rawDetailsVisible: true)
+    try require(!transport.requests.contains { $0.command == .bytes && $0.key == "Tzzz" },
+      "Multiple visible consumers duplicated raw collection")
+
+    // Advance only the injected advisory scheduler clock; no sleeping or hardware.
+    let cadenceTransport = FixtureTransport([
+      SensorFixture(key: "Tp01", type: "sp78", bytes: [60, 0]),
+      SensorFixture(key: "Tzzz", type: "sp78", bytes: [110, 0]),
+    ])
+    let cadenceReader = SMCThermalReader(client: SMCClient(transport: cadenceTransport),
+      classifier: ThermalClassifier(cpuBrand: "Apple M4"))
+    let clock = ContinuousClock.now
+    _ = try cadenceReader.read(rawDetailsVisible: false, now: clock)
+    cadenceTransport.requests.removeAll()
+    _ = try cadenceReader.read(rawDetailsVisible: false, now: clock.advanced(by: .seconds(59)))
+    try require(!cadenceTransport.requests.contains { $0.command == .bytes && $0.key == "Tzzz" },
+      "Hidden raw detail violated the relaxed deadline")
+    _ = try cadenceReader.read(rawDetailsVisible: false, now: clock.advanced(by: .seconds(60)))
+    try require(cadenceTransport.requests.contains { $0.command == .bytes && $0.key == "Tzzz" },
+      "Hidden raw detail failed to refresh after its deadline")
+    cadenceTransport.requests.removeAll()
+    _ = try cadenceReader.read(rawDetailsVisible: true, now: clock.advanced(by: .seconds(61)))
+    try require(cadenceTransport.requests.contains { $0.command == .bytes && $0.key == "Tzzz" },
+      "Visible transition did not refresh immediately")
+    cadenceTransport.requests.removeAll()
+    _ = try cadenceReader.read(rawDetailsVisible: true, now: clock.advanced(by: .seconds(75)))
+    try require(!cadenceTransport.requests.contains { $0.command == .bytes && $0.key == "Tzzz" },
+      "Visible raw detail reread before its deadline")
+    _ = try cadenceReader.read(rawDetailsVisible: true, now: clock.advanced(by: .seconds(76)))
+    try require(cadenceTransport.requests.contains { $0.command == .bytes && $0.key == "Tzzz" },
+      "Visible raw detail failed to refresh at its deadline")
+    cadenceTransport.requests.removeAll()
+    _ = try cadenceReader.read(rawDetailsVisible: true, forceRawRefresh: true,
+      now: clock.advanced(by: .seconds(77)))
+    try require(cadenceTransport.requests.contains { $0.command == .bytes && $0.key == "Tzzz" },
+      "Rapid close/reopen demand failed to force a fresh shared raw batch")
+
+    let fan = FanOwnershipPreflightFan(id: 0, modeKey: "F0Md", mode: 0,
+      actualRPM: 2500, targetRPM: 2500, minimumRPM: 2000, maximumRPM: 6000, targetType: "fpe2")
+    func evidence(model: String = "Mac16,1", build: String) -> FanOwnershipPreflightEvidence {
+      FanOwnershipPreflightEvidence(modelIdentifier: model, osBuild: build, fanCount: 1,
+        globalKeyType: "ui8 ", globalKeySize: 1, globalValue: 0, fans: [fan])
+    }
+    let validated = FanOSValidationCandidate.assess(evidence(build: "25G83"))
+    try require(validated.productionPreflightState == .readyForValidation && !validated.requiresPhysicalValidation,
+      "Existing validated OS classification changed")
+    let candidate = FanOSValidationCandidate.assess(evidence(build: "26A123"))
+    try require(candidate.productionPreflightState == .blocked && candidate.requiresPhysicalValidation,
+      "Offline candidate granted production write support")
+    let unknown = FanOSValidationCandidate.assess(evidence(model: "Mac16,11", build: "26A123"))
+    try require(unknown.productionPreflightState == .unsupported && !unknown.blockers.isEmpty,
+      "Offline candidate broadened hardware support")
   }
 
   private static func cpuChecks() throws {
@@ -381,6 +515,41 @@ private struct TelemetryChecks {
     try expectTelemetryFailure {
       _ = try GPURegistryParser.parse(["PerformanceStatistics": "broken"])
     }
+
+    for invalid in [NSNumber(value: true), NSNumber(value: -1), NSNumber(value: 1.5),
+      NSNumber(value: Double.nan), NSNumber(value: Double.infinity),
+      NSNumber(value: -Double.infinity), NSNumber(value: Double(UInt64.max)),
+      NSNumber(value: Double.greatestFiniteMagnitude)] {
+      let parsed = try GPURegistryParser.parse([
+        "PerformanceStatistics": ["Alloc system memory": invalid]])
+      try expectTelemetryFailure { try parsed.allocatedSystemMemoryBytes.get() }
+    }
+    for valid in [NSNumber(value: UInt64.max), NSNumber(value: UInt64.max - 1),
+      NSNumber(value: UInt64(9_007_199_254_740_993)), NSNumber(value: UInt64(0))] {
+      let parsed = try GPURegistryParser.parse([
+        "PerformanceStatistics": ["Alloc system memory": valid]])
+      try require(try parsed.allocatedSystemMemoryBytes.get() == valid.uint64Value,
+        "GPU integer counter lost exact UInt64 precision")
+    }
+    let floating = try GPURegistryParser.parse([
+      "PerformanceStatistics": ["Alloc system memory": NSNumber(value: 512.0)]])
+    try require(try floating.allocatedSystemMemoryBytes.get() == 512,
+      "Exactly representable floating GPU counter rejected")
+    for invalid in [NSNumber(value: UInt64.max), NSNumber(value: Double(Int.max)),
+      NSNumber(value: Double.greatestFiniteMagnitude), NSNumber(value: 1.5),
+      NSNumber(value: true), NSNumber(value: 0), NSNumber(value: 513)] {
+      try expectTelemetryFailure {
+        try GPURegistryParser.parse(["gpu-core-count": invalid]).coreCount.get()
+      }
+    }
+    for boundary in [1, 512] {
+      try require(try GPURegistryParser.parse(["gpu-core-count": boundary]).coreCount.get() == boundary,
+        "GPU core count boundary rejected")
+    }
+    let dataMax = try GPURegistryParser.parse([
+      "PerformanceStatistics": ["Alloc system memory": Data(repeating: 255, count: 8)]])
+    try require(try dataMax.allocatedSystemMemoryBytes.get() == UInt64.max,
+      "GPU little-endian Data counter lost exact UInt64.max")
   }
 
   private static func processChecks() throws {
@@ -431,6 +600,20 @@ private struct TelemetryChecks {
     try require(rate.instructionsPerCycle.map { close($0, 2) } == true, "Process IPC")
     try require(current.neuralFootprintBytes == 5_000_000, "Neural footprint preservation")
 
+    let extreme = ProcessCounterSnapshot(
+      pid: current.pid, startAbsoluteTime: current.startAbsoluteTime,
+      userTime: current.userTime, systemTime: current.systemTime,
+      energyNanojoules: current.energyNanojoules, performanceEnergyNanojoules: current.performanceEnergyNanojoules,
+      diskReadBytes: current.diskReadBytes, diskWriteBytes: current.diskWriteBytes,
+      packageIdleWakeups: UInt64.max, interruptWakeups: UInt64.max,
+      instructions: current.instructions, cycles: current.cycles,
+      physicalFootprintBytes: current.physicalFootprintBytes, neuralFootprintBytes: current.neuralFootprintBytes)
+    let extremeRate = ProcessRateCalculator.calculate(previous: previous, current: extreme,
+      elapsedSeconds: 10, logicalCPUCount: 10)
+    try require(extremeRate?.wakeupsPerSecond.isFinite == true,
+      "Individually monotonic wakeup counters overflowed before floating-point addition")
+    try require(ProcessRateCalculator.calculate(previous: previous, current: current,
+      elapsedSeconds: 10, logicalCPUCount: 10) != nil, "Hidden process cadence invalidated rates")
     let reused = ProcessCounterSnapshot(
       pid: 42, startAbsoluteTime: 101,
       userTime: current.userTime, systemTime: current.systemTime,
@@ -605,14 +788,67 @@ private struct TelemetryChecks {
     let cache = root.appendingPathComponent("Library/Caches/Test", isDirectory: true)
     try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
     try Data(repeating: 0x5a, count: 8_192).write(to: cache.appendingPathComponent("cache.bin"))
+    let homebrew = root.appendingPathComponent("Library/Caches/Homebrew", isDirectory: true)
+    try FileManager.default.createDirectory(at: homebrew, withIntermediateDirectories: true)
+    let brewFile = homebrew.appendingPathComponent("brew.bin")
+    try Data(repeating: 0x39, count: 16_384).write(to: brewFile)
+    let keys: Set<URLResourceKey> = [.fileAllocatedSizeKey, .totalFileAllocatedSizeKey]
+    func allocated(_ url: URL) throws -> UInt64 {
+      let values = try url.resourceValues(forKeys: keys)
+      let bytes = values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0
+      try require(bytes > 0, "Maintenance size fixture did not allocate file storage")
+      return UInt64(bytes)
+    }
+    let cacheBytes = try allocated(cache.appendingPathComponent("cache.bin"))
+    let brewBytes = try allocated(brewFile)
     let cleanup = CleanupProvider.read(home: root, entryBudget: 100)
+    try require(
+      cleanup.candidates.first { $0.id == "Library/Caches" }?.estimatedBytes == cacheBytes,
+      "User caches double-counted the separate Homebrew category")
+    try require(
+      cleanup.candidates.first { $0.id == "Library/Caches/Homebrew" }?.estimatedBytes == brewBytes
+      && cleanup.estimatedBytes == cacheBytes + brewBytes,
+      "Cleanup total did not preserve both distinct cache categories")
     try require(
       cleanup.candidates.contains { $0.id == "Library/Caches" && $0.scannedEntries > 0 },
       "Cleanup Scout must discover the configured user cache root")
+    let lowerBrew = root.appendingPathComponent("Library/Caches/homebrew", isDirectory: true)
+    let stagingBrew = root.appendingPathComponent("brew-case-stage", isDirectory: true)
+    try FileManager.default.moveItem(at: homebrew, to: stagingBrew)
+    try FileManager.default.moveItem(at: stagingBrew, to: lowerBrew)
+    let differentCase = CleanupProvider.read(home: root, entryBudget: 100)
+    if FileManager.default.fileExists(atPath: homebrew.path) {
+      // This volume resolves the configured spelling to the differently cased
+      // directory. File identity must prevent counting that same cache twice.
+      try require(differentCase.candidates.first { $0.id == "Library/Caches" }?.estimatedBytes == cacheBytes
+        && differentCase.estimatedBytes == cacheBytes + brewBytes,
+        "Case-insensitive Homebrew path alias was counted twice")
+    } else {
+      // On a case-sensitive volume it is a distinct, ordinary user-cache folder.
+      try require(differentCase.candidates.first { $0.id == "Library/Caches" }?.estimatedBytes == cacheBytes + brewBytes
+        && differentCase.candidates.allSatisfy { $0.id != "Library/Caches/Homebrew" },
+        "A distinct case-sensitive cache folder was incorrectly excluded")
+    }
     let bounded = CleanupProvider.read(home: root, entryBudget: 1)
     try require(
       bounded.candidates.first?.truncated == true || bounded.candidates.first?.scannedEntries == 1,
       "Cleanup scan must honor its entry budget")
+  }
+
+  @MainActor private static func maintenanceCancellationChecks() async throws {
+    let fixtureHome = URL(fileURLWithPath: "/fixture/maintenance-never-read", isDirectory: true)
+    let canceled = Task { @MainActor in
+      withUnsafeCurrentTask { $0?.cancel() }
+      // The explicit fake home plus the first cancellation check prevent all
+      // filesystem enumeration, including ApplicationsProvider's /Applications root.
+      let cleanup = CleanupProvider.read(home: fixtureHome)
+      let applications = ApplicationsProvider.read(home: fixtureHome)
+      return (cleanup, applications)
+    }
+    canceled.cancel()
+    let result = await canceled.value
+    try require(result.0.candidates.isEmpty && result.1.applications.isEmpty,
+      "Pre-start cancellation admitted a filesystem scan")
   }
 
   private static func utilityProviderChecks() throws {
@@ -664,6 +900,42 @@ private struct TelemetryChecks {
       "Power assertion AssertName fallback")
   }
 
+  @MainActor private static func numericCancellationChecks() async throws {
+    let fixtures = [
+      SensorFixture(key: "Praw", type: "flt ", bytes: word(Float(12.5).bitPattern)),
+      SensorFixture(key: "Vraw", type: "ui16", bytes: [0x04, 0xD2]),
+    ]
+    let beforeStart = Task { @MainActor in
+      let transport = FixtureTransport(fixtures)
+      let reader = SMCNumericReader(client: SMCClient(transport: transport))
+      do {
+        _ = try reader.read()
+        throw CheckFailure(description: "Canceled numeric reader started discovery")
+      } catch is CancellationError {}
+      try require(transport.requests.isEmpty, "Canceled numeric reader reached its injected transport")
+    }
+    beforeStart.cancel()
+    try await beforeStart.value
+
+    let duringRead = Task { @MainActor in
+      let transport = FixtureTransport(fixtures)
+      transport.onExchange = { request in
+        if request.command == .bytes && request.key == "Praw" {
+          withUnsafeCurrentTask { $0?.cancel() }
+        }
+      }
+      let reader = SMCNumericReader(client: SMCClient(transport: transport))
+      do {
+        _ = try reader.read()
+        throw CheckFailure(description: "Numeric reader ignored cancellation between keys")
+      } catch is CancellationError {}
+      try require(transport.requests.contains { $0.command == .bytes && $0.key == "Praw" }
+        && !transport.requests.contains { $0.command == .bytes && $0.key == "Vraw" },
+        "Numeric reader continued channel reads after cooperative cancellation")
+    }
+    try await duringRead.value
+  }
+
   private static func networkChecks() throws {
     let first = NetworkLinkCounters(
       receivedBytes: 1_000, transmittedBytes: 2_000, receivedPackets: 10, transmittedPackets: 20,
@@ -708,6 +980,30 @@ private struct TelemetryChecks {
     try expectTelemetryFailure {
       try calculator.consume(name: "en0", counters: wrapped, elapsedSeconds: 0).get()
     }
+
+    var session = NetworkSessionAccounting()
+    _ = session.consume(name: "en0", counters: first)
+    let totals = session.consume(name: "en0", counters: second)
+    try require(totals.0 == 4_000 && totals.1 == 6_000, "Session byte deltas")
+    session.resetBaseline() // Production missing-link and sleep/wake paths.
+    let resumed = session.consume(name: "en0", counters: wrapped)
+    try require(resumed.0 == totals.0 && resumed.1 == totals.1,
+      "Same-name recovery fabricated rollover traffic after missing link")
+    let afterRecovery = session.consume(name: "en0", counters: first)
+    try require(afterRecovery.0 == 4_990 && afterRecovery.1 == 7_980,
+      "Session did not resume real deltas from the recovered baseline")
+    let handoff = session.consume(name: "en1", counters: second)
+    try require(handoff.0 == afterRecovery.0 && handoff.1 == afterRecovery.1,
+      "Interface handoff added an unrelated interface counter")
+    session.resetBaseline()
+    _ = session.consume(name: "en1", counters: nearWrap)
+    let rolled = session.consume(name: "en1", counters: wrapped)
+    try require(rolled.0 == handoff.0 + 20 && rolled.1 == handoff.1 + 40,
+      "Continuous same-interface session rollover changed")
+    session.resetBaseline()
+    session.resetBaseline()
+    try require(session.downloadedBytes == rolled.0 && session.uploadedBytes == rolled.1,
+      "Repeated missing-link resets erased session totals")
   }
 
   private static func wifiChecks() throws {
@@ -753,6 +1049,22 @@ private struct TelemetryChecks {
       phyMode: .success("802.11n / Wi-Fi 4"), security: .success("WPA2 Personal")
     )
     try expectTelemetryFailure { try invalidSNR.signalToNoiseDB.get() }
+    func suppliedSNR(_ rssi: Int, _ noise: Int) -> MetricResult<Int> {
+      WiFiMetrics(interfaceName: "fixture", powerOn: true, serviceActive: true,
+        ssid: .failure(.unavailable("Fixture")), rssiDBm: .success(rssi), noiseDBm: .success(noise),
+        transmitRateMbps: .success(1), transmitPowerMilliwatts: .success(1),
+        channelNumber: .success(1), channelBand: .success("Fixture"), channelWidth: .success("Fixture"),
+        phyMode: .success("Fixture"), security: .success("Fixture")).signalToNoiseDB
+    }
+    for (rssi, noise) in [(Int.max, -1), (Int.min, 1), (Int.max, Int.min), (Int.min, Int.max)] {
+      try expectTelemetryFailure { try suppliedSNR(rssi, noise).get() }
+    }
+    for boundary in [-20, 100] {
+      try require(try suppliedSNR(boundary, 0).get() == boundary,
+        "Existing inclusive SNR plausibility boundary changed")
+    }
+    try require(try suppliedSNR(Int.max, Int.max).get() == 0,
+      "Safe difference of extreme supplied values was rejected")
   }
 
   private static func historyChecks() throws {
@@ -1026,6 +1338,229 @@ private struct TelemetryChecks {
       "Malformed tail recovery must preserve the next valid append")
   }
 
+  /// Field regression: retained history larger than the old absolute limits was
+  /// rewritten on every append (74 MB app energy per minute, 2 MB history per
+  /// 30 s) and on every launch. Compaction is now relative and repair-only on load.
+  private static func batteryHealthChecks() async throws {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(identifier: "UTC")!
+    let start = Date(timeIntervalSince1970: 1_800_000_000)
+    func battery(design: Int, maximum: Int, cycles: Int) -> BatteryMetrics {
+      BatteryParser.parse([
+        "DesignCapacity": design, "AppleRawMaxCapacity": maximum, "NominalChargeCapacity": maximum,
+        "CycleCount": cycles, "CurrentCapacity": 50, "MaxCapacity": 100, "IsCharging": false,
+        "ExternalConnected": false,
+      ])
+    }
+    func snapshot(_ metrics: BatteryMetrics, at date: Date) -> TelemetrySnapshot {
+      var snapshot = TelemetrySnapshot(capturedAt: date, capturedTicks: 1)
+      snapshot.battery = MetricSample(.success(metrics), capturedAt: date, capturedTicks: 1)
+      return snapshot
+    }
+    let first = BatteryHealthEngine.record(from: battery(design: 6000, maximum: 5700, cycles: 100), now: start, calendar: calendar)
+    try require(first?.cycleCount == 100 && abs((first?.healthPercent ?? 0) - 95) < 0.01,
+      "A day record carries health and cycle count")
+    try require(first?.day == calendar.startOfDay(for: start), "Records are keyed by local day")
+    var days = BatteryHealthEngine.merged([], with: first!)
+    let sameDay = BatteryDayRecord(day: first!.day, healthPercent: 94.9, maximumCapacityMAh: 5694,
+      designCapacityMAh: 6000, cycleCount: 100)
+    days = BatteryHealthEngine.merged(days, with: sameDay)
+    try require(days.count == 1 && days[0].healthPercent == 94.9, "The same day replaces its record")
+    let tomorrow = BatteryDayRecord(day: first!.day.addingTimeInterval(86_400), healthPercent: 94.5,
+      maximumCapacityMAh: 5670, designCapacityMAh: 6000, cycleCount: 101)
+    days = BatteryHealthEngine.merged(days, with: tomorrow)
+    try require(days.count == 2, "A new day appends")
+    try require(BatteryHealthEngine.merged(days, with: first!).count == 2
+      && BatteryHealthEngine.merged(days, with: first!) == days, "A clock rollback is ignored")
+    try require(!BatteryHealthEngine.needsPersisting(sameDay, after: BatteryDayRecord(
+      day: first!.day, healthPercent: 95.0, maximumCapacityMAh: 5700, designCapacityMAh: 6000, cycleCount: 100)),
+      "Sub-threshold wobble within a day is not rewritten")
+    try require(BatteryHealthEngine.needsPersisting(tomorrow, after: sameDay), "A new day is written")
+    try require(BatteryHealthEngine.needsPersisting(
+      BatteryDayRecord(day: first!.day, healthPercent: 95, maximumCapacityMAh: 5700, designCapacityMAh: 6000, cycleCount: 101),
+      after: first), "A cycle change is written")
+    let summary = BatteryHealthSummary(days: days)
+    try require(summary.cyclesAdded == 1 && abs((summary.healthChangePoints ?? 0) - (-0.4)) < 0.001,
+      "Summary reports wear and added cycles")
+    let many = (0..<1_300).map {
+      BatteryDayRecord(day: start.addingTimeInterval(Double($0) * 86_400), healthPercent: 90, maximumCapacityMAh: nil,
+        designCapacityMAh: nil, cycleCount: $0)
+    }
+    try require(BatteryHealthEngine.sanitized(many, now: start.addingTimeInterval(1_400 * 86_400)).count
+      == BatteryHealthEngine.retentionDays, "Retention is bounded")
+
+    // Store round trip: one line per day, persisted, reloaded, duplicates repaired.
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("Helios-BatteryHealth-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let url = directory.appendingPathComponent("battery.ndjson")
+    let store = BatteryHealthHistoryStore(url: url)
+    _ = await store.record(snapshot: snapshot(battery(design: 6000, maximum: 5700, cycles: 100), at: start), now: start, calendar: calendar)
+    _ = await store.record(snapshot: snapshot(battery(design: 6000, maximum: 5699, cycles: 100), at: start.addingTimeInterval(30)),
+      now: start.addingTimeInterval(30), calendar: calendar)
+    let nextDay = start.addingTimeInterval(86_400)
+    let result = await store.record(snapshot: snapshot(battery(design: 6000, maximum: 5690, cycles: 101), at: nextDay),
+      now: nextDay, calendar: calendar)
+    try require(result.days.count == 2, "Two days recorded")
+    let lines = try String(contentsOf: url, encoding: .utf8).split(separator: "\n")
+    try require(lines.count == 2, "Wobble within a day is not a new line (\(lines.count) lines)")
+    let reloaded = await BatteryHealthHistoryStore(url: url).current(now: nextDay)
+    try require(reloaded.days.map(\.cycleCount) == [100, 101], "The daily record persists across launches")
+    // Duplicated days in the file collapse to the newest line.
+    var duplicated = try Data(contentsOf: url)
+    for _ in 0..<40 { duplicated.append(lines[1].data(using: .utf8)!); duplicated.append(0x0A) }
+    try duplicated.write(to: url)
+    let repaired = BatteryHealthHistoryStore(url: url)
+    let repairedDays = await repaired.current(now: nextDay).days
+    try require(repairedDays.count == 2, "Duplicate days collapse on load")
+    try require(try String(contentsOf: url, encoding: .utf8).split(separator: "\n").count == 2,
+      "The file is rewritten without duplicates")
+    print("PASS daily battery health record: day keys, wobble threshold, rollback, retention, persistence and repair")
+  }
+
+  private static func appEnergyTieringChecks() throws {
+    let now = Date(timeIntervalSince1970: 1_800_000_000)
+    func entry(_ key: String, _ wattHours: Double) -> AppEnergyEntry {
+      AppEnergyEntry(appKey: key, displayName: key, energyWattHours: wattHours,
+        cpuCoreSeconds: wattHours * 100, wakeups: 10, peakMemoryBytes: UInt64(wattHours * 1e6))
+    }
+    // Seven days of one-minute buckets, power state flipping every ten hours.
+    let total = 7 * 24 * 60
+    let buckets = (0..<total).map { index in
+      AppEnergyBucket(
+        capturedAt: now.addingTimeInterval(-Double(total - index) * 60), durationSeconds: 60,
+        onBattery: (index / 600) % 2 == 0, batteryPercent: 80 - Double(index % 20),
+        entries: [entry("a", 0.01), entry("b", 0.02), entry("c", 0.005)])
+    }
+    let tiered = AppEnergyHistoryEngine.coarsened(buckets, now: now)
+    try require(tiered.count < 700, "Seven days must tier down to a few hundred buckets (\(tiered.count))")
+    let before = AppEnergyHistoryEngine.summary(buckets)
+    let after = AppEnergyHistoryEngine.summary(tiered)
+    try require(before.coverageSeconds == after.coverageSeconds
+      && before.onBatteryCoverageSeconds == after.onBatteryCoverageSeconds,
+      "Tiering must preserve coverage")
+    try require(zip(before.topAll, after.topAll).allSatisfy {
+      $0.appKey == $1.appKey && abs($0.energyWattHours - $1.energyWattHours) < 1e-6
+        && abs($0.cpuCoreSeconds - $1.cpuCoreSeconds) < 1e-6 && $0.peakMemoryBytes == $1.peakMemoryBytes
+    } && before.topAll.count == after.topAll.count, "Tiering must preserve per-app totals")
+    try require(zip(before.topOnBattery, after.topOnBattery).allSatisfy {
+      abs($0.energyWattHours - $1.energyWattHours) < 1e-6 } , "Tiering must preserve on-battery totals")
+    try require(before.recentHourTrends == after.recentHourTrends
+      && before.recentHourOnBatteryChargeDeltaPercent == after.recentHourOnBatteryChargeDeltaPercent,
+      "The last three hours stay at one-minute resolution, so trends do not change")
+    let recent = tiered.filter { now.timeIntervalSince($0.capturedAt) < AppEnergyHistoryEngine.fineRetention }
+    try require(recent.count == 179 && recent.allSatisfy { $0.durationSeconds == 60 },
+      "The newest three hours are untouched")
+    try require(AppEnergyHistoryEngine.coarsened(tiered, now: now) == tiered, "Tiering is idempotent")
+    try require(AppEnergyHistoryEngine.sanitized(tiered, now: now).count == tiered.count,
+      "Tiered buckets stay valid and ordered")
+    try require(tiered.allSatisfy { $0.durationSeconds <= AppEnergyHistoryEngine.maximumBucketSeconds },
+      "No bucket exceeds an hour")
+    try require(zip(tiered, tiered.dropFirst()).allSatisfy { $0.capturedAt < $1.capturedAt }, "Order is preserved")
+    // The decode path produces the same tiers without materialising the full week.
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .millisecondsSince1970
+    var file = Data()
+    for bucket in buckets { file.append(try encoder.encode(bucket)); file.append(0x0A) }
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .millisecondsSince1970
+    var strings = AppEnergyStringTable()
+    var decodedCount = 0
+    let streamed = AppEnergyHistoryEngine.decodeLines(
+      file, decoder: decoder, strings: &strings, coarseningAt: now, decodedCount: &decodedCount)
+    try require(decodedCount == total && streamed == tiered, "Streaming decode tiers like the pure function")
+  }
+
+  private static func historyCompactionChecks() async throws {
+    try require(!HistoryCompactionPolicy.shouldCompact(fileSize: 2_100_000, compactedSize: 2_100_000, slack: 2_000_000),
+      "Retained content above the slack alone must not trigger a rewrite")
+    try require(HistoryCompactionPolicy.shouldCompact(fileSize: 4_100_001, compactedSize: 2_100_000, slack: 2_000_000),
+      "Growth beyond the slack compacts")
+    try require(HistoryCompactionPolicy.shouldCompact(fileSize: 2_000_001, compactedSize: 0, slack: 2_000_000),
+      "Small histories keep the previous absolute bound")
+    try require(!HistoryCompactionPolicy.shouldCompact(fileSize: .max, compactedSize: .max, slack: 1),
+      "Overflowing limits never compact in a loop")
+    try require(!HistoryCompactionPolicy.needsRepair(rawRecords: 10, decoded: 10, clean: 7, expiredPrefix: 3,
+      endsWithNewline: true), "Expired head records are left for compaction")
+    try require(HistoryCompactionPolicy.needsRepair(rawRecords: 10, decoded: 9, clean: 9, expiredPrefix: 0,
+      endsWithNewline: true), "Malformed lines are repaired")
+    try require(HistoryCompactionPolicy.needsRepair(rawRecords: 10, decoded: 10, clean: 8, expiredPrefix: 1,
+      endsWithNewline: true), "Ordering/future drops are repaired")
+    try require(HistoryCompactionPolicy.needsRepair(rawRecords: 10, decoded: 10, clean: 10, expiredPrefix: 0,
+      endsWithNewline: false), "A torn final line is repaired")
+
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("Helios-Compaction-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let url = directory.appendingPathComponent("history.ndjson")
+    let now = Date(timeIntervalSince1970: 1_800_000_000)
+    func point(_ age: TimeInterval) -> PersistedTelemetryPoint {
+      PersistedTelemetryPoint(
+        capturedAt: now.addingTimeInterval(-age), cpuPercent: 12.345678, memoryPercent: 64.123456,
+        gpuPercent: 8.765432, maxSoCCelsius: 51.234567, systemPowerWatts: 9.876543,
+        batteryPercent: 80.123456, batteryHealthPercent: 94.567891, batteryPowerWatts: -6.543219,
+        batteryOnAC: false, batteryTemperatureCelsius: 31.234567, batteryCycleCount: 123,
+        storageTemperatureCelsius: 38.765432, storageDeviceBSDName: "disk0",
+        storageLifetimeReadBytes: 1.234567e13, storageLifetimeWrittenBytes: 9.876543e12,
+        storageReadBytesPerSecond: 1_234_567.89, storageWriteBytesPerSecond: 987_654.32,
+        processAccountedReadBytesPerSecond: 123_456.78, processAccountedWriteBytesPerSecond: 98_765.43,
+        heliosCPUPercent: 1.234567, heliosPowerWatts: 0.056789, heliosMemoryBytes: 61_234_567,
+        heliosWakeupsPerSecond: 5.678912, fanRPM: 2_345.678, networkDownloadBytesPerSecond: 234_567.89,
+        networkUploadBytesPerSecond: 45_678.91)
+    }
+    // Three expired records at the head, then a full 24 hours at 30 s.
+    var points = (0..<3).map { point(25 * 3_600 + Double($0)) }
+    points += stride(from: 24.0 * 3_600 - 60, through: 60, by: -30).map(point)
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .millisecondsSince1970
+    let written = try HistoryCompactionPolicy.writeLines(points, encoder: encoder, to: url)
+    try require(written > 2_000_000, "Fixture must exceed the old absolute limit (\(written) bytes)")
+    try require(try FileManager.default.contentsOfDirectory(atPath: directory.path) == ["history.ndjson"],
+      "Streaming rewrite must not leave temporary files")
+    // Orphaned temporaries from an interrupted compaction are removed on load;
+    // recent ones (possibly another instance) and unrelated files are kept.
+    let staleTemporary = directory.appendingPathComponent(".history.ndjson.\(UUID().uuidString).tmp")
+    let freshTemporary = directory.appendingPathComponent(".history.ndjson.\(UUID().uuidString).tmp")
+    let unrelated = directory.appendingPathComponent(".other.ndjson.\(UUID().uuidString).tmp")
+    for file in [staleTemporary, freshTemporary, unrelated] {
+      try Data("x".utf8).write(to: file)
+    }
+    try FileManager.default.setAttributes(
+      [.modificationDate: Date().addingTimeInterval(-3_600)], ofItemAtPath: staleTemporary.path)
+    try FileManager.default.setAttributes(
+      [.modificationDate: Date().addingTimeInterval(-3_600)], ofItemAtPath: unrelated.path)
+    HistoryCompactionPolicy.removeStaleTemporaries(for: url)
+    try require(!FileManager.default.fileExists(atPath: staleTemporary.path), "Stale temporary is removed")
+    try require(FileManager.default.fileExists(atPath: freshTemporary.path), "Recent temporary is kept")
+    try require(FileManager.default.fileExists(atPath: unrelated.path), "Other stores' temporaries are kept")
+    try FileManager.default.removeItem(at: freshTemporary)
+    try FileManager.default.removeItem(at: unrelated)
+    func inode() throws -> Int {
+      (try FileManager.default.attributesOfItem(atPath: url.path)[.systemFileNumber] as? NSNumber)?.intValue ?? -1
+    }
+    let originalInode = try inode()
+    let store = PersistentHistoryStore(url: url)
+    let loaded = await store.current(now: now)
+    try require(loaded.points.count == points.count - 3, "Expired head records are excluded in memory")
+    try require(try inode() == originalInode, "Load must not rewrite for expired head records")
+    var snapshot = TelemetrySnapshot(capturedAt: now, capturedTicks: 1)
+    snapshot.cpu = MetricSample(.success(CPUMetrics(
+      userPercent: 10, systemPercent: 2, nicePercent: 0, idlePercent: 88)), capturedAt: now, capturedTicks: 1)
+    _ = await store.append(snapshot: snapshot, now: now)
+    try require(try inode() == originalInode, "A single append must not rewrite >2 MB of retained history")
+    let lines = try Data(contentsOf: url).split(separator: 0x0A).count
+    try require(lines == points.count + 1, "Append adds exactly one line")
+    var torn = try Data(contentsOf: url)
+    torn.append(Data("{\"capturedAt\":".utf8))
+    try torn.write(to: url)
+    let repaired = PersistentHistoryStore(url: url)
+    _ = await repaired.current(now: now)
+    let repairedData = try Data(contentsOf: url)
+    try require(repairedData.last == 0x0A && repairedData.split(separator: 0x0A).count == points.count - 3 + 1,
+      "A torn tail is repaired, dropping expired records at the same time")
+  }
+
   private static func persistenceLifecycleChecks() async throws {
     // Every store uses disposable paths. Exercise the production cached-handle
     // paths, then inspect disk bytes independently of their in-memory summaries.
@@ -1094,7 +1629,23 @@ private struct TelemetryChecks {
       try require(repaired.last == 0x0A,
                   "\(kind): complete JSON tail needs a delimiter before another append")
     }
-    print("PASS all three history stores: atomic replacement, truncation, recreation and unterminated JSON recovery")
+    let resetEnergy = AppEnergyHistoryStore(url: directory.appendingPathComponent("reset-energy.ndjson"))
+    let resetStart = Date(timeIntervalSince1970: 70_000)
+    for tick in 0...19 {
+      if tick == 7 { await resetEnergy.resetSamplingBaseline() }
+      let now = resetStart.addingTimeInterval(Double(tick) * 5)
+      var snapshot = tick < 7 ? historySnapshot(now: now, power: 10, cpu: 20) : TelemetrySnapshot()
+      snapshot.processes = MetricSample(.success(ProcessMetrics(
+        accessibleProcessCount: 0, topByCPU: [], topByEnergy: [], topByMemory: [])),
+        capturedAt: now, capturedTicks: UInt64(tick + 1))
+      _ = await resetEnergy.consume(snapshot: snapshot, now: now)
+    }
+    let resetSummary = await resetEnergy.current(now: resetStart.addingTimeInterval(95))
+    try require(resetSummary.buckets.count == 1 && resetSummary.buckets[0].durationSeconds == 60,
+      "Discarded app-energy samples must not bridge the integration baseline")
+    try require(resetSummary.buckets[0].batteryPercent == nil && resetSummary.buckets[0].onBattery == nil,
+      "App-energy baseline reset must discard old battery metadata")
+    print("PASS all three history stores: atomic replacement, truncation, recreation and unterminated JSON recovery; app-energy backpressure resets integration and battery metadata")
   }
 
   private static func ioAuditChecks() async throws {
@@ -1446,6 +1997,52 @@ private struct TelemetryChecks {
     }
     try require(issues.first?.severity == .critical, "Critical health issues must sort first")
 
+    var configuration = HealthAlertConfiguration.defaults
+    for rule in HealthAlertRule.allCases {
+      try require(configuration[rule].enabled, "Existing alert unexpectedly disabled by default")
+      try require(configuration[rule].threshold == rule.defaultThreshold, "Threshold migration baseline")
+    }
+    // CPU average: P- and E-core sensors only, GPU and hotspots excluded.
+    let averageFixture = ThermalMetrics(readings: [
+      ThermalReading(key: "Tp01", group: .performanceCPU, celsius: 80),
+      ThermalReading(key: "Te05", group: .efficiencyCPU, celsius: 60),
+      ThermalReading(key: "Tg0G", group: .gpu, celsius: 90),
+    ], failures: [:])
+    try require((try? averageFixture.averageCPUCelsius.get()) == 70, "CPU average must mean the P- and E-core sensors")
+    try require((try? averageFixture.maximumSoCCelsius.get()) == 90, "Hottest sensor must still include the GPU")
+    let gpuOnly = ThermalMetrics(readings: [ThermalReading(key: "Tg0G", group: .gpu, celsius: 90)], failures: [:])
+    try require((try? gpuOnly.averageCPUCelsius.get()) == nil, "CPU average without CPU sensors must be unavailable")
+    configuration[.socCritical] = HealthAlertSetting(enabled: false, threshold: 95)
+    configuration[.socHot] = HealthAlertSetting(enabled: true, threshold: 100)
+    try require(!HealthEvaluator.evaluate(bad, now: now, configuration: configuration)
+      .contains { $0.id.hasPrefix("soc-") }, "Disabled/custom thresholds must affect evaluator")
+    configuration[.socHot] = HealthAlertSetting(enabled: true, threshold: 90)
+    try require(configuration.crossed(.socHot, value: 89.9, previouslyActive: ["soc-hot"]),
+      "Hover near threshold must retain numeric activation")
+    try require(!configuration.crossed(.socHot, value: 86.9, previouslyActive: ["soc-hot"]),
+      "Three-degree recovery must rearm alert")
+    try require(!configuration.crossed(.socHot, value: 89.9, previouslyActive: []),
+      "Below-threshold value must not activate")
+    try require(!configuration.crossed(.socHot, value: .nan, previouslyActive: []), "NaN alert")
+    configuration[.socHot] = HealthAlertSetting(enabled: true, threshold: .infinity)
+    try require(configuration[.socHot].threshold == HealthAlertRule.socHot.defaultThreshold, "Nonfinite preference default")
+    configuration[.socHot] = HealthAlertSetting(enabled: true, threshold: 200)
+    try require(configuration[.socHot].threshold == 120, "Threshold upper bound")
+    configuration[.batteryHealthLow] = HealthAlertSetting(enabled: true, threshold: 80)
+    try require(configuration.crossed(.batteryHealthLow, value: 82, previouslyActive: ["battery-health-low"]),
+      "Battery low-direction recovery hysteresis")
+    try require(!configuration.crossed(.batteryHealthLow, value: 83, previouslyActive: ["battery-health-low"]),
+      "Battery recovery boundary")
+    let warning = HealthIssue(id: "soc-hot", severity: .attention, title: "Heat", detail: "fixture")
+    try require(!HealthNotificationPolicy.shouldNotify(issue: warning, activeSince: now,
+      lastNotifiedAt: nil, now: now.addingTimeInterval(14)), "Sustained warning boundary")
+    try require(HealthNotificationPolicy.shouldNotify(issue: warning, activeSince: now,
+      lastNotifiedAt: nil, now: now.addingTimeInterval(15)), "Sustained warning eligible")
+    try require(!HealthNotificationPolicy.shouldNotify(issue: warning, activeSince: now,
+      lastNotifiedAt: now, now: now.addingTimeInterval(1799)), "Delivery-time warning cooldown boundary")
+    try require(HealthNotificationPolicy.shouldNotify(issue: warning, activeSince: now,
+      lastNotifiedAt: now, now: now.addingTimeInterval(1800)), "Delivery-time warning cooldown expired; activation eligibility is separate")
+
     var stale = bad
     stale.thermals = MetricSample(bad.thermals.result, capturedAt: now.addingTimeInterval(-60))
     stale.memory = MetricSample(bad.memory.result, capturedAt: now.addingTimeInterval(-60))
@@ -1455,6 +2052,551 @@ private struct TelemetryChecks {
     try require(
       HealthEvaluator.evaluate(stale, now: now).isEmpty,
       "Stale telemetry must never raise health alerts")
+  }
+
+  @MainActor
+  private static func notificationDeliveryChecks() async throws {
+    let start = Date()
+    let tasks = NotificationFixtureTasks()
+    var attempts = 0
+    let center = HealthAlertCenter(runtimeServicesEnabled: false, fixtureDelivery: { _ in
+      attempts += 1
+      if attempts == 1 { throw TelemetryError.unavailable("fixture delivery failure") }
+    }, fixtureTaskObserver: { tasks.observe($0) })
+    defer { center.shutdown() }
+    func snapshot(_ temperature: Double, at date: Date) -> TelemetrySnapshot {
+      var value = TelemetrySnapshot()
+      value.thermals = MetricSample(.success(ThermalMetrics(readings: [
+        ThermalReading(key: "Tp01", group: .performanceCPU, celsius: temperature)
+      ], failures: [:])), capturedAt: date)
+      return value
+    }
+    center.accept(snapshot(60, at: start), now: start)
+    center.accept(snapshot(96, at: start.addingTimeInterval(1)), now: start.addingTimeInterval(1))
+    try require(tasks.tasks.count == 1, "Expected the initial delivery task")
+    await tasks.drain()
+    try require(attempts == 1 && center.deliveryFailed, "Failed delivery must be observable")
+    try require(!center.events.contains { $0.change == .notified }, "Failure falsely recorded as delivery")
+    for second in 2...61 {
+      let date = start.addingTimeInterval(Double(second))
+      center.accept(snapshot(96, at: date), now: date)
+      await tasks.drain()
+      try require(attempts == (second < 61 ? 1 : 2), "Delivery retried before its one-minute boundary")
+    }
+    await tasks.drain()
+    try require(attempts == 2 && !center.deliveryFailed, "Bounded delivery retry failed")
+    try require(center.events.filter { $0.change == .notified }.count == 1, "Successful enqueue record")
+    let later = start.addingTimeInterval(62)
+    center.accept(snapshot(94.9, at: later), now: later)
+    await tasks.drain()
+    try require(attempts == 2, "Threshold hover repeated delivery")
+    let gap = start.addingTimeInterval(200)
+    center.accept(snapshot(96, at: gap), now: gap)
+    await tasks.drain()
+    try require(attempts == 2, "Wake baseline replayed active alert")
+    let configuration = NotificationFixtureConfiguration()
+    let independentTasks = NotificationFixtureTasks()
+    var independentDeliveries = 0
+    let independent = HealthAlertCenter(runtimeServicesEnabled: false,
+      configuration: { configuration.value }, fixtureDelivery: { _ in independentDeliveries += 1 },
+      fixtureTaskObserver: { independentTasks.observe($0) })
+    defer { independent.shutdown() }
+    independent.accept(snapshot(60, at: start), now: start)
+    independent.accept(snapshot(91, at: start.addingTimeInterval(1)), now: start.addingTimeInterval(1))
+    configuration.value[.batteryHealthLow] = HealthAlertSetting(enabled: false, threshold: 80)
+    independent.accept(snapshot(91, at: start.addingTimeInterval(8)), now: start.addingTimeInterval(8))
+    independent.accept(snapshot(91, at: start.addingTimeInterval(16)), now: start.addingTimeInterval(16))
+    try require(independentTasks.tasks.count == 1, "Independent warning must create a delivery task")
+    await independentTasks.drain()
+    try require(independentDeliveries == 1, "Changing another rule reset sustained alert time")
+    var paused = snapshot(91, at: start.addingTimeInterval(17))
+    paused.isSuspended = true
+    independent.accept(paused, now: start.addingTimeInterval(17))
+    // The redraw can precede the post-wake readers. A placeholder publication
+    // must not consume the baseline and then replay the first real hot sample.
+    independent.accept(TelemetrySnapshot(), now: start.addingTimeInterval(18))
+    independent.accept(snapshot(96, at: start.addingTimeInterval(19)), now: start.addingTimeInterval(19))
+    await independentTasks.drain()
+    try require(independentDeliveries == 1, "Short sleep replayed a critical alert")
+
+    // Direct jumps have one immediate critical delivery. A downgrade within
+    // the critical cooldown cannot produce a redundant attention notification.
+    let severityTasks = NotificationFixtureTasks()
+    var severityDeliveries: [String] = []
+    let severityCenter = HealthAlertCenter(runtimeServicesEnabled: false,
+      fixtureDelivery: { severityDeliveries.append($0.id) },
+      fixtureTaskObserver: { severityTasks.observe($0) })
+    defer { severityCenter.shutdown() }
+    severityCenter.accept(snapshot(85, at: start), now: start)
+    let jump = start.addingTimeInterval(1)
+    severityCenter.accept(snapshot(97, at: jump), now: jump)
+    await severityTasks.drain()
+    try require(severityDeliveries == ["soc-critical"], "85 -> 97 produced redundant severity notifications")
+    for second in 2...25 {
+      let date = start.addingTimeInterval(Double(second))
+      severityCenter.accept(snapshot(90, at: date), now: date)
+      await severityTasks.drain()
+    }
+    try require(severityDeliveries == ["soc-critical"], "Critical -> high downgrade created notification spam")
+
+    // A warning queued but not yet enqueued must be cancelled by escalation.
+    let escalationTasks = NotificationFixtureTasks()
+    var escalationDeliveries: [String] = []
+    let escalationCenter = HealthAlertCenter(runtimeServicesEnabled: false,
+      fixtureDelivery: { escalationDeliveries.append($0.id) },
+      fixtureTaskObserver: { escalationTasks.observe($0) })
+    defer { escalationCenter.shutdown() }
+    escalationCenter.accept(snapshot(85, at: start), now: start)
+    for (second, temperature) in [(1.0, 91.0), (16.0, 91.0), (17.0, 97.0)] {
+      let date = start.addingTimeInterval(second)
+      escalationCenter.accept(snapshot(temperature, at: date), now: date)
+    }
+    await escalationTasks.drain()
+    try require(escalationDeliveries == ["soc-critical"], "Escalation failed to cancel pending warning delivery")
+
+    // All cancellations happen synchronously on MainActor before the created
+    // delivery task gets its first turn. Await the captured handle even though
+    // cancellation removes it from the center's own task dictionary.
+    for action in ["resolve", "sleep", "shutdown", "configuration", "reactivate",
+      "threshold-no-publication", "unrelated-threshold-no-publication"] {
+      let canceledTasks = NotificationFixtureTasks()
+      var deliveries = 0
+      let settings = NotificationFixtureConfiguration()
+      let canceled = HealthAlertCenter(runtimeServicesEnabled: false,
+        configuration: { settings.value }, fixtureDelivery: { _ in deliveries += 1 },
+        fixtureTaskObserver: { canceledTasks.observe($0) })
+      canceled.accept(snapshot(60, at: start), now: start)
+      canceled.accept(snapshot(96, at: start.addingTimeInterval(1)), now: start.addingTimeInterval(1))
+      try require(canceledTasks.tasks.count == 1, "Cancellation fixture must schedule a task: \(action)")
+      let canceledAt = start.addingTimeInterval(2)
+      switch action {
+      case "shutdown": canceled.shutdown()
+      case "sleep":
+        var sleeping = snapshot(96, at: canceledAt)
+        sleeping.isSuspended = true
+        canceled.accept(sleeping, now: canceledAt)
+      case "configuration":
+        settings.value[.socCritical] = HealthAlertSetting(enabled: false, threshold: 95)
+        canceled.accept(snapshot(96, at: canceledAt), now: canceledAt)
+      case "threshold-no-publication":
+        settings.value[.socCritical] = HealthAlertSetting(enabled: true, threshold: 100)
+      case "unrelated-threshold-no-publication":
+        settings.value[.batteryHealthCritical] = HealthAlertSetting(enabled: true, threshold: 60)
+      default:
+        canceled.accept(snapshot(60, at: canceledAt), now: canceledAt)
+      }
+      if action == "reactivate" {
+        let reactivatedAt = start.addingTimeInterval(3)
+        canceled.accept(snapshot(96, at: reactivatedAt), now: reactivatedAt)
+        try require(canceledTasks.tasks.count == 2, "Capture both activation task handles")
+      }
+      await canceledTasks.drain()
+      let expected = action == "reactivate" || action == "unrelated-threshold-no-publication" ? 1 : 0
+      try require(deliveries == expected, "Per-rule delivery invalidation failed: \(action)")
+      try require(canceled.events.filter { $0.change == .notified }.count == expected,
+        "Canceled activation recorded delivery: \(action)")
+      canceled.shutdown()
+    }
+
+    // Cancellation after entering delivery cannot retract that call, but both
+    // the success and failure paths must ignore stale activation bookkeeping.
+    for (action, failDelivery) in [
+      ("resolve", false), ("resolve", true),
+      ("threshold-no-publication", false), ("threshold-no-publication", true),
+    ] {
+      let settings = NotificationFixtureConfiguration()
+      let inFlightTasks = NotificationFixtureTasks()
+      let (started, startDelivery) = AsyncStream<Void>.makeStream()
+      let (released, releaseDelivery) = AsyncStream<Void>.makeStream()
+      var entries = 0
+      let inFlight = HealthAlertCenter(runtimeServicesEnabled: false,
+        configuration: { settings.value }, fixtureDelivery: { _ in
+        entries += 1
+        startDelivery.yield(())
+        startDelivery.finish()
+        var releaseIterator = released.makeAsyncIterator()
+        _ = await releaseIterator.next()
+        if failDelivery { throw TelemetryError.unavailable("late fixture failure") }
+      }, fixtureTaskObserver: { inFlightTasks.observe($0) })
+      let deadline = Task { @MainActor in
+        do { try await Task.sleep(for: .seconds(5)) } catch { return }
+        fatalError("In-flight notification fixture did not complete within five seconds")
+      }
+      defer { deadline.cancel(); inFlight.shutdown() }
+      inFlight.accept(snapshot(60, at: start), now: start)
+      inFlight.accept(snapshot(96, at: start.addingTimeInterval(1)), now: start.addingTimeInterval(1))
+      var startIterator = started.makeAsyncIterator()
+      guard await startIterator.next() != nil else {
+        throw CheckFailure(description: "In-flight fixture did not enter delivery")
+      }
+      if action == "threshold-no-publication" {
+        settings.value[.socCritical] = HealthAlertSetting(enabled: true, threshold: 100)
+      } else {
+        inFlight.accept(snapshot(60, at: start.addingTimeInterval(2)), now: start.addingTimeInterval(2))
+      }
+      releaseDelivery.yield(())
+      releaseDelivery.finish()
+      await inFlightTasks.drain()
+      try require(entries == 1 && !inFlight.deliveryFailed,
+        "Stale post-await completion must not record success or failure")
+      try require(!inFlight.events.contains { $0.change == .notified },
+        "Resolved in-flight activation must not write cooldown history")
+      deadline.cancel()
+    }
+
+    let attention = HealthIssue(id: "soc-hot", severity: .attention, title: "Heat", detail: "fixture")
+    let critical = HealthIssue(id: "soc-critical", severity: .critical, title: "Heat", detail: "fixture")
+    for issue in [attention, critical] {
+      let cooldown = HealthNotificationPolicy.repeatCooldown(for: issue)
+      for (offset, expected) in [(-0.001, false), (0.0, true), (0.001, true)] {
+        try require(HealthNotificationPolicy.activationAllowsNotification(issue: issue,
+          activeSince: start.addingTimeInterval(cooldown + offset), lastNotifiedAt: start) == expected,
+          "Exact activation cooldown boundary: \(issue.id), \(offset)")
+      }
+      try require(!HealthNotificationPolicy.activationAllowsNotification(issue: issue,
+        activeSince: start.addingTimeInterval(-1), lastNotifiedAt: start),
+        "A backwards activation timestamp must not bypass cooldown")
+    }
+
+    // The warning near expiry is the inherited sustain boundary gap. Delaying
+    // persisted history until after activation additionally tests readiness.
+    for historyReadiness in ["ready", "delayed", "delayed-with-missing-sample"] {
+      let delayedHistory = historyReadiness != "ready"
+      for (temperature, issueID, cooldown, sustain) in [
+        (91.0, "soc-hot", 1800.0, 15.0), (96.0, "soc-critical", 600.0, 0.0)
+      ] {
+        for offset in [-1.0, 0.0, 1.0] {
+          let historyTasks = NotificationFixtureTasks()
+          var deliveries = 0
+          let record = HealthEventRecord(capturedAt: start, change: .notified,
+            issueID: issueID, severity: temperature == 91 ? 1 : 2,
+            title: "Previous enqueue", detail: "fixture")
+          let cooled = HealthAlertCenter(runtimeServicesEnabled: false,
+            fixtureDelivery: { _ in deliveries += 1 }, fixtureHistory: { [record] },
+            fixtureTaskObserver: { historyTasks.observe($0) })
+          if !delayedHistory { await historyTasks.drain() }
+          // Warning starts ten seconds before expiry; sustain ends five seconds
+          // after expiry. The exact boundary and just-after remain eligible.
+          let activationOffset = cooldown + (offset < 0 && sustain > 0 ? -10 : offset)
+          let activatedAt = start.addingTimeInterval(activationOffset)
+          let baselineAt = activatedAt.addingTimeInterval(-1)
+          cooled.accept(snapshot(60, at: baselineAt), now: baselineAt)
+          cooled.accept(snapshot(temperature, at: activatedAt), now: activatedAt)
+          let readinessDelay = historyReadiness == "delayed-with-missing-sample" ? 20.0 : 0.0
+          if readinessDelay > 0 {
+            let missingAt = activatedAt.addingTimeInterval(readinessDelay)
+            cooled.accept(TelemetrySnapshot(), now: missingAt)
+          }
+          if delayedHistory { await historyTasks.drain() }
+          if readinessDelay > 0 {
+            let returnedAt = activatedAt.addingTimeInterval(readinessDelay)
+            cooled.accept(snapshot(temperature, at: returnedAt), now: returnedAt)
+          }
+          let eligibleAt = activatedAt.addingTimeInterval(readinessDelay + sustain)
+          cooled.accept(snapshot(temperature, at: eligibleAt), now: eligibleAt)
+          await historyTasks.drain()
+          let expected = offset < 0 ? 0 : 1
+          try require(deliveries == expected,
+            "Activation cooldown boundary: \(issueID), \(offset), readiness=\(historyReadiness)")
+          for elapsed in [20.0, 40.0, 60.0] {
+            let date = eligibleAt.addingTimeInterval(elapsed)
+            cooled.accept(snapshot(temperature, at: date), now: date)
+            await historyTasks.drain()
+          }
+          try require(deliveries == expected, "Cooldown suppression must last the whole activation")
+          try require(cooled.events.filter { $0.change == .notified }.count == expected + 1,
+            "Cooldown history must record only successful enqueue")
+          cooled.shutdown()
+        }
+      }
+    }
+
+  }
+
+  /// Real observation types, isolated to one enabled rule by the caller.
+  private static func notificationObservation(_ rule: HealthAlertRule, triggering: Bool,
+    at date: Date, fieldMissing: Bool = false) -> TelemetrySnapshot {
+    var snapshot = TelemetrySnapshot()
+    switch rule {
+    case .socHot, .socCritical:
+      snapshot.thermals = MetricSample(.success(ThermalMetrics(readings: fieldMissing ? [] : [
+        ThermalReading(key: "Tp01", group: .performanceCPU, celsius: triggering ? 96 : 60)
+      ], failures: [:])), capturedAt: date)
+    case .batteryHealthLow, .batteryHealthCritical, .batteryTempHot, .batteryTempCritical:
+      snapshot.battery = MetricSample(.success(BatteryMetrics(
+        designCapacityMAh: .success(6_000), maximumCapacityMAh: fieldMissing
+          ? .failure(.unavailable("fixture capacity")) : .success(triggering ? 3_600 : 5_700),
+        currentCapacityMAh: .success(3_000), cycleCount: .success(100),
+        temperatureCelsius: fieldMissing ? .failure(.unavailable("fixture temperature"))
+          : .success(triggering ? 51 : 30),
+        power: .success(BatteryPower(signedWatts: -5, usesInstantaneousCurrent: true))
+      )), capturedAt: date)
+    case .memoryWarning, .memoryCritical:
+      snapshot.memory = MetricSample(.success(MemoryMetrics(
+        physicalBytes: 16 << 30, activeBytes: 4 << 30, inactiveBytes: 4 << 30,
+        wiredBytes: 2 << 30, compressedBytes: 1 << 30, freeBytes: 5 << 30,
+        pressure: fieldMissing ? .failure(.unavailable("fixture pressure"))
+          : .success(triggering ? (rule == .memoryWarning ? .warning : .critical) : .normal)
+      )), capturedAt: date)
+    case .thermalSerious, .thermalCritical:
+      snapshot.system = MetricSample(.success(SystemMetrics(
+        modelIdentifier: .success("fixture"), chipName: .success("fixture"), osVersion: "fixture",
+        uptimeSeconds: 1_000, logicalProcessorCount: 10, physicalMemoryBytes: 16 << 30,
+        loadAverage1: .success(1), loadAverage5: .success(1), loadAverage15: .success(1),
+        thermalState: triggering ? (rule == .thermalSerious ? .serious : .critical) : .nominal,
+        lowPowerModeEnabled: false
+      )), capturedAt: date)
+      if fieldMissing { snapshot.system = MetricSample(.failure(.unavailable("fixture system")), capturedAt: date) }
+    case .ssdTempHot, .ssdTempCritical, .smartAttention, .smartCritical, .mediaErrors:
+      snapshot.storage = MetricSample(.success(StorageMetrics(
+        rootVolume: .failure(.unavailable("fixture")), devices: [], primaryDeviceBSDName: nil,
+        throughput: .failure(.warmingUp), smartHealth: fieldMissing
+          ? .failure(.unavailable("fixture SMART")) : .success(NVMeSMARTHealth(
+          criticalWarning: triggering && rule == .smartCritical ? 1 : 0,
+          temperatureCelsius: triggering ? 81 : 35, availableSparePercent: 100,
+          availableSpareThresholdPercent: 10,
+          percentageUsed: triggering && rule == .smartAttention ? 85 : 5,
+          dataUnitsRead: NVMeCounter128(low: 0, high: 0),
+          dataUnitsWritten: NVMeCounter128(low: 0, high: 0),
+          hostReadCommands: NVMeCounter128(low: 0, high: 0),
+          hostWriteCommands: NVMeCounter128(low: 0, high: 0),
+          controllerBusyMinutes: NVMeCounter128(low: 0, high: 0),
+          powerCycles: NVMeCounter128(low: 0, high: 0),
+          powerOnHours: NVMeCounter128(low: 0, high: 0),
+          unsafeShutdowns: NVMeCounter128(low: 0, high: 0),
+          mediaErrors: NVMeCounter128(low: triggering && rule == .mediaErrors ? 1 : 0, high: 0),
+          errorLogEntries: NVMeCounter128(low: 0, high: 0)
+        )), smartHealthCapturedTicks: nil
+      )), capturedAt: date)
+    }
+    return snapshot
+  }
+
+  @MainActor
+  private static func notificationObservationChecks() async throws {
+    let start = Date()
+    for rule in HealthAlertRule.allCases {
+      var settings = HealthAlertConfiguration.defaults
+      for other in HealthAlertRule.allCases {
+        settings[other] = HealthAlertSetting(enabled: other == rule, threshold: other.defaultThreshold)
+      }
+      let configuration = settings
+      let active = HealthEvaluator.evaluate(notificationObservation(rule, triggering: true, at: start),
+        now: start, configuration: configuration)
+      try require(active.count == 1 && active[0].id == rule.rawValue,
+        "Observation fixture must activate exactly its own rule: \(rule)")
+      let sustain = HealthNotificationPolicy.minimumActiveDuration(for: active[0])
+      let queuedAt = start.addingTimeInterval(1 + sustain)
+      // Late history arrives after the cooldown expires. Missing evidence must
+      // not replace the original pre-expiry activation time for any rule type.
+      let historyTasks = NotificationFixtureTasks()
+      var historyDeliveries = 0
+      let prior = HealthEventRecord(capturedAt: start, change: .notified, issueID: rule.rawValue,
+        severity: active[0].severity.rawValue, title: "Prior enqueue", detail: "fixture")
+      let cooled = HealthAlertCenter(runtimeServicesEnabled: false,
+        configuration: { configuration }, fixtureDelivery: { _ in historyDeliveries += 1 },
+        fixtureHistory: { [prior] }, fixtureTaskObserver: { historyTasks.observe($0) },
+        fixtureObservationClock: { start })
+      defer { cooled.shutdown() }
+      let preExpiry = start.addingTimeInterval(HealthNotificationPolicy.repeatCooldown(for: active[0]) - 1)
+      cooled.accept(notificationObservation(rule, triggering: false, at: preExpiry.addingTimeInterval(-1)),
+        now: preExpiry.addingTimeInterval(-1))
+      cooled.accept(notificationObservation(rule, triggering: true, at: preExpiry), now: preExpiry)
+      let missingAt = preExpiry.addingTimeInterval(2)
+      cooled.accept(notificationObservation(rule, triggering: true, at: missingAt, fieldMissing: true),
+        now: missingAt)
+      try require(!cooled.events.contains { $0.change == .resolved },
+        "Delayed history fixture must retain unresolved latch: \(rule)")
+      await historyTasks.drain()
+      let historyReadyAt = missingAt.addingTimeInterval(1)
+      cooled.accept(notificationObservation(rule, triggering: true, at: historyReadyAt), now: historyReadyAt)
+      let sustainedAt = historyReadyAt.addingTimeInterval(sustain)
+      cooled.accept(notificationObservation(rule, triggering: true, at: sustainedAt), now: sustainedAt)
+      await historyTasks.drain()
+      try require(historyDeliveries == 0 && cooled.events.filter { $0.change == .notified }.count == 1,
+        "Observation loss must preserve original activation-time cooldown: \(rule)")
+      for loss in ["missing", "stale", "field-missing"] {
+        let lostAt = queuedAt.addingTimeInterval(1)
+        let missing = loss == "missing" ? TelemetrySnapshot()
+          : notificationObservation(rule, triggering: true,
+            at: loss == "stale" ? lostAt.addingTimeInterval(-60) : lostAt,
+            fieldMissing: loss == "field-missing")
+        try require(!rule.hasCurrentObservation(in: missing, now: lostAt),
+          "Loss fixture must lack a current observation: \(rule), \(loss)")
+
+        // No suspension occurs between scheduling and invalidation. Captured
+        // task handles prove the cancelled task actually finishes without enqueue.
+        let tasks = NotificationFixtureTasks()
+        let clock = NotificationFixtureClock(start)
+        var deliveries = 0
+        let center = HealthAlertCenter(runtimeServicesEnabled: false,
+          configuration: { configuration }, fixtureDelivery: { _ in deliveries += 1 },
+          fixtureTaskObserver: { tasks.observe($0) }, fixtureObservationClock: { clock.now })
+        defer { center.shutdown() }
+        center.accept(notificationObservation(rule, triggering: false, at: start), now: start)
+        let activatedAt = start.addingTimeInterval(1)
+        center.accept(notificationObservation(rule, triggering: true, at: activatedAt), now: activatedAt)
+        center.accept(notificationObservation(rule, triggering: true, at: queuedAt), now: queuedAt)
+        try require(tasks.tasks.count == 1, "Expected before-start task: \(rule), \(loss)")
+        center.accept(missing, now: lostAt)
+        await tasks.drain()
+        try require(deliveries == 0 && center.issues.map(\.id) == [rule.rawValue],
+          "Observation loss must cancel enqueue and preserve latch: \(rule), \(loss)")
+        try require(center.events.map(\.change) == [.activated],
+          "Observation loss must not resolve or notify: \(rule), \(loss)")
+        let returnedAt = lostAt.addingTimeInterval(1)
+        center.accept(notificationObservation(rule, triggering: true, at: returnedAt), now: returnedAt)
+        if sustain > 0 {
+          let early = returnedAt.addingTimeInterval(sustain - 0.001)
+          center.accept(notificationObservation(rule, triggering: true, at: early), now: early)
+          try require(tasks.tasks.isEmpty, "Returning data must restart sustain: \(rule), \(loss)")
+        }
+        let eligibleAt = returnedAt.addingTimeInterval(sustain)
+        center.accept(notificationObservation(rule, triggering: true, at: eligibleAt), now: eligibleAt)
+        await tasks.drain()
+        try require(deliveries == 1 && center.events.filter { $0.change == .activated }.count == 1,
+          "Returning condition must retain activation and become eligible: \(rule), \(loss)")
+        let recoveredAt = eligibleAt.addingTimeInterval(1)
+        center.accept(notificationObservation(rule, triggering: false, at: recoveredAt), now: recoveredAt)
+        try require(center.issues.isEmpty && center.events.filter { $0.change == .resolved }.count == 1,
+          "Only fresh nontriggering evidence clears latch: \(rule), \(loss)")
+        center.accept(notificationObservation(rule, triggering: true, at: recoveredAt.addingTimeInterval(1)),
+          now: recoveredAt.addingTimeInterval(1))
+        try require(center.events.filter { $0.change == .activated }.count == 2,
+          "Fresh recovery must rearm the rule: \(rule), \(loss)")
+        await tasks.drain()
+        try require(deliveries == 1, "Recovery must retain repeat cooldown: \(rule), \(loss)")
+
+        // A startup condition stays silent across an unobserved interval.
+        let silentTasks = NotificationFixtureTasks()
+        var silentDeliveries = 0
+        let silent = HealthAlertCenter(runtimeServicesEnabled: false,
+          configuration: { configuration }, fixtureDelivery: { _ in silentDeliveries += 1 },
+          fixtureTaskObserver: { silentTasks.observe($0) }, fixtureObservationClock: { start })
+        defer { silent.shutdown() }
+        silent.accept(notificationObservation(rule, triggering: true, at: queuedAt), now: queuedAt)
+        silent.accept(missing, now: lostAt)
+        silent.accept(notificationObservation(rule, triggering: true, at: returnedAt), now: returnedAt)
+        silent.accept(notificationObservation(rule, triggering: true, at: eligibleAt), now: eligibleAt)
+        await silentTasks.drain()
+        try require(silentDeliveries == 0 && silent.events.isEmpty,
+          "Missing source must not replay startup or create transitions: \(rule), \(loss)")
+
+        // Suspend inside delivery on an explicit continuation. Cancellation cannot
+        // release this gate; the fixture decides when success/failure returns.
+        for (failDelivery, replaceBeforeCompletion) in [(false, false), (true, false), (false, true), (true, true)] {
+          let suspendedTasks = NotificationFixtureTasks()
+          let (entered, enteredSignal) = AsyncStream<Void>.makeStream()
+          var release: CheckedContinuation<Void, Never>?
+          var entries = 0
+          let suspended = HealthAlertCenter(runtimeServicesEnabled: false,
+            configuration: { configuration }, fixtureDelivery: { _ in
+              entries += 1
+              if entries == 1 {
+                await withCheckedContinuation { continuation in
+                  release = continuation
+                  enteredSignal.yield(())
+                  enteredSignal.finish()
+                }
+                if failDelivery { throw TelemetryError.unavailable("late observation-loss fixture") }
+              }
+            }, fixtureTaskObserver: { suspendedTasks.observe($0) }, fixtureObservationClock: { start })
+          let deadline = Task { @MainActor in
+            do { try await Task.sleep(for: .seconds(5)) } catch { return }
+            fatalError("Observation-loss fixture never entered delivery")
+          }
+          defer { deadline.cancel(); suspended.shutdown() }
+          suspended.accept(notificationObservation(rule, triggering: false, at: start), now: start)
+          suspended.accept(notificationObservation(rule, triggering: true, at: activatedAt), now: activatedAt)
+          suspended.accept(notificationObservation(rule, triggering: true, at: queuedAt), now: queuedAt)
+          var iterator = entered.makeAsyncIterator()
+          guard await iterator.next() != nil, let continuation = release else {
+            throw CheckFailure(description: "Observation-loss fixture did not suspend: \(rule)")
+          }
+          suspended.accept(missing, now: lostAt)
+          try require(suspended.events.map(\.change) == [.activated]
+            && suspended.issues.map(\.id) == [rule.rawValue],
+            "Suspended loss must retain latch without recovery: \(rule), \(loss)")
+          if replaceBeforeCompletion {
+            suspended.accept(notificationObservation(rule, triggering: true, at: returnedAt), now: returnedAt)
+            suspended.accept(notificationObservation(rule, triggering: true, at: eligibleAt), now: eligibleAt)
+            try require(suspendedTasks.tasks.count == 2,
+              "Replacement must be captured while cancelled delivery is suspended: \(rule), \(loss)")
+          }
+          continuation.resume()
+          release = nil
+          await suspendedTasks.drain()
+          deadline.cancel()
+          try require(entries == (replaceBeforeCompletion ? 2 : 1) && !suspended.deliveryFailed
+            && suspended.events.filter { $0.change == .notified }.count == (replaceBeforeCompletion ? 1 : 0)
+            && suspended.events.filter { $0.change == .resolved }.isEmpty
+            && suspended.events.filter { $0.change == .activated }.count == 1,
+            "Lost-source completion must not update history/cooldown/retry: \(rule), \(loss), \(failDelivery)")
+          if !replaceBeforeCompletion {
+            suspended.accept(notificationObservation(rule, triggering: true, at: returnedAt), now: returnedAt)
+            suspended.accept(notificationObservation(rule, triggering: true, at: eligibleAt), now: eligibleAt)
+          }
+          await suspendedTasks.drain()
+          try require(entries == 2 && suspended.events.filter { $0.change == .notified }.count == 1,
+            "Ignored completion must not consume cooldown or impose retry: \(rule), \(loss), \(failDelivery)")
+        }
+      }
+      // Expiry between publications must be checked at actual enqueue/completion,
+      // not only by accept(). Advance an injected clock without sleeping/yielding.
+      for stage in ["before-start", "suspended-success", "suspended-failure"] {
+        let tasks = NotificationFixtureTasks()
+        let clock = NotificationFixtureClock(start)
+        let (entered, enteredSignal) = AsyncStream<Void>.makeStream()
+        var release: CheckedContinuation<Void, Never>?
+        var entries = 0
+        let center = HealthAlertCenter(runtimeServicesEnabled: false,
+          configuration: { configuration }, fixtureDelivery: { _ in
+            entries += 1
+            if stage != "before-start" && entries == 1 {
+              await withCheckedContinuation { continuation in
+                release = continuation
+                enteredSignal.yield(())
+                enteredSignal.finish()
+              }
+              if stage == "suspended-failure" { throw TelemetryError.unavailable("expired fixture") }
+            }
+          }, fixtureTaskObserver: { tasks.observe($0) }, fixtureObservationClock: { clock.now })
+        let deadline = Task { @MainActor in
+          do { try await Task.sleep(for: .seconds(5)) } catch { return }
+          fatalError("Expiry fixture did not finish")
+        }
+        defer { deadline.cancel(); center.shutdown() }
+        center.accept(notificationObservation(rule, triggering: false, at: start), now: start)
+        let activatedAt = start.addingTimeInterval(1)
+        center.accept(notificationObservation(rule, triggering: true, at: activatedAt), now: activatedAt)
+        center.accept(notificationObservation(rule, triggering: true, at: queuedAt), now: queuedAt)
+        try require(tasks.tasks.count == 1, "Expiry fixture must schedule: \(rule), \(stage)")
+        if stage != "before-start" {
+          var iterator = entered.makeAsyncIterator()
+          guard await iterator.next() != nil, release != nil else {
+            throw CheckFailure(description: "Expiry fixture did not enter delivery")
+          }
+        }
+        clock.now = start.addingTimeInterval(61)
+        release?.resume()
+        release = nil
+        await tasks.drain()
+        try require(entries == (stage == "before-start" ? 0 : 1) && !center.deliveryFailed
+          && center.events.map(\.change) == [.activated] && center.issues.map(\.id) == [rule.rawValue],
+          "Expiry must invalidate enqueue/completion while retaining latch: \(rule), \(stage)")
+        let returnedAt = queuedAt.addingTimeInterval(1)
+        center.accept(notificationObservation(rule, triggering: true, at: returnedAt), now: returnedAt)
+        if sustain > 0 {
+          try require(tasks.tasks.isEmpty, "Expiry must restart sustain: \(rule), \(stage)")
+        }
+        let eligibleAt = returnedAt.addingTimeInterval(sustain)
+        center.accept(notificationObservation(rule, triggering: true, at: eligibleAt), now: eligibleAt)
+        await tasks.drain()
+        try require(entries == (stage == "before-start" ? 1 : 2)
+          && center.events.filter { $0.change == .notified }.count == 1,
+          "Expired task must not block replacement or consume cooldown/retry: \(rule), \(stage)")
+      }
+    }
   }
 
   private static func healthEventChecks() async throws {
@@ -1888,6 +3030,11 @@ private struct TelemetryChecks {
   }
 
   private static func formattingChecks() throws {
+    try require(TelemetryFormatting.duration(Double.greatestFiniteMagnitude) == "—"
+      && TelemetryFormatting.duration(Double(Int.max)) == "—",
+      "Out-of-range durations must not trap during integer conversion")
+    try require(TelemetryFormatting.duration(90) == "1m"
+      && TelemetryFormatting.duration(-1) == "—", "Ordinary duration formatting remains intact")
     try require(
       try MemoryPressure.decode(1) == .normal && MemoryPressure.decode(2) == .warning
         && MemoryPressure.decode(4) == .critical, "Kernel pressure mapping")

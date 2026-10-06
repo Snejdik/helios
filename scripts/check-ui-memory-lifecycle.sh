@@ -3,7 +3,12 @@
 # is validated separately by perf-ui-memory-check.sh on a real Apple-Silicon Mac.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-windows="Sources/HeliosApp/HeliosWindows.swift"
+windows="$(mktemp "${TMPDIR:-/tmp}/helios-windows.XXXXXX")"
+trap 'rm -f "$windows"' EXIT
+# The window code lives in Sources/HeliosApp/Windows; read it as one text in its former file order.
+for name in HeliosWindowCoordinator HeliosEnergyInspector HeliosMonitorWindow HeliosModuleDetail HeliosSettings HeliosOnboarding HeliosWindowChrome; do
+  cat "Sources/HeliosApp/Windows/$name.swift" >> "$windows"
+done
 status="Sources/HeliosApp/StatusItemController.swift"
 icons="Sources/HeliosApp/HeliosMetricPopovers.swift"
 
@@ -24,7 +29,7 @@ grep -q 'HeliosAppIconCache.shared.purge()' "$status"
 # Compile the actual disclosure implementation and exercise both branches.
 # Searching for a stored closure alone missed RC3's uncalled-content build bug.
 probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/helios-lazy-panel.XXXXXX")"
-trap 'rm -rf "$probe_dir"' EXIT
+trap 'rm -rf "$probe_dir"; rm -f "$windows"' EXIT
 printf 'import AppKit\nimport SwiftUI\n' > "$probe_dir/Probe.swift"
 sed -n '/^private struct HeliosDiagnosticDisclosurePanel</,/^}/p' "$windows" >> "$probe_dir/Probe.swift"
 cat >> "$probe_dir/Probe.swift" <<'SWIFT'

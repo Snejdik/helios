@@ -38,8 +38,12 @@ SWIFT
 # with the tiny stubs above. This preserves the initializer and persistence code
 # exactly, including Swift definite-initialization checking.
 sed '/^import Foundation$/d' Sources/HeliosApp/Telemetry/TelemetryCollectionPolicy.swift >> "$probe"
+sed '/^import Foundation$/d' Sources/HeliosApp/Telemetry/HealthAlertConfiguration.swift >> "$probe"
 
 sed '/^import Combine$/d; /^import Foundation$/d' Sources/HeliosApp/HeliosPreferences.swift >> "$probe"
+sed '/^import Foundation$/d' Sources/HeliosApp/V2/HeliosVocabulary.swift >> "$probe"
+sed '/^import Foundation$/d' Sources/HeliosApp/V2/HeliosGoals.swift >> "$probe"
+sed '/^import Combine$/d; /^import Foundation$/d' Sources/HeliosApp/V2/HeliosInterfacePreferences.swift >> "$probe"
 
 cat >> "$probe" <<'SWIFT'
 
@@ -52,6 +56,14 @@ struct PreferencesProbe {
     defer { defaults.removePersistentDomain(forName: suite) }
 
     let fresh = HeliosPreferences(defaults: defaults)
+    precondition(fresh.healthAlerts == .defaults)
+    fresh.setHealthAlert(.socHot, enabled: false, threshold: 88.5)
+    let alertsReloaded = HeliosPreferences(defaults: defaults)
+    precondition(!alertsReloaded.healthAlerts[.socHot].enabled)
+    precondition(alertsReloaded.healthAlerts[.socHot].threshold == 88.5)
+    precondition(alertsReloaded.healthAlerts[.socCritical].threshold == 95)
+    fresh.restoreHealthAlertDefaults()
+    precondition(HeliosPreferences(defaults: defaults).healthAlerts == .defaults)
     precondition(fresh.menuBarMetrics == [.cpu, .temperature])
     precondition(fresh.menuBarLayout == .nativeModules && fresh.showMenuBarHub)
     precondition(fresh.graphLineStyle == .smooth && fresh.animateGraphUpdates)
@@ -62,6 +74,29 @@ struct PreferencesProbe {
     precondition(HeliosMenuBarMetric.cpu.statusWidth == HeliosMenuBarMetric.memory.statusWidth)
     precondition(HeliosMenuBarMetric.cpu.statusWidth == HeliosMenuBarMetric.temperature.statusWidth)
     precondition(fresh.coolingFeaturesEnabled)
+    precondition(fresh.telemetryModules == HeliosPreferences.simpleTelemetryModules)
+    // Simple mode hides Storage, but enabled SSD alerts still use its canonical collector.
+    precondition(!fresh.isTelemetryEnabled(.storage))
+    precondition(fresh.isTelemetryCollectionRequired(.storage))
+    for module in [HeliosTelemetryModule.memory, .battery, .storage] {
+      fresh.setTelemetryModuleEnabled(module, enabled: false)
+      precondition(!fresh.isTelemetryEnabled(module))
+      precondition(fresh.isTelemetryCollectionRequired(module))
+      for rule in HealthAlertRule.allCases where rule.collectionDependency == module {
+        fresh.setHealthAlert(rule, enabled: false)
+      }
+      precondition(!fresh.isTelemetryCollectionRequired(module))
+      for rule in HealthAlertRule.allCases where rule.collectionDependency == module {
+        fresh.setHealthAlert(rule, enabled: true)
+        precondition(fresh.isTelemetryCollectionRequired(module))
+        precondition(!fresh.isTelemetryEnabled(module))
+        fresh.setHealthAlert(rule, enabled: false)
+      }
+      fresh.setTelemetryModuleEnabled(module, enabled: true)
+      precondition(fresh.isTelemetryCollectionRequired(module))
+    }
+    fresh.restoreHealthAlertDefaults()
+    fresh.applyInterfacePreset(.simple)
     precondition(fresh.telemetryModules == HeliosPreferences.simpleTelemetryModules)
     precondition(!fresh.fanSafetyGuideCompleted)
     precondition(fresh.colorHex(for: .cpu) == HeliosColorRole.cpu.defaultHex)
@@ -265,6 +300,145 @@ struct PreferencesProbe {
     precondition(detailed.dashboardMetrics == HeliosDashboardMetric.allCases)
     precondition(detailed.monitorRoutes == HeliosMonitorRoute.allCases)
 
+    // Helios 0.2 interface preference: default Helios, persistent Legacy switch,
+    // Overview never hidden, layout reset keeps the interface choice.
+    let interfaceSuite = "Helios.PreferencesInterface.\(UUID().uuidString)"
+    guard let interfaceDefaults = UserDefaults(suiteName: interfaceSuite) else { fatalError("interface defaults unavailable") }
+    interfaceDefaults.removePersistentDomain(forName: interfaceSuite)
+    defer { interfaceDefaults.removePersistentDomain(forName: interfaceSuite) }
+    let firstRun = HeliosPreferences(defaults: interfaceDefaults)
+    precondition(firstRun.interface.style == .helios)
+    precondition(firstRun.interface.overviewChartMetric == nil)
+    precondition(firstRun.interface.popoverSections == HeliosPopoverSection.defaults)
+    precondition(firstRun.interface.visiblePages == HeliosPage.allCases)
+    firstRun.interface.style = .legacy
+    firstRun.interface.overviewChartMetric = .temperature
+    firstRun.interface.setPage(.network, visible: false)
+    firstRun.interface.setPage(.overview, visible: false)
+    firstRun.interface.setPopoverSection(.cooling, enabled: false)
+    firstRun.interface.setPopoverSection(.activity, enabled: true)
+    firstRun.interface.movePopoverSection(.activity, by: -5)
+    let reloadedInterface = HeliosPreferences(defaults: interfaceDefaults)
+    precondition(reloadedInterface.interface.style == .legacy)
+    precondition(reloadedInterface.interface.overviewChartMetric == .temperature)
+    precondition(reloadedInterface.interface.hiddenPages == [.network])
+    precondition(reloadedInterface.interface.visiblePages.first == .overview)
+    precondition(reloadedInterface.interface.popoverSections == [.activity, .chart, .processes])
+    interfaceDefaults.set(["chart", "chart", "bogus", "network"], forKey: HeliosInterfacePreferences.popoverSectionsKey)
+    interfaceDefaults.set("bogus", forKey: HeliosInterfacePreferences.styleKey)
+    interfaceDefaults.set(["overview", "nonsense"], forKey: HeliosInterfacePreferences.hiddenPagesKey)
+    let sanitized = HeliosPreferences(defaults: interfaceDefaults)
+    precondition(sanitized.interface.popoverSections == [.chart, .network])
+    precondition(sanitized.interface.style == .helios)
+    precondition(sanitized.interface.hiddenPages.isEmpty)
+    sanitized.interface.style = .legacy
+    sanitized.resetInterface()
+    precondition(sanitized.interface.style == .legacy)
+    precondition(sanitized.interface.popoverSections == HeliosPopoverSection.defaults)
+    precondition(sanitized.interface.overviewChartMetric == nil)
+    precondition(HeliosPreferences(defaults: interfaceDefaults).interface.overviewChartMetric == nil)
+
+    // Temperature unit: display only, Celsius by default, persisted, bogus values ignored.
+    let unitSuite = "Helios.PreferencesUnit.\(UUID().uuidString)"
+    guard let unitDefaults = UserDefaults(suiteName: unitSuite) else { fatalError("unit defaults unavailable") }
+    defer { unitDefaults.removePersistentDomain(forName: unitSuite) }
+    let unitFirst = HeliosPreferences(defaults: unitDefaults)
+    precondition(unitFirst.temperatureUnit == .celsius && TemperatureUnit.current == .celsius)
+    unitFirst.temperatureUnit = .fahrenheit
+    precondition(TemperatureUnit.current == .fahrenheit)
+    precondition(TemperatureUnit.fahrenheit.format(50) == "122°F" && TemperatureUnit.celsius.format(50) == "50°C")
+    precondition(TemperatureUnit.fahrenheit.format(-10, decimals: 1) == "14.0°F")
+    precondition(TemperatureUnit.celsius.format(.nan) == "—" && TemperatureUnit.fahrenheit.format(.infinity) == "—")
+    precondition(HeliosPreferences(defaults: unitDefaults).temperatureUnit == .fahrenheit)
+    unitDefaults.set("kelvin", forKey: "v2.ui.temperatureUnit")
+    precondition(HeliosPreferences(defaults: unitDefaults).temperatureUnit == .celsius)
+    unitFirst.temperatureUnit = .celsius
+
+    // Welcome goals: pure plan, union, persistence and effect on every surface.
+    let emptyPlan = HeliosGoalPlan.make(for: [])
+    precondition(emptyPlan == HeliosGoalPlan.make(for: [.simple]))
+    precondition(Set(emptyPlan.samplers) == HeliosGoalPlan.baseSamplers)
+    precondition(emptyPlan.menuBarMetrics.isEmpty && emptyPlan.popoverSections == [.chart])
+    precondition(!emptyPlan.wantsFanHelper && !emptyPlan.visiblePages.contains(.history))
+    let coolPlan = HeliosGoalPlan.make(for: [.cooling])
+    precondition(coolPlan.wantsFanHelper && coolPlan.samplers.contains(.fans))
+    precondition(coolPlan.menuBarMetrics == [.temperature] && coolPlan.popoverSections.contains(.cooling))
+    // The welcome's recommendation is the owner's bar: CPU, RAM, TEMP, PWR (+ cooling when a fan exists).
+    let withFan = HeliosMacTraits(hasFans: true, hasBattery: true)
+    let fanless = HeliosMacTraits(hasFans: false, hasBattery: true)
+    let desktop = HeliosMacTraits(hasFans: true, hasBattery: false)
+    precondition(HeliosGoalPlan.recommendedGoals(for: withFan) == [.liveStats, .cooling])
+    precondition(HeliosGoalPlan.recommendedGoals(for: fanless) == [.liveStats])
+    precondition(HeliosGoalPlan.recommendedGoals(for: .unknown) == [.liveStats])
+    let recommended = HeliosGoalPlan.make(for: HeliosGoalPlan.recommendedGoals(for: withFan), traits: withFan)
+    // With a fan the temperature item carries the fan state above it; without one it is plain TEMP.
+    precondition(recommended.menuBarMetrics == [.cpu, .memory, .cooling, .power])
+    precondition(recommended.wantsFanHelper)
+    precondition(HeliosGoalPlan.make(for: [.liveStats], traits: fanless).menuBarMetrics == [.cpu, .memory, .temperature, .power])
+    precondition(HeliosGoalPlan.make(for: [.liveStats], traits: .unknown).menuBarMetrics == [.cpu, .memory, .temperature, .power])
+    // A Mac without a fan never gets the cooling goal or the helper step; a desktop never gets battery.
+    let fanlessPlan = HeliosGoalPlan.make(for: [.cooling, .liveStats], traits: fanless)
+    precondition(!fanlessPlan.wantsFanHelper && !fanlessPlan.samplers.contains(.fans) && !fanlessPlan.popoverSections.contains(.cooling))
+    precondition(!HeliosGoal.available(on: fanless).contains(.cooling) && HeliosGoal.available(on: fanless).contains(.battery))
+    precondition(!HeliosGoal.available(on: desktop).contains(.battery) && HeliosGoal.available(on: desktop).contains(.cooling))
+    precondition(HeliosGoalPlan.make(for: [.battery], traits: desktop) == HeliosGoalPlan.make(for: [.simple], traits: desktop))
+    precondition(HeliosGoal.available(on: .unknown).count == HeliosGoal.allCases.count)
+    precondition(coolPlan.visiblePages.contains(.hardware) && !coolPlan.visiblePages.contains(.network))
+    let combined = HeliosGoalPlan.make(for: [.battery, .network, .liveStats])
+    precondition(combined.samplers.contains(.processes) && combined.samplers.contains(.wifi))
+    precondition(combined.menuBarMetrics.count <= HeliosGoalPlan.maximumMenuBarMetrics)
+    precondition(combined.visiblePages.contains(.network) && combined.visiblePages.contains(.history))
+    precondition(combined.samplers == HeliosTelemetryModule.allCases.filter(Set(combined.samplers).contains))
+    for goals in [Set<HeliosGoal>(), [.simple], [.cooling], [.storage], Set(HeliosGoal.allCases)] {
+      let plan = HeliosGoalPlan.make(for: goals)
+      precondition(HeliosGoalPlan.baseSamplers.isSubset(of: Set(plan.samplers)))
+      precondition(plan.visiblePages.contains(.overview) && plan.visiblePages.contains(.diagnostics))
+      for area in [HeliosPage.cpu, .gpu, .memory, .thermals, .battery, .storage] {
+        precondition(plan.visiblePages.contains(area))
+      }
+    }
+    let goalSuite = "Helios.PreferencesGoals.\(UUID().uuidString)"
+    guard let goalDefaults = UserDefaults(suiteName: goalSuite) else { fatalError("goal defaults unavailable") }
+    goalDefaults.removePersistentDomain(forName: goalSuite)
+    defer { goalDefaults.removePersistentDomain(forName: goalSuite) }
+    let goalPreferences = HeliosPreferences(defaults: goalDefaults)
+    goalPreferences.completeOnboarding(goals: [.battery])
+    let batteryPlan = HeliosGoalPlan.make(for: [.battery])
+    precondition(goalPreferences.onboardingCompleted)
+    precondition(goalPreferences.telemetryModules == batteryPlan.samplers)
+    precondition(goalPreferences.menuBarMetrics == [.battery])
+    precondition(goalPreferences.interface.popoverSections == batteryPlan.popoverSections)
+    precondition(goalPreferences.interface.goals == [.battery])
+    precondition(goalPreferences.interface.hiddenPages.contains(.network))
+    precondition(!goalPreferences.interface.hiddenPages.contains(.overview))
+    let goalReloaded = HeliosPreferences(defaults: goalDefaults)
+    precondition(goalReloaded.interface.goals == [.battery])
+    precondition(goalReloaded.telemetryModules == batteryPlan.samplers)
+    precondition(goalReloaded.menuBarMetrics == [.battery])
+    goalPreferences.applyGoals([])
+    precondition(goalPreferences.menuBarMetrics.isEmpty && goalPreferences.showMenuBarHub)
+    precondition(HeliosPreferences(defaults: goalDefaults).menuBarMetrics.isEmpty)
+
+    // Diagnostics reminder: a calm, permanent-dismiss nudge one week after first use.
+    let reminderSuite = "Helios.PreferencesReminder.\(UUID().uuidString)"
+    guard let reminderDefaults = UserDefaults(suiteName: reminderSuite) else { fatalError("reminder defaults unavailable") }
+    reminderDefaults.removePersistentDomain(forName: reminderSuite)
+    defer { reminderDefaults.removePersistentDomain(forName: reminderSuite) }
+    let reminderPreferences = HeliosPreferences(defaults: reminderDefaults)
+    let firstSeen = reminderPreferences.interface.firstSeen
+    let day: TimeInterval = 86_400
+    precondition(!reminderPreferences.interface.shouldShowDiagnosticsReminder(
+      sharingDiagnostics: false, now: firstSeen.addingTimeInterval(6 * day)))
+    precondition(reminderPreferences.interface.shouldShowDiagnosticsReminder(
+      sharingDiagnostics: false, now: firstSeen.addingTimeInterval(7 * day)))
+    precondition(!reminderPreferences.interface.shouldShowDiagnosticsReminder(
+      sharingDiagnostics: true, now: firstSeen.addingTimeInterval(30 * day)))
+    reminderPreferences.interface.dismissDiagnosticsReminder()
+    precondition(!reminderPreferences.interface.shouldShowDiagnosticsReminder(
+      sharingDiagnostics: false, now: firstSeen.addingTimeInterval(30 * day)))
+    let reminderReloaded = HeliosPreferences(defaults: reminderDefaults)
+    precondition(reminderReloaded.interface.firstSeen == firstSeen)
+    precondition(reminderReloaded.interface.diagnosticsReminderDismissed)
   }
 }
 SWIFT
@@ -280,4 +454,4 @@ else
 fi
 "$output"
 
-printf '%s\n' "PASS Next23 preferences semantic probe: definite initialization, menu-bar reachability, reversible collection regeneration across menu/dashboard/monitor surfaces, cooling gates, spacing, migration, dashboard/color/density persistence, presets, and warnings-as-errors"
+printf '%s\n' "PASS Next23 preferences semantic probe: definite initialization, menu-bar reachability, reversible collection regeneration across menu/dashboard/monitor surfaces, cooling gates, spacing, migration, dashboard/color/density persistence, presets, Helios/Legacy interface preference, welcome goals, and warnings-as-errors"

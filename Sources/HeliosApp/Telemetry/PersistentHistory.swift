@@ -225,6 +225,8 @@ actor PersistentHistoryStore {
     private var points: [PersistedTelemetryPoint]?
     private var appendHandle: FileHandle?
     private var knownFileSize: Int?
+    /// File size after the last load or rewrite; compaction is relative to it.
+    private var compactedFileSize = 0
 
     init(url: URL = PersistentHistoryStore.defaultURL()) {
         self.url = url
@@ -264,7 +266,8 @@ actor PersistentHistoryStore {
 
         loaded.append(point)
         loaded = PersistentHistoryEngine.sanitized(loaded, now: now)
-        let needsCompaction = loaded.count >= PersistentHistoryEngine.maximumPoints || fileSize() > 2_000_000
+        let needsCompaction = HistoryCompactionPolicy.shouldCompact(
+            fileSize: fileSize(), compactedSize: compactedFileSize, slack: 2_000_000)
         points = loaded
         if needsCompaction { rewrite(loaded) } else { appendLine(point) }
         return PersistentHistoryEngine.summary(loaded)
@@ -272,20 +275,25 @@ actor PersistentHistoryStore {
 
     private func loadIfNeeded(now: Date) -> [PersistedTelemetryPoint] {
         if let points { return points }
-        let data = (try? Data(contentsOf: url)) ?? Data()
+        HistoryCompactionPolicy.removeStaleTemporaries(for: url)
+        let data = HistoryCompactionPolicy.read(url)
         knownFileSize = data.count
+        compactedFileSize = data.count
         let decoded = PersistentHistoryEngine.decodeLines(data, decoder: decoder)
         let clean = PersistentHistoryEngine.sanitized(decoded, now: now)
         points = clean
 
-        // Rewrite not only when retention/ordering drops valid points, but also when
-        // the file contains malformed non-empty records (for example a truncated
-        // tail after a crash). Otherwise a later append could be concatenated onto
-        // that malformed tail and make the next valid sample unreadable as well.
+        // Repair malformed non-empty records (for example a truncated tail after a
+        // crash) and ordering drops; otherwise a later append could be concatenated
+        // onto a malformed tail. Expired head records are left for compaction.
         let rawRecordCount = data.split(separator: 0x0A).reduce(into: 0) { count, line in
             if !line.isEmpty { count += 1 }
         }
-        if clean.count != decoded.count || decoded.count != rawRecordCount || (!data.isEmpty && data.last != 0x0A) { rewrite(clean) }
+        let cutoff = now.addingTimeInterval(-PersistentHistoryEngine.retention)
+        let expired = decoded.prefix { $0.capturedAt < cutoff }.count
+        if HistoryCompactionPolicy.needsRepair(
+            rawRecords: rawRecordCount, decoded: decoded.count, clean: clean.count,
+            expiredPrefix: expired, endsWithNewline: data.isEmpty || data.last == 0x0A) { rewrite(clean) }
         return clean
     }
 
@@ -340,16 +348,13 @@ actor PersistentHistoryStore {
         do {
             try? appendHandle?.close()
             appendHandle = nil
-            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            var data = Data()
-            for point in points {
-                data.append(try encoder.encode(point))
-                data.append(0x0A)
-            }
-            try data.write(to: url, options: .atomic)
-            knownFileSize = data.count
+            let written = try HistoryCompactionPolicy.writeLines(points, encoder: encoder, to: url)
+            knownFileSize = written
+            compactedFileSize = written
         } catch {
-            knownFileSize = nil
+            // Do not retry the full rewrite on every append while it keeps failing
+            // (disk full, read-only volume): wait for another slack of growth.
+            compactedFileSize = fileSizeFromDisk()
             // Best effort only; callers continue with in-memory history.
         }
     }

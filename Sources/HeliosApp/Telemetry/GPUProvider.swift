@@ -41,9 +41,8 @@ enum GPURegistryParser {
         captureMetric {
             for key in keys {
                 guard let raw = dictionary[key] else { continue }
-                if let number = raw as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(), number.doubleValue.isFinite,
-                   number.doubleValue >= 0, number.doubleValue.rounded() == number.doubleValue {
-                    return number.uint64Value
+                if let number = raw as? NSNumber, let value = unsignedNumber(number) {
+                    return value
                 }
                 if let data = raw as? Data, let value = unsignedData(data) { return value }
                 throw TelemetryError.invalidData("Invalid \(name.lowercased())")
@@ -55,10 +54,8 @@ enum GPURegistryParser {
     private static func integerMetric(_ candidates: [Any?], name: String, range: ClosedRange<Int>) -> MetricResult<Int> {
         captureMetric {
             for raw in candidates where raw != nil {
-                if let number = raw as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(), number.doubleValue.isFinite,
-                   number.doubleValue.rounded() == number.doubleValue {
-                    let value = number.intValue
-                    guard range.contains(value) else { throw TelemetryError.invalidData("Invalid \(name.lowercased())") }
+                if let number = raw as? NSNumber, let unsigned = unsignedNumber(number),
+                   let value = Int(exactly: unsigned), range.contains(value) {
                     return value
                 }
                 if let data = raw as? Data, let unsigned = unsignedData(data), let value = Int(exactly: unsigned), range.contains(value) {
@@ -97,6 +94,20 @@ enum GPURegistryParser {
             return number.doubleValue
         }
         throw TelemetryError.unavailable("\(name) unavailable")
+    }
+
+    private static func unsignedNumber(_ number: NSNumber) -> UInt64? {
+        guard CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+        switch UnicodeScalar(UInt8(bitPattern: number.objCType.pointee)) {
+        case "c", "C", "s", "S", "i", "I", "l", "L", "q", "Q":
+            // Preserve integer precision, including UInt64.max, without a Double
+            // round-trip or NSNumber's truncating/wrapping integer conversions.
+            return UInt64(number.stringValue)
+        case "f", "d":
+            return UInt64(exactly: number.doubleValue)
+        default:
+            return nil
+        }
     }
 
     private static func unsignedData(_ data: Data) -> UInt64? {

@@ -122,6 +122,8 @@ actor IOActivityAuditStore {
     private var records: [IOActivityRecord]?
     private var appendHandle: FileHandle?
     private var knownFileSize: Int?
+    /// File size after the last load or rewrite; compaction is relative to it.
+    private var compactedFileSize = 0
 
     init(url: URL = IOActivityAuditStore.defaultURL()) {
         self.url = url
@@ -157,20 +159,27 @@ actor IOActivityAuditStore {
         loaded.append(record)
         loaded = IOActivityAuditEngine.sanitized(loaded, now: now)
         records = loaded
-        if loaded.count >= IOActivityAuditEngine.maximumRecords || fileSize() > 2_000_000 { rewrite(loaded) }
+        if HistoryCompactionPolicy.shouldCompact(
+            fileSize: fileSize(), compactedSize: compactedFileSize, slack: 2_000_000) { rewrite(loaded) }
         else { appendLine(record) }
         return IOActivityAuditEngine.summary(loaded)
     }
 
     private func loadIfNeeded(now: Date) -> [IOActivityRecord] {
         if let records { return records }
-        let data = (try? Data(contentsOf: url)) ?? Data()
+        HistoryCompactionPolicy.removeStaleTemporaries(for: url)
+        let data = HistoryCompactionPolicy.read(url)
         knownFileSize = data.count
+        compactedFileSize = data.count
         let decoded = IOActivityAuditEngine.decodeLines(data, decoder: decoder)
         let clean = IOActivityAuditEngine.sanitized(decoded, now: now)
         records = clean
         let rawCount = data.split(separator: 0x0A).reduce(into: 0) { count, line in if !line.isEmpty { count += 1 } }
-        if clean.count != decoded.count || decoded.count != rawCount || (!data.isEmpty && data.last != 0x0A) { rewrite(clean) }
+        let cutoff = now.addingTimeInterval(-IOActivityAuditEngine.retention)
+        let expired = decoded.prefix { $0.capturedAt < cutoff }.count
+        if HistoryCompactionPolicy.needsRepair(
+            rawRecords: rawCount, decoded: decoded.count, clean: clean.count,
+            expiredPrefix: expired, endsWithNewline: data.isEmpty || data.last == 0x0A) { rewrite(clean) }
         return clean
     }
 
@@ -224,13 +233,13 @@ actor IOActivityAuditStore {
         do {
             try? appendHandle?.close()
             appendHandle = nil
-            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            var data = Data()
-            for record in records { data.append(try encoder.encode(record)); data.append(0x0A) }
-            try data.write(to: url, options: .atomic)
-            knownFileSize = data.count
+            let written = try HistoryCompactionPolicy.writeLines(records, encoder: encoder, to: url)
+            knownFileSize = written
+            compactedFileSize = written
         } catch {
-            knownFileSize = nil
+            // Do not retry the full rewrite on every append while it keeps failing
+            // (disk full, read-only volume): wait for another slack of growth.
+            compactedFileSize = fileSizeFromDisk()
             // Live telemetry remains authoritative even if the audit file is unavailable.
         }
     }

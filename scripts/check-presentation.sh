@@ -12,8 +12,9 @@ xcrun swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors \
   Sources/HeliosApp/HeliosUpdateChecker.swift Sources/HeliosApp/HeliosUpdatePresenter.swift \
   Sources/HeliosApp/Diagnostics/*.swift \
   Sources/HeliosApp/HeliosBrand.swift Sources/HeliosApp/HeliosGraphKit.swift Sources/HeliosApp/HeliosBatteryEstimate.swift \
-  Sources/HeliosApp/HeliosMetricPopovers.swift Sources/HeliosApp/HeliosDashboardView.swift Sources/HeliosApp/HeliosWindows.swift \
+  Sources/HeliosApp/HeliosMetricPopovers.swift Sources/HeliosApp/HeliosDashboardView.swift Sources/HeliosApp/Windows/*.swift \
   Sources/HeliosApp/PresentationValues.swift Sources/HeliosApp/OverviewViewController.swift Sources/HeliosApp/StatusItemController.swift \
+  Sources/HeliosApp/V2/*.swift \
   Tests/PresentationChecks.swift -o .build/Checks/PresentationChecks
 printf '%s\n' "PASS Next23 UI compiler surface with Swift 6 strict concurrency and warnings-as-errors"
-exec .build/Checks/PresentationChecks
+exec .build/Checks/PresentationChecks "$@"
