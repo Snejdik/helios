@@ -161,6 +161,12 @@ may block the first launch. Open **System Settings → Privacy & Security → Op
 Anyway**. The [installation guide](docs/INSTALLATION.md) walks through it, the
 optional helper approval, troubleshooting and clean removal.
 
+**Updating from 0.1 (Pre-beta)?** Quit Helios, replace the app in Applications with the new
+one and open it. If you use fan control, Helios shows **Reinstall Required** for the helper
+until you open **Settings → Cooling** and click **Reinstall** (macOS asks you to approve it).
+Until then macOS manages the fans and monitoring works as usual. Experimental fan control
+stays off until you turn it on in Settings → Cooling.
+
 GitHub's **Code → Download ZIP** is source code, not the app. To build it yourself,
 see the [developer guide](docs/BUILDING.md) or ask [support](mailto:helios@snejda.cz).
 

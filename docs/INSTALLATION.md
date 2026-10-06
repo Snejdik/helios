@@ -185,6 +185,20 @@ exports you saved elsewhere, macOS logs, backups or reports already submitted.
 It is not a secure-wipe guarantee. If Helios will not open, request help before
 removing the app so the helper can be unregistered through the supported flow.
 
+## Updating from an earlier build (0.1 → 0.2)
+
+Replacing the app is enough for monitoring. Fan control uses a separate helper that
+macOS keeps from the old version, and 0.2 uses a newer protocol:
+
+1. Quit Helios, replace **Helios.app** in Applications with the new one and open it.
+2. Open **Settings → Cooling**. If **Helper Service** says **Reinstall Required**
+   (or the Thermals page says fan control needs the helper), click **Reinstall** and approve
+   it in System Settings if macOS asks. Wait until the status says **Connected**.
+3. Turn on **Use experimental fan control on this Mac** if you want it; it is off by default
+   and stored per Mac model and macOS version.
+
+Until the helper is reinstalled, macOS manages the fans and nothing else is affected.
+
 ## Reinstall or replace a test build
 
 Prepare removal as above. Keep the erasure option off to preserve settings, or
