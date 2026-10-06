@@ -2,6 +2,20 @@ import Foundation
 import OSLog
 import Combine
 
+/// What the helper reports about the cool-only fan layer on this Mac.
+struct FanLayerStatus: Equatable, Sendable {
+    let tier: FanLayerTier
+    let consented: Bool
+    /// "Mac16,1 · 26A434"
+    let machine: String
+    let detail: String
+    /// The user unlocked the full factory maximum; otherwise the helper keeps
+    /// every fan at or below 90 % of it (FanLayerCeiling).
+    var fullMaximumAllowed = false
+
+    var available: Bool { tier != .unsupported }
+}
+
 enum DaemonConnectionState: String {
     case disconnected = "Disconnected"
     case connecting = "Connecting"
@@ -27,6 +41,7 @@ final class DaemonClient: ObservableObject {
     /// transient acquisition failure with permanent helper unavailability.
     @Published private(set) var fanControlFaultRevision: UInt64 = 0
     @Published private(set) var fanDetail = "Connect the signed helper to enable fan control."
+    @Published private(set) var fanLayer: FanLayerStatus?
     private var controlSequence: UInt64 = 0
     private var controlRequest: UUID?
     private var controlRevision = UUID()
@@ -122,6 +137,7 @@ final class DaemonClient: ObservableObject {
                 self.state = .connected
                 self.logger.notice("Authenticated handshake v\(version), daemon PID \(self.peerPID ?? -1), UID \(self.peerUID ?? UInt32.max).")
                 self.refreshFanStatus()
+                self.refreshFanLayer()
                 self.heartbeatTask = Task { [weak self] in
                     while !Task.isCancelled {
                         do { try await Task.sleep(for: .seconds(1)) } catch { return }
@@ -147,6 +163,7 @@ final class DaemonClient: ObservableObject {
         peerUID = nil
         completedHeartbeats = 0
         fanControlAvailable = false
+        fanLayer = nil
         if fanState != .system { fanState = .recoveryRequired }
         fanDetail = "Helper disconnected; automatic restoration is not yet confirmed."
         controlTimeout?.cancel(); controlTimeout = nil; controlRequest = nil
@@ -195,24 +212,71 @@ final class DaemonClient: ObservableObject {
         }
     }
 
+    func refreshFanLayer() {
+        guard let session, state == .connected else { return }
+        let current = generation
+        remote(current: current)?.fanLayerInfo(session: session) { [weak self] tier, consented, machine, detail, full in
+            Task { @MainActor in
+                guard let self, self.generation == current else { return }
+                self.fanLayer = FanLayerStatus(tier: FanLayerTier(rawValue: tier) ?? .unsupported,
+                                               consented: consented, machine: machine, detail: detail,
+                                               fullMaximumAllowed: full)
+            }
+        }
+    }
+
+    /// Unlocks or locks the full factory maximum in the helper, then refreshes
+    /// the layer information so the UI shows the new limit.
     @discardableResult
-    func calculate(mode: HeliosFanMode, rpm: Double, temperature: Double, sampleTicks: UInt64) -> Bool {
+    func setFanLayerFullMaximum(_ allowed: Bool,
+                                completion: @escaping @MainActor @Sendable (Bool, String) -> Void) -> Bool {
+        guard let session, state == .connected else { return false }
+        let current = generation
+        remote(current: current)?.setFanLayerFullMaximum(session: session, allowed: allowed) { [weak self] ok, detail in
+            Task { @MainActor in
+                completion(ok, detail)
+                guard let self, self.generation == current else { return }
+                self.refreshFanLayer()
+            }
+        }
+        return true
+    }
+
+    /// Turns the experimental layer on/off for this model + build. The helper
+    /// restores System and restarts; the client reconnects on its own.
+    @discardableResult
+    func setFanLayerConsent(_ accepted: Bool,
+                            completion: @escaping @MainActor @Sendable (Bool, String) -> Void) -> Bool {
+        guard let session, state == .connected else { return false }
+        let current = generation
+        remote(current: current)?.setFanLayerConsent(session: session, accepted: accepted) { ok, detail in
+            Task { @MainActor in completion(ok, detail) }
+        }
+        return true
+    }
+
+    @discardableResult
+    func calculate(mode: HeliosFanMode, rpm: Double, temperature: Double, sampleTicks: UInt64,
+                   response: FanLayerResponse = .standard) -> Bool {
         guard let session, state == .connected, fanControlAvailable, controlRequest == nil, controlSequence < UInt64.max else { return false }
         controlSequence += 1
         let current = generation
         let acquisitionRequest = fanState == .system && mode != .system
-        let request = beginControlRequest(timeoutMilliseconds: acquisitionRequest ? 13_000 : 4_500)
+        let request = beginControlRequest(timeoutMilliseconds: FanLayerTimings.milliseconds(
+            acquisitionRequest ? FanLayerTimings.clientAcquisitionTimeoutSeconds : FanLayerTimings.clientSteadyTimeoutSeconds))
         guard let remote = remote(current: current) else {
             controlTimeout?.cancel(); controlTimeout = nil; controlRequest = nil
             return false
         }
         remote.calculate(session: session, sequence: controlSequence, sampleTicks: sampleTicks,
-                         mode: mode, targetRPM: rpm, temperature: temperature) { [weak self] code, state, message in
+                         mode: mode, targetRPM: rpm, temperature: temperature,
+                         smoothness: response.smoothness) { [weak self] code, state, message in
             Task { @MainActor in
                 guard let self, self.generation == current, self.controlRequest == request else { return }
                 self.controlTimeout?.cancel(); self.controlRequest = nil
-                self.fanState = state
+                // Detail first: observers of `fanState` read the matching reason.
                 self.fanDetail = message
+                self.fanState = state
                 if code != .ok {
                     // Publish the final capability disposition *before* the fault
                     // revision. FanControlModel consumes the revision synchronously
@@ -237,7 +301,8 @@ final class DaemonClient: ObservableObject {
         // Supersede any pending calculation; its late reply cannot restore UI
         // state after a System/reconfiguration release. Explicit user releases
         // may use the cosmetic soft ramp; safety/internal releases pass false.
-        let request = beginControlRequest(timeoutMilliseconds: graceful ? 7_000 : 4_500)
+        let request = beginControlRequest(timeoutMilliseconds: FanLayerTimings.milliseconds(
+            FanLayerTimings.clientReleaseTimeoutSeconds))
         guard let remote = remote(current: current) else {
             controlTimeout?.cancel(); controlTimeout = nil; controlRequest = nil
             return false
@@ -254,19 +319,17 @@ final class DaemonClient: ObservableObject {
         return true
     }
 
-    private func beginControlRequest(timeoutMilliseconds: Int = 4_500) -> UUID {
+    private func beginControlRequest(timeoutMilliseconds: Int) -> UUID {
         controlTimeout?.cancel()
         let id = UUID()
         controlRevision = id
         controlRequest = id
         let current = generation
         controlTimeout = Task { [weak self] in
-            // Steady-state requests retain the original 4.5-second app timeout.
-            // Initial takeover gets a longer client wait because the daemon now
-            // owns a separately bounded 12-second acquisition lease matching the
-            // physically observed Ftst/F0Md arbitration. The daemon deadline is
-            // intentionally shorter, so it should restore and reply before this
-            // connection-level failsafe ever fires.
+            // Every wait covers the helper's worst case (FanLayerTimings): the
+            // bounded takeover or update, then a verified return to System.
+            // The helper's own lease and watchdog keep the fans safe; this
+            // connection-level failsafe only fires if the helper truly hangs.
             do { try await Task.sleep(for: .milliseconds(timeoutMilliseconds)) } catch { return }
             guard let self, self.generation == current, self.controlRequest == id else { return }
             let seconds = Double(timeoutMilliseconds) / 1000.0

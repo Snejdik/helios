@@ -11,9 +11,25 @@ protocol FanControlDriving: AnyObject {
     func softReleaseTargets() -> [Double]
     func applySoftReleaseTarget(_ rpm: Double, permit: () throws -> Void) throws
     func restore() throws
+    /// Fan layer entry point: carries the app's temperature (which may only
+    /// raise the daemon's own reading) and the Response choice.
+    func apply(mode: HeliosFanMode, rpm: Double, context: FanControlContext, permit: () throws -> Void) throws
+    /// Human-readable state of the last successful calculation, if any.
+    var statusDetail: String? { get }
+}
+
+/// Per-calculation input for engines that implement the fan layer.
+struct FanControlContext: Sendable {
+    let appCelsius: Double
+    let response: FanLayerResponse
 }
 
 extension FanControlDriving {
+    func apply(mode: HeliosFanMode, rpm: Double, context: FanControlContext, permit: () throws -> Void) throws {
+        _ = context
+        try apply(mode: mode, rpm: rpm, permit: permit)
+    }
+    var statusDetail: String? { nil }
     func softReleaseTargets() -> [Double] { [] }
     func applySoftReleaseTarget(_ rpm: Double, permit: () throws -> Void) throws {
         _ = rpm

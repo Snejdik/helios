@@ -265,6 +265,15 @@ struct CoolingRulesEngine {
     }
 
     private var runtime: [UUID: Runtime] = [:]
+    /// Response-dependent release gap (fan layer smoothing); defaults to the
+    /// historical 3 °C.
+    var releaseHysteresisCelsius = CoolingRulesEngine.hysteresisCelsius {
+        didSet {
+            if !releaseHysteresisCelsius.isFinite || releaseHysteresisCelsius < 1 || releaseHysteresisCelsius > 10 {
+                releaseHysteresisCelsius = Self.hysteresisCelsius
+            }
+        }
+    }
     private var emergency = false
     private var emergencyReleaseCandidate: UInt64?
 
@@ -325,7 +334,7 @@ struct CoolingRulesEngine {
                 state.candidate = nil
             }
         } else {
-            let releaseThreshold = rule.thresholdCelsius - Self.hysteresisCelsius
+            let releaseThreshold = rule.thresholdCelsius - releaseHysteresisCelsius
             if value <= releaseThreshold {
                 if state.candidate == nil { state.candidate = ticks }
                 if let candidate = state.candidate,
@@ -395,5 +404,310 @@ enum CoolingRulesPersistence {
         }
         value.normalize()
         return value
+    }
+}
+
+// MARK: - Fan curve
+
+/// The sensor a fan curve follows.
+enum CoolingCurveSensor: String, Codable, CaseIterable, Sendable {
+    case maximumSoC
+    case cpu
+    case gpu
+
+    var label: String {
+        switch self {
+        case .maximumSoC: "Max SoC"
+        case .cpu: "CPU"
+        case .gpu: "GPU"
+        }
+    }
+
+    var ruleSensor: CoolingRuleSensor {
+        switch self {
+        case .maximumSoC: .maximumSoC
+        case .cpu: .highestCPU
+        case .gpu: .gpu
+        }
+    }
+}
+
+struct CoolingCurvePoint: Codable, Equatable, Hashable, Sendable {
+    var celsius: Double
+    /// Share of factory minimum … the user's speed limit (0 = minimum).
+    var percent: Double
+}
+
+/// Auto as a temperature → speed curve. Below the first point macOS keeps the
+/// fans (including zero-RPM). From the first point on, speed follows straight
+/// lines between the points. Speeds never fall as the temperature rises. The
+/// helper still adds its own floors and returns the fans to macOS when more
+/// cooling than the user's limit is needed.
+struct CoolingCurve: Codable, Equatable, Sendable {
+    static let celsiusRange: ClosedRange<Double> = 30...100
+    static let minimumPoints = 2
+    static let maximumPoints = 6
+    static let minimumSpacingCelsius = 2.0
+
+    var sensor: CoolingCurveSensor
+    var points: [CoolingCurvePoint]
+
+    init(sensor: CoolingCurveSensor, points: [CoolingCurvePoint]) {
+        self.sensor = sensor
+        self.points = points
+        normalize()
+    }
+
+    private init(_ sensor: CoolingCurveSensor, _ pairs: [(Double, Double)]) {
+        self.init(sensor: sensor, points: pairs.map { CoolingCurvePoint(celsius: $0.0, percent: $0.1) })
+    }
+
+    static let recommendedPowerAdapter = CoolingCurve(.maximumSoC, [(55, 0), (65, 25), (75, 50), (82, 75), (88, 100)])
+    static let recommendedBattery = CoolingCurve(.maximumSoC, [(60, 0), (70, 25), (80, 60), (88, 100)])
+
+    static func recommended(_ power: CoolingPowerProfile) -> CoolingCurve {
+        power == .powerAdapter ? recommendedPowerAdapter : recommendedBattery
+    }
+
+    /// Sorted, inside the editor range, at least `minimumSpacingCelsius` apart,
+    /// speeds never falling, 2…6 points. Never throws: anything unusable becomes
+    /// the recommended curve's points.
+    mutating func normalize() {
+        var cleaned = points.filter { $0.celsius.isFinite && $0.percent.isFinite }.map {
+            CoolingCurvePoint(celsius: (min(Self.celsiusRange.upperBound, max(Self.celsiusRange.lowerBound, $0.celsius)) * 2).rounded() / 2,
+                              percent: min(100, max(0, $0.percent)).rounded())
+        }
+        cleaned.sort { $0.celsius != $1.celsius ? $0.celsius < $1.celsius : $0.percent < $1.percent }
+        var spaced: [CoolingCurvePoint] = []
+        for point in cleaned {
+            if let last = spaced.last, point.celsius < last.celsius + Self.minimumSpacingCelsius { continue }
+            spaced.append(point)
+        }
+        if spaced.count > Self.maximumPoints { spaced = Array(spaced.prefix(Self.maximumPoints)) }
+        if spaced.count < Self.minimumPoints {
+            spaced = [CoolingCurvePoint(celsius: 55, percent: 0), CoolingCurvePoint(celsius: 88, percent: 100)]
+        }
+        for index in spaced.indices.dropFirst() {
+            spaced[index].percent = max(spaced[index].percent, spaced[index - 1].percent)
+        }
+        points = spaced
+    }
+
+    /// Speed share for a temperature, nil below the first point (macOS keeps the fans).
+    func percent(at celsius: Double) -> Double? {
+        guard celsius.isFinite, let first = points.first, celsius >= first.celsius else { return nil }
+        for (low, high) in zip(points, points.dropFirst()) where celsius < high.celsius {
+            let span = high.celsius - low.celsius
+            let t = span > 0 ? (celsius - low.celsius) / span : 1
+            return low.percent + (high.percent - low.percent) * t
+        }
+        return points.last?.percent
+    }
+
+    /// Where a dragged point may go: between its neighbours (keeping the spacing)
+    /// and not below the previous / above the next speed.
+    func allowedRange(for index: Int) -> (celsius: ClosedRange<Double>, percent: ClosedRange<Double>)? {
+        guard points.indices.contains(index) else { return nil }
+        let low = index > 0 ? points[index - 1].celsius + Self.minimumSpacingCelsius : Self.celsiusRange.lowerBound
+        let high = index < points.count - 1 ? points[index + 1].celsius - Self.minimumSpacingCelsius : Self.celsiusRange.upperBound
+        let floor = index > 0 ? points[index - 1].percent : 0
+        let ceiling = index < points.count - 1 ? points[index + 1].percent : 100
+        guard low <= high, floor <= ceiling else { return nil }
+        return (low...high, floor...ceiling)
+    }
+
+    /// Moves one point inside its allowed range.
+    mutating func move(_ index: Int, celsius: Double, percent: Double) {
+        guard let range = allowedRange(for: index), celsius.isFinite, percent.isFinite else { return }
+        points[index].celsius = (min(range.celsius.upperBound, max(range.celsius.lowerBound, celsius)) * 2).rounded() / 2
+        points[index].percent = min(range.percent.upperBound, max(range.percent.lowerBound, percent)).rounded()
+    }
+
+    /// Adds a point in the widest gap; returns false when the curve is full.
+    @discardableResult
+    mutating func addPoint() -> Bool {
+        guard points.count < Self.maximumPoints else { return false }
+        var best: (index: Int, gap: Double)?
+        for index in points.indices.dropLast() {
+            let gap = points[index + 1].celsius - points[index].celsius
+            if gap >= 2 * Self.minimumSpacingCelsius, gap > (best?.gap ?? 0) { best = (index, gap) }
+        }
+        if let best {
+            let low = points[best.index], high = points[best.index + 1]
+            points.insert(CoolingCurvePoint(celsius: ((low.celsius + high.celsius) / 2 * 2).rounded() / 2,
+                                            percent: ((low.percent + high.percent) / 2).rounded()), at: best.index + 1)
+        } else if let last = points.last, last.celsius + Self.minimumSpacingCelsius <= Self.celsiusRange.upperBound {
+            points.append(CoolingCurvePoint(celsius: min(Self.celsiusRange.upperBound, last.celsius + 5), percent: last.percent))
+        } else {
+            return false
+        }
+        normalize()
+        return true
+    }
+
+    @discardableResult
+    mutating func removePoint(_ index: Int) -> Bool {
+        guard points.count > Self.minimumPoints, points.indices.contains(index) else { return false }
+        points.remove(at: index)
+        normalize()
+        return true
+    }
+
+    /// One-time migration of customised step rules: each threshold becomes a
+    /// point; an Always rule becomes a starting point at 30 °C.
+    static func migrated(from profile: CoolingRuleProfile, fallback: CoolingCurve) -> CoolingCurve {
+        let enabled = profile.rules.filter(\.enabled)
+        var points = enabled.filter { $0.sensor.kind.usesThreshold }
+            .map { CoolingCurvePoint(celsius: $0.thresholdCelsius, percent: Double($0.speedPercent)) }
+        if let always = enabled.filter({ $0.sensor.kind == .always }).map(\.speedPercent).max() {
+            points.append(CoolingCurvePoint(celsius: celsiusRange.lowerBound, percent: Double(always)))
+        }
+        guard points.count >= minimumPoints else { return fallback }
+        let kinds = enabled.map(\.sensor.kind)
+        let gpu = kinds.filter { $0 == .gpu }.count
+        let cpu = kinds.filter { [.highestCPU, .averageCPU, .performanceCPU, .efficiencyCPU].contains($0) }.count
+        let sensor: CoolingCurveSensor = gpu > cpu ? .gpu : (cpu > 0 ? .cpu : .maximumSoC)
+        return CoolingCurve(sensor: sensor, points: points)
+    }
+}
+
+struct CoolingCurves: Codable, Equatable, Sendable {
+    static let currentVersion = 1
+    var version = currentVersion
+    var powerAdapter: CoolingCurve
+    var battery: CoolingCurve
+    /// Auto follows the curve (Helios interface) or the step rules (classic
+    /// interface); editing either one selects it.
+    var usesCurve: Bool
+
+    static let recommended = CoolingCurves(powerAdapter: .recommendedPowerAdapter, battery: .recommendedBattery,
+                                           usesCurve: true)
+
+    func curve(_ power: CoolingPowerProfile) -> CoolingCurve {
+        power == .powerAdapter ? powerAdapter : battery
+    }
+
+    mutating func setCurve(_ curve: CoolingCurve, for power: CoolingPowerProfile) {
+        var curve = curve
+        curve.normalize()
+        if power == .powerAdapter { powerAdapter = curve } else { battery = curve }
+    }
+
+    mutating func normalize() {
+        version = Self.currentVersion
+        powerAdapter.normalize()
+        battery.normalize()
+    }
+
+    /// Unchanged default rules become the recommended curves; customised rules
+    /// are carried over as points.
+    static func migrated(from rules: CoolingRulesConfiguration) -> CoolingCurves {
+        var defaults = CoolingRulesConfiguration.safeDefault
+        defaults.normalize()
+        func same(_ a: CoolingRuleProfile, _ b: CoolingRuleProfile) -> Bool {
+            a.rules.map { [$0.enabled ? 1 : 0, Double($0.speedPercent), $0.thresholdCelsius] }
+                == b.rules.map { [$0.enabled ? 1 : 0, Double($0.speedPercent), $0.thresholdCelsius] }
+                && a.rules.map(\.sensor) == b.rules.map(\.sensor)
+        }
+        return CoolingCurves(
+            powerAdapter: same(rules.powerAdapter, defaults.powerAdapter) ? .recommendedPowerAdapter
+                : CoolingCurve.migrated(from: rules.powerAdapter, fallback: .recommendedPowerAdapter),
+            battery: same(rules.battery, defaults.battery) ? .recommendedBattery
+                : CoolingCurve.migrated(from: rules.battery, fallback: .recommendedBattery),
+            usesCurve: true)
+    }
+}
+
+enum CoolingCurvesPersistence {
+    static let defaultsKey = "CoolingCurves.v1"
+
+    static func encode(_ curves: CoolingCurves) throws -> Data {
+        var normalized = curves
+        normalized.normalize()
+        return try JSONEncoder().encode(normalized)
+    }
+
+    static func decode(_ data: Data) throws -> CoolingCurves {
+        var value = try JSONDecoder().decode(CoolingCurves.self, from: data)
+        guard value.version == CoolingCurves.currentVersion else {
+            throw TelemetryError.invalidData("Unsupported fan curve version")
+        }
+        value.normalize()
+        return value
+    }
+}
+
+/// Curve input with hysteresis: a rising temperature counts at once, a falling
+/// one only after it dropped by more than the hysteresis (Response).
+struct CoolingCurveInput: Sendable {
+    private(set) var celsius: Double?
+
+    mutating func reset() { celsius = nil }
+
+    mutating func next(_ reading: Double, hysteresisCelsius: Double) -> Double {
+        let hysteresis = hysteresisCelsius.isFinite ? min(10, max(0, hysteresisCelsius)) : 3
+        guard let current = celsius, reading.isFinite else {
+            celsius = reading
+            return reading
+        }
+        if reading >= current {
+            celsius = reading
+        } else if reading < current - hysteresis {
+            celsius = reading + hysteresis
+        }
+        return celsius ?? reading
+    }
+}
+
+// MARK: - Auto presets
+
+/// Starting points for Auto, as a curve or as step rules. Every preset stays on
+/// top of the helper's safety floor and the user's speed limit.
+enum CoolingPreset: String, CaseIterable, Identifiable, Sendable {
+    case cool
+    case balanced
+    case quiet
+    case energySaver
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .cool: "Cool"
+        case .balanced: "Balanced"
+        case .quiet: "Quiet"
+        case .energySaver: "Energy Saver"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .cool: "Fans start early and run faster. Coolest, loudest."
+        case .balanced: "Recommended. Fans start when the Mac gets warm."
+        case .quiet: "Fans start late and stay slow as long as it is safe."
+        case .energySaver: "For battery: fans only when really needed, so they use less power."
+        }
+    }
+
+    private var pairs: [(Double, Double)] {
+        switch self {
+        case .cool: [(45, 10), (55, 30), (65, 55), (75, 80), (85, 100)]
+        case .balanced: []
+        case .quiet: [(65, 0), (75, 25), (83, 55), (90, 100)]
+        case .energySaver: [(70, 0), (80, 30), (88, 70), (94, 100)]
+        }
+    }
+
+    func curve(for power: CoolingPowerProfile) -> CoolingCurve {
+        guard self != .balanced else { return CoolingCurve.recommended(power) }
+        return CoolingCurve(sensor: .maximumSoC,
+                            points: pairs.map { CoolingCurvePoint(celsius: $0.0, percent: $0.1) })
+    }
+
+    func rules(for power: CoolingPowerProfile) -> CoolingRuleProfile {
+        guard self != .balanced else { return CoolingRulesConfiguration.safeDefault.profile(power) }
+        return CoolingRuleProfile(rules: pairs.map {
+            CoolingRule(speedPercent: Int($0.1), sensor: .highestCPU, thresholdCelsius: $0.0)
+        })
     }
 }

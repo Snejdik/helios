@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import OSLog
 
 /// Decisions are made only from completed telemetry batches in the app. UI
 /// refreshes, slider events, editor changes, and IPC heartbeats never renew the
@@ -22,12 +23,73 @@ final class FanControlModel: ObservableObject {
     @Published private(set) var telemetryReady = false
     @Published private(set) var inventory: MetricSample<FanInventory> = MetricSample(.failure(.warmingUp))
     @Published private(set) var rulesConfiguration: CoolingRulesConfiguration
+    /// Auto as a temperature → speed curve per power source (Helios interface).
+    @Published private(set) var curves: CoolingCurves
+    /// The curve's input after hysteresis, for the editor's "now" marker.
+    @Published private(set) var curveInputCelsius: Double?
+    private var curveInput = CoolingCurveInput()
+    /// Curve engage/release debounce: Apple Silicon readings jump by several
+    /// degrees within a second, so one reading above or below the first point
+    /// must not start or end a takeover.
+    static let curveEngageSeconds = 2.0
+    static let curveReleaseSeconds = 10.0
+    private var curveActive = false
+    private var curveChangeSince: UInt64?
     @Published private(set) var availableRuleSensors: [CoolingRuleSensorOption]
     @Published private(set) var activeRuleIDs: Set<UUID> = []
     @Published private(set) var activePowerProfile: CoolingPowerProfile?
     @Published private(set) var automaticDemandPercent: Int?
     @Published private(set) var automaticEmergency = false
     @Published private(set) var autoDetail = ""
+    /// Fan layer smoothing (helper-side slow falls, Auto hysteresis).
+    @Published private(set) var response: FanLayerResponse
+    /// Manual changes apply after the slider rests this long.
+    static let manualDebounce: Duration = .seconds(5)
+    /// Manual speed the helper is asked for; `targetRPM` follows the slider.
+    @Published private(set) var appliedManualRPM: Double?
+    /// Set while a slider change waits for the debounce.
+    @Published private(set) var manualChangeAppliesAt: ContinuousClock.Instant?
+    private var manualDebounceTask: Task<Void, Never>?
+    /// Boost ends by itself (the helper also enforces a one-hour hard cap).
+    @Published private(set) var boostEndsAt: ContinuousClock.Instant?
+    static let boostDuration: Duration = .seconds(15 * 60)
+    static let responseDefaultsKey = "FanLayer.smoothness"
+    static let restoreAutoDefaultsKey = "FanControl.restoreAutoOnStart"
+    static let autoSelectedDefaultsKey = "FanControl.autoSelected"
+    /// When on, Auto is armed again after launch and after the helper connection
+    /// returns (for example after sleep), using the user's saved curve. Manual and
+    /// Boost are one-shot choices and are never restored.
+    @Published var restoresAutoOnStart: Bool {
+        didSet {
+            defaults.set(restoresAutoOnStart, forKey: Self.restoreAutoDefaultsKey)
+            if restoresAutoOnStart { restorePending = true }
+        }
+    }
+    /// Whether the user's last explicit choice was Auto. Internal safety
+    /// transitions to System do not change it.
+    private var autoWasSelected: Bool
+    private var restorePending = true
+    /// 0.2 three-way picker (Int 0…2), migrated once.
+    static let legacyResponseDefaultsKey = "FanLayer.response"
+    /// Prefix of the helper's reply when macOS already cools at least as much.
+    static let macOSAlreadyCoolingPrefix = "macOS is already cooling"
+    /// True while the first calculation of a takeover waits for macOS to hand
+    /// over the fans (Ftst/F0Md arbitration, measured 6–11 s).
+    @Published private(set) var handingOver = false
+    /// Calm explanation after a takeover was safely rolled back to System.
+    @Published private(set) var controlNotice: String?
+    static let handingOverText = "Taking over the fans from macOS."
+    static let handoverDeclinedText = "macOS did not hand over the fan this time. Helios stayed on System. Try again in a moment."
+    static let cooldownText = "Waiting before taking the fan again. macOS cools meanwhile."
+    /// Mirrors the helper's re-acquire cooldown so the app does not even ask
+    /// (the helper enforces it independently). Emergency cooling never waits.
+    @Published private(set) var cooldownEndsAt: ContinuousClock.Instant?
+    /// Auto keeps a takeover it made itself at least this long before it
+    /// releases because no rule matches: every release/acquire cycle costs a
+    /// firmware arbitration, and a takeover right after a release is slow.
+    static let autoMinimumHold: Duration = .seconds(60)
+    private var autoTakeoverAt: ContinuousClock.Instant?
+    private let logger = Logger(subsystem: "com.snejda.Helios", category: "FanControl")
 
     private var rulesEngine = CoolingRulesEngine()
     private var lastSample: UInt64 = 0
@@ -71,21 +133,50 @@ final class FanControlModel: ObservableObject {
         self.client = client
         self.defaults = defaults
         self.explicitSystemFallbackDelay = explicitSystemFallbackDelay
+        let rules: CoolingRulesConfiguration
         if let data = defaults.data(forKey: CoolingRulesPersistence.defaultsKey),
            let decoded = try? CoolingRulesPersistence.decode(data) {
-            rulesConfiguration = decoded
+            rules = decoded
         } else {
-            rulesConfiguration = .safeDefault
+            rules = .safeDefault
+        }
+        rulesConfiguration = rules
+        restoresAutoOnStart = defaults.bool(forKey: Self.restoreAutoDefaultsKey)
+        autoWasSelected = defaults.bool(forKey: Self.autoSelectedDefaultsKey)
+        if let data = defaults.data(forKey: CoolingCurvesPersistence.defaultsKey),
+           let decoded = try? CoolingCurvesPersistence.decode(data) {
+            curves = decoded
+        } else {
+            // One-time migration: customised step rules become curve points.
+            let migrated = CoolingCurves.migrated(from: rules)
+            curves = migrated
+            if let data = try? CoolingCurvesPersistence.encode(migrated) {
+                defaults.set(data, forKey: CoolingCurvesPersistence.defaultsKey)
+            }
         }
         availableRuleSensors = FanControlModel.baseRuleSensorOptions
+        if let stored = defaults.object(forKey: Self.responseDefaultsKey) as? Double,
+           let value = FanLayerResponse(smoothness: stored) {
+            response = value
+        } else if let legacy = defaults.object(forKey: Self.legacyResponseDefaultsKey) as? Int {
+            response = FanLayerResponse(legacyIndex: legacy)
+            defaults.set(response.smoothness, forKey: Self.responseDefaultsKey)
+            defaults.removeObject(forKey: Self.legacyResponseDefaultsKey)
+        } else {
+            response = .standard
+        }
+        rulesEngine.releaseHysteresisCelsius = response.smoothing.hysteresisCelsius
 
+        $targetRPM.dropFirst().removeDuplicates().sink { [weak self] value in
+            self?.scheduleManualChange(value)
+        }.store(in: &subscriptions)
         client.$fanControlAvailable.sink { [weak self] available in
             // Loss of control readiness is a safety disarm, never a cosmetic
             // soft release. A recoverable hardware-acquisition failure is
             // reported separately by `fanControlFaultRevision`, so it can
             // disarm the mode without permanently hiding the Auto editor.
             guard let self, !available, self.selection != .system else { return }
-            self.transitionToSystem(graceful: false)
+            self.transitionToSystem(graceful: false, reason: "fan control became unavailable")
         }.store(in: &subscriptions)
         client.$fanControlFaultRevision.dropFirst().sink { [weak self] _ in
             guard let self, self.selection != .system else { return }
@@ -96,6 +187,7 @@ final class FanControlModel: ObservableObject {
             // keep Auto armed and retry from a later *fresh* thermal batch. This
             // avoids the old failure loop where one F0Md arbitration miss kicked
             // Auto to System forever. A short backoff also prevents hammering Ftst.
+            self.handingOver = false
             if self.selection == .auto, self.client.fanControlAvailable,
                self.client.fanState == .system {
                 self.pendingCommand = nil
@@ -104,12 +196,16 @@ final class FanControlModel: ObservableObject {
                 self.pendingExpectedAutoRelease = false
                 self.resetAutomationRuntime()
                 self.autoRetryNotBefore = ContinuousClock.now.advanced(by: Self.autoRetryDelay)
-                self.autoDetail = "Auto Rules recovered safely to System · retrying from fresh telemetry"
+                self.autoDetail = "macOS did not hand over the fan this time · Auto retries in a moment"
+                self.logger.notice("Auto takeover rolled back to System; retrying after backoff. Helper: \(self.client.fanDetail, privacy: .public)")
                 return
             }
 
             // Manual/Boost failures remain explicit opt-in failures. Likewise any
             // non-recoverable Auto failure disarms instead of retrying blindly.
+            let rolledBack = self.client.fanState == .system && self.client.fanControlAvailable
+            self.logger.notice("Fan request failed (\(self.selection.rawValue, privacy: .public)); selection returns to System. Helper: \(self.client.fanDetail, privacy: .public)")
+            self.controlNotice = rolledBack ? Self.handoverDeclinedText : nil
             self.selection = .system
             self.pendingCommand = nil
             self.lastCommand = .system
@@ -117,11 +213,16 @@ final class FanControlModel: ObservableObject {
             self.pendingExpectedAutoRelease = false
             self.autoRetryNotBefore = nil
             self.resetAutomationRuntime()
-            if self.client.fanState != .system { self.client.releaseFans(graceful: false) }
+            if self.client.fanState != .system {
+                self.logRelease("helper reported a fan control fault")
+                self.client.releaseFans(graceful: false)
+            }
         }.store(in: &subscriptions)
         client.$state.sink { [weak self] state in
             guard let self, state != .connected else { return }
             self.cancelExplicitSystemFallback()
+            self.handingOver = false
+            self.autoTakeoverAt = nil
             self.selection = .system
             self.pendingCommand = nil
             self.lastCommand = .system
@@ -129,23 +230,31 @@ final class FanControlModel: ObservableObject {
             self.pendingExpectedAutoRelease = false
             self.autoRetryNotBefore = nil
             self.resetAutomationRuntime()
+            self.restorePending = true
         }.store(in: &subscriptions)
         client.$fanState.sink { [weak self] state in
             guard let self else { return }
+            if state != .system || self.pendingCommand == nil { self.handingOver = false }
+            if state == .boost || state == .override { self.cooldownEndsAt = nil }
             switch state {
             case .boost:
+                if self.selection == .auto, !self.confirmedControl { self.autoTakeoverAt = .now }
                 self.pendingCommand = nil
                 self.lastCommand = .boost
                 self.confirmedControl = true
                 self.autoRetryNotBefore = nil
             case .override:
+                if self.selection == .auto, !self.confirmedControl { self.autoTakeoverAt = .now }
                 self.pendingCommand = nil
                 self.lastCommand = .override
                 self.confirmedControl = true
                 self.autoRetryNotBefore = nil
             case .system:
                 self.cancelExplicitSystemFallback()
+                self.handingOver = false
+                self.autoTakeoverAt = nil
                 let hadPotentialControl = self.pendingCommand != nil || self.confirmedControl || self.lastCommand != .system
+                self.noteSystemReply(afterConfirmedControl: self.confirmedControl)
                 self.pendingCommand = nil
                 if self.pendingExpectedAutoRelease {
                     // Expected Auto no-match/profile-boundary release. System is
@@ -158,15 +267,31 @@ final class FanControlModel: ObservableObject {
                     // the next fresh rule evaluation may reacquire. Safety events
                     // that invalidate telemetry/session independently transition
                     // the model to System through their dedicated paths.
+                    let macOSAlreadyCools = !self.confirmedControl
+                        && self.client.fanDetail.hasPrefix(Self.macOSAlreadyCoolingPrefix)
                     self.lastCommand = .system
                     self.confirmedControl = false
-                    if hadPotentialControl, self.autoRetryNotBefore == nil {
+                    if macOSAlreadyCools {
+                        // The fan layer declined a takeover: nothing to retry.
+                        self.autoDetail = self.client.fanDetail
+                    } else if hadPotentialControl, self.autoRetryNotBefore == nil {
                         self.autoRetryNotBefore = ContinuousClock.now.advanced(by: .seconds(1))
                         self.autoDetail = "Auto Rules returned safely to System · waiting for a fresh retry"
+                        if !self.client.fanDetail.hasPrefix(FanLayerReacquireCooldown.replyPrefix) {
+                            self.logOnce("Helper returned Auto to System: \(self.client.fanDetail)")
+                        }
                     }
+                } else if self.client.fanDetail.hasPrefix(FanLayerCeiling.handbackPrefix) {
+                    // More cooling than the user's limit is needed: macOS manages
+                    // the fans. Not an error, so Manual/Boost stay selected and
+                    // take the fans again once it is cooler.
+                    self.logOnce("Helper handed the fans back to macOS: \(self.client.fanDetail)")
+                    self.lastCommand = .system
+                    self.confirmedControl = false
                 } else if self.confirmedControl && self.lastCommand != .system {
                     // Manual/Boost remain explicit one-shot modes. Unexpected
                     // restoration requires the user to opt in again.
+                    self.logger.notice("Helper returned \(self.selection.rawValue, privacy: .public) to System: \(self.client.fanDetail, privacy: .public)")
                     self.selection = .system
                     self.lastCommand = .system
                     self.confirmedControl = false
@@ -190,6 +315,19 @@ final class FanControlModel: ObservableObject {
         case .boost: lastTemperature >= 75 ? .milliseconds(500) : .seconds(2)
         case .override, .auto: .milliseconds(500)
         }
+    }
+
+    /// The user's speed limit: 90 % of the factory maximum unless the full
+    /// range was unlocked in Settings (the helper enforces the same limit).
+    var fullMaximumAllowed: Bool { client.fanLayer?.fullMaximumAllowed ?? false }
+
+    /// Factory minimum … the user's limit: the Manual slider and 100 % in Auto.
+    var limitBounds: ClosedRange<Double>? {
+        guard let bounds = sliderBounds else { return nil }
+        let limit = fullMaximumAllowed
+            ? bounds.upperBound
+            : max(bounds.lowerBound, (bounds.upperBound * FanLayerCeiling.defaultFraction).rounded(.down))
+        return bounds.lowerBound...max(bounds.lowerBound, limit)
     }
 
     var sliderBounds: ClosedRange<Double>? {
@@ -230,18 +368,29 @@ final class FanControlModel: ObservableObject {
 
     func setMode(_ mode: FanControlSelection) {
         guard canSelectMode(mode) else { return }
+        controlNotice = nil
+        autoWasSelected = mode == .auto
+        defaults.set(autoWasSelected, forKey: Self.autoSelectedDefaultsKey)
+        restorePending = false
         if mode == .system {
-            transitionToSystem(graceful: true)
+            transitionToSystem(graceful: true, reason: "user selected System")
             return
         }
         cancelExplicitSystemFallback()
-        if mode == .override, let bounds = sliderBounds {
-            targetRPM = targetRPM.isFinite ? min(bounds.upperBound, max(bounds.lowerBound, targetRPM)) : bounds.lowerBound
-            targetRPM = (targetRPM / 50).rounded() * 50
-            targetRPM = min(bounds.upperBound, max(bounds.lowerBound, targetRPM))
+        if mode == .override, let bounds = limitBounds {
+            var value = targetRPM.isFinite ? min(bounds.upperBound, max(bounds.lowerBound, targetRPM)) : bounds.lowerBound
+            value = (value / 50).rounded() * 50
+            value = min(bounds.upperBound, max(bounds.lowerBound, value))
+            // Choosing Manual applies at once; later slider moves are debounced.
+            appliedManualRPM = value
+            targetRPM = value
+            cancelManualChange()
         }
         selection = mode
+        boostEndsAt = mode == .boost ? ContinuousClock.now.advanced(by: Self.boostDuration) : nil
         autoRetryNotBefore = nil
+        // Switching between Boost, Manual and Auto never releases by itself.
+        autoTakeoverAt = nil
         // Preserve independently confirmed daemon ownership when moving between
         // Boost/Manual/Auto. In particular, Manual -> Auto with no matching rule
         // must still know there is hardware to release back to macOS.
@@ -275,9 +424,22 @@ final class FanControlModel: ObservableObject {
         }
         if age < 0 || age > 3 || fanAge < 0 || fanAge > 3 {
             telemetryReady = false
-            if selection != .system { transitionToSystem(graceful: false) }
+            if selection != .system { transitionToSystem(graceful: false, reason: "thermal or fan telemetry is stale") }
         }
-        if sliderBounds == nil && selection != .system { transitionToSystem(graceful: false) }
+        if sliderBounds == nil && selection != .system {
+            transitionToSystem(graceful: false, reason: "factory fan limits are unavailable")
+        }
+        restoreAutoIfRequested()
+    }
+
+    /// Arms Auto again once control is ready, if the user asked for that. It goes
+    /// through `setMode`, so every ordinary readiness and safety check still applies.
+    private func restoreAutoIfRequested() {
+        guard restorePending, restoresAutoOnStart, autoWasSelected, selection == .system,
+              client.state == .connected, canSelectAuto else { return }
+        restorePending = false
+        logger.notice("Restoring Auto from the previous session")
+        setMode(.auto)
     }
 
     func accept(_ sample: MetricSample<ThermalMetrics>) {
@@ -288,7 +450,7 @@ final class FanControlModel: ObservableObject {
               !thermals.failures.keys.contains(where: { $0.hasPrefix("Tp") || $0.hasPrefix("Te") || $0.hasPrefix("Tg") }),
               let temperature = try? thermals.maximumSoCCelsius.get(), temperature.isFinite else {
             telemetryReady = false
-            if selection != .system { transitionToSystem(graceful: false) }
+            if selection != .system { transitionToSystem(graceful: false, reason: "thermal sample is not trusted") }
             return
         }
 
@@ -306,11 +468,16 @@ final class FanControlModel: ObservableObject {
         case .system:
             return
         case .boost:
+            if let end = boostEndsAt, ContinuousClock.now >= end {
+                transitionToSystem(graceful: true, reason: "Boost time ended")
+                return
+            }
             send(mode: .boost, rpm: targetRPM, temperature: temperature, sampleTicks: sample.capturedTicks)
         case .override:
-            // The daemon independently forces factory max at the emergency
-            // temperature even if this requested Manual target is too low.
-            send(mode: .override, rpm: targetRPM, temperature: temperature, sampleTicks: sample.capturedTicks)
+            // The helper adds its own floors and the emergency handback even if
+            // this requested Manual target is low.
+            send(mode: .override, rpm: appliedManualRPM ?? targetRPM, temperature: temperature,
+                 sampleTicks: sample.capturedTicks)
         case .auto:
             evaluateAutomaticRules(thermals: thermals, temperature: temperature, sampleTicks: sample.capturedTicks)
         }
@@ -388,6 +555,124 @@ final class FanControlModel: ObservableObject {
 
     func resetSafeRules() { commitConfiguration(.safeDefault) }
 
+    // MARK: - Fan curve
+
+    func updateCurve(_ curve: CoolingCurve, for power: CoolingPowerProfile) {
+        var value = curves
+        value.setCurve(curve, for: power)
+        value.usesCurve = true
+        commitCurves(value, affects: power)
+    }
+
+    func resetCurve(for power: CoolingPowerProfile) {
+        updateCurve(CoolingCurve.recommended(power), for: power)
+    }
+
+    func useCurve() { setAutoUsesCurve(true) }
+
+    /// Auto follows the fan curve or the step rules (both are kept).
+    func setAutoUsesCurve(_ usesCurve: Bool) {
+        guard curves.usesCurve != usesCurve else { return }
+        var value = curves
+        value.usesCurve = usesCurve
+        commitCurves(value, affects: activePowerProfile)
+    }
+
+    func copyCurve(from source: CoolingPowerProfile, to destination: CoolingPowerProfile) {
+        guard source != destination else { return }
+        updateCurve(curves.curve(source), for: destination)
+    }
+
+    /// Applies a preset to what Auto currently follows (curve or rules).
+    func applyPreset(_ preset: CoolingPreset, for power: CoolingPowerProfile) {
+        if curves.usesCurve {
+            updateCurve(preset.curve(for: power), for: power)
+        } else {
+            var configured = rulesConfiguration
+            configured.setProfile(preset.rules(for: power), for: power)
+            commitConfiguration(configured, affectedProfiles: [power])
+        }
+    }
+
+    private func commitCurves(_ value: CoolingCurves, affects power: CoolingPowerProfile?) {
+        var value = value
+        value.normalize()
+        curves = value
+        if let data = try? CoolingCurvesPersistence.encode(value) {
+            defaults.set(data, forKey: CoolingCurvesPersistence.defaultsKey)
+        }
+        // Like rule edits: never tear down ownership; the next fresh sample
+        // applies the new curve (an update, or one verified System release).
+        if selection == .auto, let power, power == activePowerProfile { resetAutomationRuntime() }
+    }
+
+    /// Curve mode: the 95 °C emergency latch of the rules engine, then the
+    /// curve at the hysteresis-filtered temperature of its sensor.
+    private func curveDecision(_ curve: CoolingCurve, inputs: CoolingRuleInputs, fanIDs: [Int],
+                               ticks: UInt64) -> CoolingRuleDecision {
+        let none = CoolingRuleDecision(fanPercent: [:], activeRuleIDs: [], emergency: false)
+        let latch = rulesEngine.evaluate(profile: CoolingRuleProfile(rules: []), inputs: inputs, fanIDs: fanIDs, ticks: ticks)
+        if latch.emergency { return latch }
+        guard let reading = inputs.value(for: curve.sensor.ruleSensor) else {
+            curveInput.reset()
+            curveInputCelsius = nil
+            return none
+        }
+        let value = curveInput.next(reading, hysteresisCelsius: response.smoothing.hysteresisCelsius)
+        curveInputCelsius = value
+        let wanted = curve.percent(at: value)
+        if (wanted != nil) != curveActive {
+            let since = curveChangeSince ?? ticks
+            curveChangeSince = since
+            let needed = curveActive ? Self.curveReleaseSeconds : Self.curveEngageSeconds
+            if HostClock.seconds(from: since, to: ticks) >= needed {
+                curveActive.toggle()
+                curveChangeSince = nil
+            }
+        } else {
+            curveChangeSince = nil
+        }
+        guard curveActive else { return none }
+        // Below the first point but not yet released: hold the curve's start.
+        let percent = wanted ?? curve.points.first?.percent ?? 0
+        let rounded = Int(percent.rounded())
+        return CoolingRuleDecision(fanPercent: Dictionary(uniqueKeysWithValues: fanIDs.map { ($0, rounded) }),
+                                   activeRuleIDs: [], emergency: false)
+    }
+
+    func setResponse(_ value: FanLayerResponse) {
+        guard value != response else { return }
+        response = value
+        defaults.set(value.smoothness, forKey: Self.responseDefaultsKey)
+        rulesEngine.releaseHysteresisCelsius = value.smoothing.hysteresisCelsius
+    }
+
+    /// Manual slider moves apply after `manualDebounce` without further moves,
+    /// then the helper ramps there smoothly (Response).
+    private func scheduleManualChange(_ value: Double) {
+        guard selection == .override, value.isFinite, value != appliedManualRPM else {
+            cancelManualChange()
+            return
+        }
+        manualDebounceTask?.cancel()
+        let delay = Self.manualDebounce
+        manualChangeAppliesAt = ContinuousClock.now.advanced(by: delay)
+        manualDebounceTask = Task { @MainActor [weak self] in
+            do { try await Task.sleep(for: delay) } catch { return }
+            guard let self, self.selection == .override else { return }
+            let bounds = self.limitBounds
+            self.appliedManualRPM = bounds.map { min($0.upperBound, max($0.lowerBound, self.targetRPM)) } ?? self.targetRPM
+            self.manualChangeAppliesAt = nil
+            self.manualDebounceTask = nil
+        }
+    }
+
+    private func cancelManualChange() {
+        manualDebounceTask?.cancel()
+        manualDebounceTask = nil
+        manualChangeAppliesAt = nil
+    }
+
     func setTransitionSeconds(_ value: Double) {
         var configured = rulesConfiguration
         configured.transitionSeconds = value
@@ -417,14 +702,14 @@ final class FanControlModel: ObservableObject {
     private func evaluateAutomaticRules(thermals: ThermalMetrics, temperature: Double, sampleTicks: UInt64) {
         guard let power = activePowerProfile else {
             autoDetail = "Waiting for a trustworthy power-source reading; System remains in control."
-            releaseAutoIfNeeded(graceful: false)
+            releaseAutoIfNeeded(graceful: false, reason: "power source unknown")
             return
         }
-        guard let bounds = sliderBounds,
+        guard let bounds = limitBounds,
               case .success(let fanInventory) = inventory.result,
               !fanInventory.fans.isEmpty else {
             autoDetail = "Waiting for current fan limits."
-            releaseAutoIfNeeded(graceful: false)
+            releaseAutoIfNeeded(graceful: false, reason: "fan limits unavailable")
             return
         }
 
@@ -439,20 +724,36 @@ final class FanControlModel: ObservableObject {
             batteryTemperature = nil
         }
 
-        let decision = rulesEngine.evaluate(
-            profile: rulesConfiguration.profile(power),
-            inputs: CoolingRuleInputs(thermals: thermals, batteryCelsius: batteryTemperature, storageCelsius: freshStorageTemperature()),
-            fanIDs: fanInventory.fans.map(\.id),
-            ticks: sampleTicks
-        )
+        let inputs = CoolingRuleInputs(thermals: thermals, batteryCelsius: batteryTemperature,
+                                       storageCelsius: freshStorageTemperature())
+        let decision = curves.usesCurve
+            ? curveDecision(curves.curve(power), inputs: inputs, fanIDs: fanInventory.fans.map(\.id), ticks: sampleTicks)
+            : rulesEngine.evaluate(profile: rulesConfiguration.profile(power), inputs: inputs,
+                                   fanIDs: fanInventory.fans.map(\.id), ticks: sampleTicks)
         activeRuleIDs = decision.activeRuleIDs
         automaticDemandPercent = decision.maximumPercent
         automaticEmergency = decision.emergency
 
         guard let percent = decision.maximumPercent else {
             autoRetryNotBefore = nil
-            autoDetail = "No rule active · \(power.label) · System control"
-            releaseAutoIfNeeded(graceful: true)
+            let below = curves.usesCurve ? "Below the fan curve" : "No rule active"
+            let configured = curves.usesCurve || !rulesConfiguration.profile(power).rules.isEmpty
+            if let since = autoTakeoverAt, ContinuousClock.now < since.advanced(by: Self.autoMinimumHold),
+               configured, confirmedControl, !pendingExpectedAutoRelease {
+                // Keep the fans at the factory minimum (the helper still adds its
+                // floors) instead of a release/takeover cycle on a brief dip.
+                autoDetail = "\(below) · \(power.label) · holding the minimum briefly before returning to macOS"
+                send(mode: .override, rpm: bounds.lowerBound, temperature: temperature, sampleTicks: sampleTicks)
+                return
+            }
+            if pendingCommand != nil, client.fanState == .system {
+                // Never cancel a takeover in flight for "no demand": that wastes
+                // a firmware handover. Its result is held at least briefly.
+                autoDetail = "\(below) · \(power.label) · finishing the handover first"
+                return
+            }
+            autoDetail = "\(below) · \(power.label) · macOS control"
+            releaseAutoIfNeeded(graceful: true, reason: curves.usesCurve ? "below the fan curve" : "no Auto rule matches")
             return
         }
 
@@ -468,7 +769,7 @@ final class FanControlModel: ObservableObject {
         let appliedPercent = automaticPercent(desired: Double(percent), emergency: decision.emergency, ticks: sampleTicks)
         guard let rpm = try? CoolingRulePercentCodec.rpm(percent: Int(appliedPercent.rounded()), bounds: bounds) else {
             autoDetail = "Automatic target could not be mapped to validated fan limits."
-            releaseAutoIfNeeded(graceful: false)
+            releaseAutoIfNeeded(graceful: false, reason: "Auto target could not be mapped")
             return
         }
         let mode: HeliosFanMode = decision.emergency || appliedPercent >= 99.5 ? .boost : .override
@@ -510,11 +811,46 @@ final class FanControlModel: ObservableObject {
         return next
     }
 
+    /// After a release the firmware needs a pause before it hands the fans
+    /// over again. A confirmed hold starts the app-side wait; while the helper
+    /// answers that it is still waiting, ask again once a second.
+    private func noteSystemReply(afterConfirmedControl: Bool) {
+        let detail = client.fanDetail
+        if detail.hasPrefix(FanLayerReacquireCooldown.replyPrefix) {
+            cooldownEndsAt = ContinuousClock.now.advanced(by: .seconds(1))
+        } else if afterConfirmedControl, !detail.hasPrefix(Self.macOSAlreadyCoolingPrefix) {
+            cooldownEndsAt = ContinuousClock.now.advanced(by: .seconds(FanLayerReacquireCooldown.defaultSeconds))
+        }
+    }
+
+    /// A takeover asked at the end of a wait: the helper answers "still
+    /// waiting" at once, so a reply that takes longer is a real handover.
+    private func showHandoverIfStillPending() {
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(500))
+            guard let self, self.pendingCommand != nil, self.client.fanState == .system,
+                  self.selection != .system else { return }
+            self.cooldownEndsAt = nil
+            self.handingOver = true
+        }
+    }
+
     private func send(mode: HeliosFanMode, rpm: Double, temperature: Double, sampleTicks: UInt64) {
         // Accepted XPC traffic is not the same thing as confirmed hardware
         // ownership. Keep it separate until `fanState` reports Boost/Override.
-        if client.calculate(mode: mode, rpm: rpm, temperature: temperature, sampleTicks: sampleTicks) {
+        let takeover = client.fanState == .system
+        var afterWait = false
+        if takeover, let end = cooldownEndsAt {
+            if ContinuousClock.now < end, temperature < CoolingRulesSafetyProfile.emergencyMaximumCelsius { return }
+            afterWait = true
+        }
+        if client.calculate(mode: mode, rpm: rpm, temperature: temperature, sampleTicks: sampleTicks,
+                            response: response) {
             pendingCommand = mode
+            if takeover {
+                controlNotice = nil
+                if afterWait { showHandoverIfStillPending() } else { handingOver = true }
+            }
         }
     }
 
@@ -522,19 +858,20 @@ final class FanControlModel: ObservableObject {
         pendingCommand != nil || confirmedControl || lastCommand != .system || client.fanState != .system
     }
 
-    private func releaseAutoIfNeeded(graceful: Bool) {
+    private func releaseAutoIfNeeded(graceful: Bool, reason: String) {
         guard hasPotentialControl else {
             autoAppliedPercent = nil
             autoAppliedTicks = nil
             return
         }
-        beginExpectedAutoRelease(graceful: graceful)
+        beginExpectedAutoRelease(graceful: graceful, reason: reason)
         autoAppliedPercent = nil
         autoAppliedTicks = nil
     }
 
-    private func beginExpectedAutoRelease(graceful: Bool) {
+    private func beginExpectedAutoRelease(graceful: Bool, reason: String) {
         guard !pendingExpectedAutoRelease else { return }
+        logRelease(reason)
         pendingExpectedAutoRelease = true
         if selection == .auto { autoDetail = "Returning to System before applying updated rules…" }
         let accepted = client.releaseFans(graceful: graceful) { [weak self] state in
@@ -561,9 +898,31 @@ final class FanControlModel: ObservableObject {
         if selection == .auto { autoDetail = "" }
     }
 
-    private func transitionToSystem(graceful: Bool) {
+    /// Every app-initiated release is logged with its reason, so a live run can
+    /// tell a user action from a safety release.
+    private func logRelease(_ reason: String) {
+        logger.notice("Releasing fans to macOS: \(reason, privacy: .public) (selection \(self.selection.rawValue, privacy: .public), helper state \(String(describing: self.client.fanState), privacy: .public))")
+    }
+
+    private var lastLoggedAt: [String: ContinuousClock.Instant] = [:]
+
+    /// A state that lasts for many ticks (for example the helper handing the fans
+    /// back while it is hot) would otherwise log the same line twice a second.
+    private func logOnce(_ message: String, every interval: Duration = .seconds(30)) {
+        let now = ContinuousClock.now
+        if let last = lastLoggedAt[message], now - last < interval { return }
+        lastLoggedAt[message] = now
+        logger.notice("\(message, privacy: .public)")
+    }
+
+    private func transitionToSystem(graceful: Bool, reason: String) {
         cancelExplicitSystemFallback()
+        if hasPotentialControl { logRelease(reason) }
+        handingOver = false
+        autoTakeoverAt = nil
+        cancelManualChange()
         selection = .system
+        boostEndsAt = nil
         pendingCommand = nil
         lastCommand = .system
         confirmedControl = false
@@ -598,6 +957,10 @@ final class FanControlModel: ObservableObject {
 
     private func resetAutomationRuntime() {
         rulesEngine.reset()
+        curveInput.reset()
+        curveInputCelsius = nil
+        curveActive = false
+        curveChangeSince = nil
         activeRuleIDs = []
         automaticDemandPercent = nil
         automaticEmergency = false
@@ -614,6 +977,15 @@ final class FanControlModel: ObservableObject {
         value.normalize()
         rulesConfiguration = value
         persistConfiguration(value)
+        // Editing the step rules (classic interface) makes Auto follow them.
+        if curves.usesCurve {
+            var updated = curves
+            updated.usesCurve = false
+            curves = updated
+            if let data = try? CoolingCurvesPersistence.encode(updated) {
+                defaults.set(data, forKey: CoolingCurvesPersistence.defaultsKey)
+            }
+        }
 
         // Editing the inactive AC/Battery profile is configuration-only. Live
         // Auto edits are also *not* a reason to tear down ownership: cancelling
@@ -640,7 +1012,7 @@ final class FanControlModel: ObservableObject {
             // and battery rule sets. If Auto currently owns the fan, release it
             // immediately and require a new trustworthy power-source sample.
             if activePowerProfile != nil, selection == .auto, hasPotentialControl {
-                beginExpectedAutoRelease(graceful: false)
+                beginExpectedAutoRelease(graceful: false, reason: "power source reading lost")
             }
             activePowerProfile = nil
             rulesEngine.reset()
@@ -657,7 +1029,7 @@ final class FanControlModel: ObservableObject {
             // old-profile target across that boundary; return to Apple first,
             // then let the next fresh thermal batch evaluate the new profile.
             if activePowerProfile != nil, selection == .auto, hasPotentialControl {
-                beginExpectedAutoRelease(graceful: false)
+                beginExpectedAutoRelease(graceful: false, reason: "power source changed")
             }
             activePowerProfile = profile
             rulesEngine.reset()

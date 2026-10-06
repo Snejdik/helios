@@ -35,7 +35,7 @@ struct FanControlView: View {
                     FanModeControls(
                         selection: Binding(get: { model.selection }, set: { model.setMode($0) }),
                         targetRPM: $model.targetRPM,
-                        bounds: model.sliderBounds,
+                        bounds: model.limitBounds,
                         boostEnabled: model.canSelectBoost,
                         overrideEnabled: model.canSelectOverride,
                         autoEnabled: model.canSelectAuto

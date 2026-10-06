@@ -57,6 +57,7 @@ private enum FanChecks {
             try engineFailures()
             try leaseAndPolicy()
             try coolingRulesChecks()
+            try coolingCurveChecks()
             try ownershipTransitionChecks()
             try ownershipRecoveryChecks()
             try ownershipRecoveryExecutorChecks()
@@ -73,6 +74,86 @@ private enum FanChecks {
             }
             print("PASS fan discovery/codecs, recovery/acquisition/update/release executors, independent leases, Manual bounds, TG-style Cooling Rules, 95C emergency floor, and pre-emptible soft release")
         } catch { print("FAIL: \(error)"); exit(1) }
+    }
+
+    /// The fan curve behind Auto in the Helios interface.
+    static func coolingCurveChecks() throws {
+        let curve = CoolingCurve.recommendedPowerAdapter
+        try require(curve.percent(at: 54.9) == nil, "below the first point macOS keeps the fans")
+        try require(curve.percent(at: 55) == 0, "first point is the factory minimum")
+        try require(abs((curve.percent(at: 70) ?? -1) - 37.5) < 0.001, "linear interpolation between points")
+        try require(curve.percent(at: 99) == 100 && curve.percent(at: .nan) == nil, "flat after the last point; NaN ignored")
+        var previous = -1.0
+        for tenth in 550...1_000 {
+            let value = curve.percent(at: Double(tenth) / 10) ?? -1
+            try require(value >= previous, "curve never falls as it gets hotter")
+            previous = value
+        }
+
+        // Normalisation: sorted, spaced, clamped, monotone, 2…6 points.
+        let messy = CoolingCurve(sensor: .gpu, points: [
+            CoolingCurvePoint(celsius: 90, percent: 40), CoolingCurvePoint(celsius: 20, percent: 150),
+            CoolingCurvePoint(celsius: 31, percent: 10), CoolingCurvePoint(celsius: .nan, percent: 5),
+            CoolingCurvePoint(celsius: 70, percent: 30)])
+        try require(messy.points.map(\.celsius) == [30, 70, 90], "sorted, clamped to 30 °C and spaced: \(messy.points)")
+        try require(messy.points.map(\.percent) == [100, 100, 100], "speeds never fall: \(messy.points)")
+        let crowded = CoolingCurve(sensor: .cpu, points: (0..<10).map { CoolingCurvePoint(celsius: 40 + Double($0) * 5, percent: Double($0) * 10) })
+        try require(crowded.points.count == CoolingCurve.maximumPoints, "at most six points")
+        try require(CoolingCurve(sensor: .cpu, points: []).points.count == CoolingCurve.minimumPoints, "never fewer than two points")
+
+        // Editing: a point stays between its neighbours; add/remove keep the bounds.
+        var edited = curve
+        edited.move(1, celsius: 200, percent: -50)
+        try require(edited.points[1].celsius == edited.points[2].celsius - CoolingCurve.minimumSpacingCelsius
+                    && edited.points[1].percent == edited.points[0].percent, "drag is bounded by the neighbours")
+        try require(edited.addPoint() && edited.points.count == 6 && !edited.addPoint(), "add up to six points")
+        for _ in 0..<10 { edited.removePoint(0) }
+        try require(edited.points.count == CoolingCurve.minimumPoints, "remove down to two points")
+
+        // Migration: unchanged default rules become the recommended curve; custom
+        // rules carry over as points (Always becomes a start at 30 °C).
+        let defaults = CoolingCurves.migrated(from: .safeDefault)
+        try require(defaults == .recommended, "default rules migrate to the recommended curves")
+        var custom = CoolingRulesConfiguration.safeDefault
+        custom.setProfile(CoolingRuleProfile(rules: [
+            CoolingRule(speedPercent: 30, sensor: .gpu, thresholdCelsius: 60),
+            CoolingRule(speedPercent: 90, sensor: .gpu, thresholdCelsius: 80),
+            CoolingRule(speedPercent: 10, sensor: .always)]), for: .powerAdapter)
+        let migrated = CoolingCurves.migrated(from: custom)
+        try require(migrated.powerAdapter.sensor == .gpu
+                    && migrated.powerAdapter.points == [CoolingCurvePoint(celsius: 30, percent: 10),
+                                                        CoolingCurvePoint(celsius: 60, percent: 30),
+                                                        CoolingCurvePoint(celsius: 80, percent: 90)],
+                    "custom rules become points: \(migrated.powerAdapter.points)")
+        try require(migrated.battery == .recommendedBattery && migrated.usesCurve, "untouched profile and curve mode")
+        let roundTrip = try CoolingCurvesPersistence.decode(try CoolingCurvesPersistence.encode(migrated))
+        try require(roundTrip == migrated, "curves persist")
+
+        // Hysteresis: rises count at once, falls only after the hysteresis.
+        var input = CoolingCurveInput()
+        try require(input.next(70, hysteresisCelsius: 3) == 70, "first reading")
+        try require(input.next(74, hysteresisCelsius: 3) == 74, "rise is immediate")
+        try require(input.next(72, hysteresisCelsius: 3) == 74, "small fall is ignored")
+        try require(input.next(71.5, hysteresisCelsius: 3) == 74, "fall within the hysteresis is ignored")
+        try require(input.next(70, hysteresisCelsius: 3) == 73, "a larger fall lowers by the excess")
+
+        // Presets: valid curves and rules for both power sources; Balanced is the recommended set.
+        for preset in CoolingPreset.allCases {
+            for power in CoolingPowerProfile.allCases {
+                let presetCurve = preset.curve(for: power)
+                try require(presetCurve.points.count >= CoolingCurve.minimumPoints
+                            && zip(presetCurve.points, presetCurve.points.dropFirst()).allSatisfy { $0.percent <= $1.percent },
+                            "\(preset.label) curve is valid")
+                try require(!preset.rules(for: power).rules.isEmpty, "\(preset.label) rules are not empty")
+            }
+        }
+        try require(CoolingPreset.balanced.curve(for: .battery) == .recommendedBattery
+                    && CoolingPreset.balanced.rules(for: .powerAdapter).rules.map { "\($0.speedPercent)@\($0.thresholdCelsius)" }
+                       == CoolingRulesConfiguration.safeDefault.powerAdapter.rules.map { "\($0.speedPercent)@\($0.thresholdCelsius)" },
+                    "Balanced is the recommended set")
+        try require((CoolingPreset.cool.curve(for: .powerAdapter).percent(at: 60) ?? 0)
+                    > (CoolingPreset.quiet.curve(for: .powerAdapter).percent(at: 60) ?? 0),
+                    "Cool runs faster than Quiet at the same temperature")
     }
 
     static func codecsAndDiscovery() throws {

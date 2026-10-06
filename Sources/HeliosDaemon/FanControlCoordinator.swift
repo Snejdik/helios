@@ -43,6 +43,21 @@ final class FanControlCoordinator: @unchecked Sendable {
     private var detail = ""
     private var timer: DispatchSourceTimer?
     private var softReleasePermit: FanSoftReleasePermit?
+    /// Invariant 8: bounded re-acquisition after macOS takes the fans back.
+    private var reclaimGuard = FanLayerReclaimGuard()
+    /// Firmware needs a pause after a release before it hands the fans over
+    /// again (FanLayerReacquireCooldown). 0 keeps tests and the legacy path inert.
+    private var reacquireCooldown: FanLayerReacquireCooldown
+    /// Set once a takeover may have reached the firmware (owned, or a failed
+    /// acquisition after Ftst=1); the next verified System restore starts the
+    /// cooldown.
+    private var firmwareTouched = false
+    /// The last takeover was refused before Helios held the fans.
+    private var takeoverRefused = false
+    /// Boost always ends by itself; the app also limits it, this is the hard cap.
+    static let defaultBoostCapSeconds = 3_600.0
+    private let boostCapSeconds: Double
+    private var boostSince: UInt64?
 
     /// The default remains inert for tests/callers that do not explicitly opt
     /// into a validated production profile. HeliosDaemon passes nil only after
@@ -58,7 +73,13 @@ final class FanControlCoordinator: @unchecked Sendable {
         _ = try ProductionFanWakeSafety.run()
     },
          softReleaseStepDelaySeconds: Double = 0.60,
-         emergencyMaximumCelsius: Double? = nil) {
+         emergencyMaximumCelsius: Double? = nil,
+         boostCapSeconds: Double = FanControlCoordinator.defaultBoostCapSeconds,
+         reacquireCooldownSeconds: Double = 0) {
+        reacquireCooldown = FanLayerReacquireCooldown(seconds: reacquireCooldownSeconds)
+        self.boostCapSeconds = boostCapSeconds.isFinite && boostCapSeconds > 0
+            ? boostCapSeconds
+            : Self.defaultBoostCapSeconds
         self.validationMessage = validationMessage
         self.allowedModes = allowedModes
         self.readyDetail = readyDetail
@@ -96,6 +117,7 @@ final class FanControlCoordinator: @unchecked Sendable {
     }
 
     func calculate(owner id: UUID, sequence: UInt64, sample: UInt64, mode: HeliosFanMode, rpm: Double, temperature: Double,
+                   response: FanLayerResponse = .standard,
                    reply: @escaping @Sendable (HeliosReplyCode, HeliosFanState, String) -> Void) {
         queue.async { [self] in
             guard owner == id, !shuttingDown, !paused else { reply(.invalidSession, state, "Control session closed"); return }
@@ -109,6 +131,14 @@ final class FanControlCoordinator: @unchecked Sendable {
             }
             guard rpm.isFinite, temperature.isFinite, temperature > 0, temperature <= 150 else {
                 restore(reset: false) { state, detail in reply(.invalidCalculation, state, detail) }
+                return
+            }
+            // Calm wait after a release: nothing is written and the lease is not
+            // armed, macOS keeps cooling. Emergency cooling never waits.
+            let emergencyNow = temperature >= (emergencyMaximumCelsius ?? FanLayerSafetyCurve.emergencyCelsius)
+            if state == .system, mode != .system, !emergencyNow,
+               let remaining = reacquireCooldown.remaining(at: HostClock.now) {
+                reply(.ok, state, FanLayerReacquireCooldown.reply(remaining: remaining))
                 return
             }
             let token: UInt64
@@ -132,6 +162,25 @@ final class FanControlCoordinator: @unchecked Sendable {
                 effectiveRPM = rpm
             }
             let acquisitionRequest = state == .system && effectiveMode != .system
+            let now = HostClock.now
+            if acquisitionRequest, reclaimGuard.isLockedOut(at: now) {
+                reply(.controlUnavailable, state,
+                      "macOS took back fan control several times, so Helios stays on System for a few minutes.")
+                return
+            }
+            if effectiveMode == .boost, emergencyMaximumCelsius.map({ temperature < $0 }) ?? true {
+                if boostSince == nil { boostSince = now }
+                if let since = boostSince, HostClock.seconds(from: since, to: now) >= boostCapSeconds {
+                    boostSince = nil
+                    restore(reset: false) { state, _ in
+                        reply(.controlUnavailable, state, "Boost ended after an hour; macOS manages the fans again.")
+                    }
+                    return
+                }
+            } else {
+                boostSince = nil
+            }
+            let context = FanControlContext(appCelsius: temperature, response: response)
             pendingOperations += 1
             io.async { [self] in
                 let result = captureMetric {
@@ -145,26 +194,52 @@ final class FanControlCoordinator: @unchecked Sendable {
                     if engine == nil { engine = try makeEngine() }
                     guard let engine else { throw TelemetryError.unavailable("Fan engine unavailable") }
                     if acquisitionRequest {
-                        try engine.apply(mode: effectiveMode, rpm: effectiveRPM) { try lease.checkAcquisition(token) }
+                        try engine.apply(mode: effectiveMode, rpm: effectiveRPM, context: context) {
+                            try lease.checkAcquisition(token)
+                        }
                         try lease.completeAcquisition(token)
                     } else {
-                        try engine.apply(mode: effectiveMode, rpm: effectiveRPM) { try lease.check(token) }
+                        try engine.apply(mode: effectiveMode, rpm: effectiveRPM, context: context) { try lease.check(token) }
                     }
-                    return engine.state
+                    return (engine.state, engine.statusDetail)
                 }
                 let actual = engine?.state ?? .system
                 queue.async { [self] in
                     pendingOperations -= 1
+                    switch result {
+                    case .success(let value) where value.0 == .boost || value.0 == .override:
+                        firmwareTouched = true
+                        takeoverRefused = false
+                        reacquireCooldown.recordHeld()
+                    case .success(let value) where value.0 == .system && firmwareTouched:
+                        // The engine returned the fans to macOS itself (more
+                        // cooling than the user's limit is needed).
+                        firmwareTouched = false
+                        reacquireCooldown.recordRelease(at: HostClock.now)
+                    case .failure where acquisitionRequest:
+                        // Refused or cancelled: the firmware was touched either
+                        // way. Only a refusal (decided below) grows the backoff.
+                        firmwareTouched = true
+                        takeoverRefused = false
+                    default:
+                        break
+                    }
                     if case .success(let value) = result, (try? lease.check(token)) != nil {
-                        state = value
-                        detail = readyDetail
-                        reply(.ok, value, readyDetail)
+                        state = value.0
+                        if value.0 == .system { boostSince = nil }
+                        detail = value.1 ?? readyDetail
+                        reply(.ok, value.0, detail)
                     } else {
                         state = actual
                         let failure: String
                         if case .failure(let error) = result {
                             failure = error.localizedDescription
                             logger.error("Fan request failed: \(failure, privacy: .public)")
+                            if case .unavailable(let message) = error,
+                               message == FanLayerEngineError.ownershipLost.localizedDescription {
+                                reclaimGuard.recordLoss(at: HostClock.now)
+                                logger.notice("macOS reclaimed the fans (\(self.reclaimGuard.lossCount) in the window).")
+                            }
                         } else {
                             failure = "The control lease expired before the fan request completed."
                         }
@@ -181,6 +256,10 @@ final class FanControlCoordinator: @unchecked Sendable {
                             acquisition: acquisitionRequest,
                             now: HostClock.now
                         )
+                        // A takeover that failed while its lease was still valid
+                        // was refused by the hardware; one cancelled by a release
+                        // or expiry was not, and must not lengthen the wait.
+                        takeoverRefused = acquisitionRequest && recoveryLeaseGeneration != nil
                         restore(
                             reset: false,
                             clearHistory: false,
@@ -368,6 +447,11 @@ final class FanControlCoordinator: @unchecked Sendable {
                 pendingOperations -= 1
                 switch result {
                 case .success:
+                    if firmwareTouched {
+                        firmwareTouched = false
+                        reacquireCooldown.recordRelease(at: HostClock.now, refused: takeoverRefused)
+                        takeoverRefused = false
+                    }
                     state = .system
                     ready = validationMessage == nil && !allowedModes.isEmpty && !shuttingDown
                     detail = validationMessage ?? readyDetail

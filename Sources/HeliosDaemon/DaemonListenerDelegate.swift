@@ -5,13 +5,27 @@ import OSLog
 final class DaemonListenerDelegate: NSObject, NSXPCListenerDelegate, @unchecked Sendable {
     private let requirement: XPCTrustRequirement
     private let fans: FanControlCoordinator
+    private let layer: FanLayerRuntime?
     private let lock = NSLock()
+    private var restartHandler: (@Sendable () -> Void)?
     private var sessions: [UUID: DaemonSession] = [:]
     private let logger = Logger(subsystem: HeliosServiceIdentity.machServiceName, category: "Listener")
 
-    init(requirement: XPCTrustRequirement, fans: FanControlCoordinator = FanControlCoordinator()) {
+    init(requirement: XPCTrustRequirement, fans: FanControlCoordinator = FanControlCoordinator(),
+         layer: FanLayerRuntime? = nil) {
         self.requirement = requirement
         self.fans = fans
+        self.layer = layer
+    }
+
+    /// Set once by the daemon after its lifecycle exists.
+    func setRestartHandler(_ handler: @escaping @Sendable () -> Void) {
+        lock.lock(); restartHandler = handler; lock.unlock()
+    }
+
+    private func restart() {
+        lock.lock(); let handler = restartHandler; lock.unlock()
+        handler?()
     }
 
     func listener(_ listener: NSXPCListener, shouldAcceptNewConnection connection: NSXPCConnection) -> Bool {
@@ -21,7 +35,8 @@ final class DaemonListenerDelegate: NSObject, NSXPCListenerDelegate, @unchecked 
             logger.notice("Rejected root client or additional session.")
             return false
         }
-        let session = DaemonSession(connection: connection, requirement: requirement, fans: fans) { [weak self] id in
+        let session = DaemonSession(connection: connection, requirement: requirement, fans: fans, layer: layer,
+                                    requestRestart: { [weak self] in self?.restart() }) { [weak self] id in
             guard let self else { return }
             self.lock.lock()
             self.sessions.removeValue(forKey: id)

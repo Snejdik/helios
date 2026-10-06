@@ -192,9 +192,10 @@ private final class FakeRegistration: ServiceRegistrationDriver {
         if let failure { throw failure }
         if removalDelay > .zero {
             let delay = removalDelay
-            Task { @MainActor in
-                try await Task.sleep(for: delay)
-                self.status = .notRegistered
+            Task { @MainActor [weak self] in
+                do { try await Task.sleep(for: delay) }
+                catch { return } // Cancellation leaves the fixture's current status intact.
+                self?.status = .notRegistered
             }
         } else { status = .notRegistered }
         calls.append("unregister completed")
@@ -510,7 +511,8 @@ private enum IPCChecks {
             model.refresh(snapshot)
             model.accept(snapshot.thermals)
             try await waitUntil("Edited Auto target was not applied without reacquisition") {
-                engine.starts >= 2 && abs((engine.lastRPM ?? 0) - 3_000) <= 0.5
+                // 50 % of minimum…limit: the default limit is 90 % of the 5,000 RPM maximum.
+                engine.starts >= 2 && abs((engine.lastRPM ?? 0) - 2_750) <= 0.5
             }
             try require(engine.restores == 0 && model.selection == .auto && model.automaticDemandPercent == 50,
                         "Auto live edit did not preserve stable ownership and apply the newest rule")
@@ -527,6 +529,48 @@ private enum IPCChecks {
 
             model.setMode(.system)
             try await waitUntil("Auto Rules test did not return to System") { client.fanState == .system }
+            await withCheckedContinuation { continuation in fans.shutdown { _ in continuation.resume() } }
+        }
+
+        // "Restore Auto when Helios starts": a new model (a relaunch) arms Auto again
+        // only when the user opted in and Auto was their last explicit choice.
+        do {
+            let engine = AutoModelEngine(firstDelayMilliseconds: 0)
+            let fans = FanControlCoordinator(validationMessage: nil, makeEngine: { engine })
+            let fixture = Fixture(serverTrust: trusted, clientTrust: trusted, fans: fans)
+            defer { fixture.close() }
+            let client = DaemonClient(trustProvider: { trusted }, connectionFactory: {
+                NSXPCConnection(listenerEndpoint: fixture.listener.endpoint)
+            })
+            defer { client.disconnect() }
+            client.connect()
+            try await waitUntil("Restore-Auto client did not become available") { client.state == .connected && client.fanControlAvailable }
+
+            for (optedIn, autoWasChosen, expectsAuto) in [(true, true, true), (false, true, false), (true, false, false)] {
+                let (defaults, suite) = try makeIsolatedDefaults()
+                defer { defaults.removePersistentDomain(forName: suite) }
+                defaults.set(optedIn, forKey: FanControlModel.restoreAutoDefaultsKey)
+                defaults.set(autoWasChosen, forKey: FanControlModel.autoSelectedDefaultsKey)
+                let model = FanControlModel(client: client, defaults: defaults)
+                try require(model.selection == .system, "A relaunched model must start on System")
+                let snapshot = controlSnapshot()
+                model.refresh(snapshot)
+                model.accept(snapshot.thermals)
+                model.refresh(snapshot)
+                try require((model.selection == .auto) == expectsAuto,
+                            "Restore Auto (opted in \(optedIn), Auto chosen \(autoWasChosen)) gave \(model.selection)")
+                if expectsAuto {
+                    // An explicit System choice is remembered and is not restored again.
+                    model.setMode(.system)
+                    try await waitUntil("Restore-Auto test did not return to System") { client.fanState == .system }
+                    let reloaded = FanControlModel(client: client, defaults: defaults)
+                    let next = controlSnapshot()
+                    reloaded.refresh(next)
+                    reloaded.accept(next.thermals)
+                    reloaded.refresh(next)
+                    try require(reloaded.selection == .system, "System chosen on purpose was restored to Auto")
+                }
+            }
             await withCheckedContinuation { continuation in fans.shutdown { _ in continuation.resume() } }
         }
 

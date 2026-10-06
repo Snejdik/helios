@@ -3,6 +3,8 @@ import SwiftUI
 struct DaemonServiceCard: View {
   @ObservedObject var service: DaemonService
   @ObservedObject var client: DaemonClient
+  /// Inside a Settings group the card draws no surface of its own (no nested cards).
+  var embedded = false
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
@@ -10,7 +12,7 @@ struct DaemonServiceCard: View {
         Label("Helper Service", systemImage: "bolt.horizontal.circle")
           .font(.system(size: 13, weight: .bold))
         Spacer()
-        Text(service.state.rawValue).font(.system(size: 10, weight: .medium))
+        Text(service.state.rawValue).font(.system(size: 11, weight: .medium))
           .foregroundStyle(service.state == .installed ? .green : .secondary)
       }
       HStack {
@@ -29,7 +31,7 @@ struct DaemonServiceCard: View {
         Text(
           client.fanState == .system ? "Heartbeat active · No Helios override" : "Heartbeat active"
         )
-        .font(.system(size: 10)).foregroundStyle(.secondary)
+        .font(.system(size: 11)).foregroundStyle(.secondary)
       }
       if service.state == .requiresApproval && service.message == nil {
         Text("Approve Helios in Login Items & Extensions to let the helper run.")
@@ -65,12 +67,13 @@ struct DaemonServiceCard: View {
       .accessibilityLabel(
         service.busy ? "Updating helper registration" : "Helper registration actions")
     }
-    .padding(12)
+    .padding(embedded ? 0 : 12)
     .background(
-      Color(nsColor: .controlBackgroundColor).opacity(0.65), in: RoundedRectangle(cornerRadius: 10)
+      Color(nsColor: .controlBackgroundColor).opacity(embedded ? 0 : 0.65),
+      in: RoundedRectangle(cornerRadius: 10)
     )
     .overlay(
       RoundedRectangle(cornerRadius: 10).strokeBorder(
-        Color(nsColor: .separatorColor).opacity(0.3), lineWidth: 0.5))
+        Color(nsColor: .separatorColor).opacity(embedded ? 0 : 0.3), lineWidth: 0.5))
   }
 }

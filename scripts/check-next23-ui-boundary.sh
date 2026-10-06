@@ -1,6 +1,25 @@
 #!/bin/bash
-# Next23 must remain a presentation/settings rewrite over the validated Next22
-# functional freeze. Fail if the protected fan-control/battery boundary changes.
+# The protected fan-control and battery boundary must not change by accident.
+# Each file below is fingerprinted with SHA-256; a change needs a deliberate, reviewed
+# manifest update. This list records those updates (never relax what the gate asserts).
+#
+# - Cool-only fan layer (docs/FAN_LAYER_DESIGN.md): XPC v4, coordinator Response, reclaim
+#   limit and Boost cap, start-up recovery for every journal, and the layer files themselves.
+#   The validated production writer, v2 journal, recovery state machine and SMC transport
+#   stayed byte-identical.
+# - XPC v5: Response as one bounded 0...1 value, full-maximum unlock call, limit in
+#   fanLayerInfo; 90 % speed limit with handback to macOS enforced by the helper; re-acquire
+#   cooldown with refusal backoff (only hardware refusals grow it); continuous fall ramp;
+#   Manual debounce; Auto fan curve and presets; curve engage/release debounce; an in-flight
+#   takeover is never cancelled for "no demand". Files: DaemonSession, FanControlCoordinator,
+#   HeliosDaemon, CoolingRules, DaemonClient, FanControlModel, FanControlView,
+#   HeliosServiceIdentity, HeliosXPCProtocol, FanLayerPolicy, FanLayerEngine,
+#   FanLayerJournal, FanLayerRuntime. ControlLease, FanLayerHardware, the production writer,
+#   journals and SMC transport stayed byte-identical.
+# - FanControlModel: optional "Restore Auto when Helios starts"; repeated "returned to
+#   System" log lines limited to one per 30 s. Comment text only: CoolingRules,
+#   FanLayerPolicy, FanLayerHardware, FanLayerRuntime. No helper, XPC, SMC or safety logic.
+# - Privacy only: the helper's start-up executable path is logged privately.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -21,33 +40,40 @@ while read -r expected path; do
   fi
 done <<'HASHES'
 6024b0a165bf9ede7294ef0bedbade4a56af2aab054a47ec89aa50c2abf51b26 Sources/HeliosDaemon/ControlLease.swift
-b9a3b2de2f6c7786d4cd1654ef30c1c98177a3cf0c7369fc858a6ceb0a13b01a Sources/HeliosDaemon/DaemonLifecycle.swift
-95499dacf91938e3f7d598dbb4570deee2406e43bd7b98ecf6f809eeb892ffed Sources/HeliosDaemon/DaemonListenerDelegate.swift
-10d599ac3c35ff6d4fc8795c1cdc461a49e7f9f658193c3ac9261858c0217a6e Sources/HeliosDaemon/DaemonSession.swift
+986a5b1d0f6bc2344959b95ed552d04e07617f993cf44c72ebcd273eb079bd53 Sources/HeliosDaemon/DaemonLifecycle.swift
+9282686444bef9fc287d54ed95ed4561ab75b23fe7e6e889464ec6dbf2be1ba8 Sources/HeliosDaemon/DaemonListenerDelegate.swift
+8ec0190bc35c747dcd6bdc44c7cac33e2ab92c19f3e1a328e609e74f0b9c5ba9 Sources/HeliosDaemon/DaemonSession.swift
 cf388fac2d875cf0ea16f082edc94c522c1da3fc1c4c930ee74c6bf0493d00c6 Sources/HeliosDaemon/DiagnosticLease.swift
-a0de62cbea2295d6bc169d46b9133843930fd91fca26c6bf9aee0cf7305f9131 Sources/HeliosDaemon/FanControlCoordinator.swift
-7af8742aa1792be993fe9f36019fe6275da34fc2d666030b79064491a8f6303c Sources/HeliosDaemon/FanControlEngine.swift
+4e4f5dd10b2b7aba3015e966c30b8de84cc38dae27c8637451ed05e9223a911c Sources/HeliosDaemon/FanControlCoordinator.swift
+39729e0b1623d85756b12bcac0dd8bc4d325dc1b7f106c0b19aebd30c88bbfc9 Sources/HeliosDaemon/FanControlEngine.swift
 060ca8d1f4d916146482dc4e44a7a5de942bce810d5868044c2fb702c1eb4f39 Sources/HeliosDaemon/FanHardware.swift
 04aa8dc364787db1e3c4112b984ec99c879563c9db37addca7d09d4c10ed2105 Sources/HeliosDaemon/FanOwnershipJournal.swift
 798e5604a52ff5479a95f49918bb82faefc9bf6aa7cade30f8cf47ed8442c7e7 Sources/HeliosDaemon/FanOwnershipProductionRecovery.swift
 1b5d383811f414e001d920f91fad9e82199b8a1e113259ea636b0e14bcaa48bd Sources/HeliosDaemon/FanOwnershipRecovery.swift
 dcaf2a0f7ca2fe9ab91a28a6f52640201ee9001ec1dacbc5eefc5146afb6a0b0 Sources/HeliosDaemon/FanOwnershipTransition.swift
-434af87bf299bec68dbdf7fa93fda0ab183179a6da7c2b44d6a9bde6ba3001cf Sources/HeliosDaemon/HeliosDaemon.swift
-6a58d23b18bd435059414252e6c186257629c35e3f1a72b9811ef8d26a1f9451 Sources/HeliosApp/CoolingRules.swift
-a9e993b7a241d2a0982a536853d17a5a72d795cd55288d23ef52fa836db3c44d Sources/HeliosApp/DaemonClient.swift
-dbb6e99a3dcae7a6114832693360129126988d4c378e8c3208f2131ade61c814 Sources/HeliosApp/FanControlModel.swift
-46adf80c769f80e67a0e0ef9bbd7ae4d3f540fce0ac10db18993d3643c237672 Sources/HeliosApp/FanControlView.swift
+ddce83d97aa307d419c1aa95af9635a739155abd92f9f460c1f6b1940e47627f Sources/HeliosDaemon/HeliosDaemon.swift
+7e128093ed68c391074ff4cb00e35492c47e8fa74d5692d59f6a21c256598234 Sources/HeliosApp/CoolingRules.swift
+71ef4ff54227931e5160e5568aaf040093b08a6163d25a911d7f4b1ad91f018c Sources/HeliosApp/DaemonClient.swift
+5a5b0e5bf89c989ee06da14a35568fcabf60e12366983bc886cc6e5a845cf388 Sources/HeliosApp/FanControlModel.swift
+8da1779ba7c9eec424077e93d12fa92e6038c782a0fa7cdc5a7de465ed59e7df Sources/HeliosApp/FanControlView.swift
 6c698290f8c6a92f7f006969e8cb2f09bbbec79ee1d2f9cbc0d3d5f06886a10c Sources/HeliosApp/Telemetry/BatteryProvider.swift
 a6dee07d1c7b6886dd825b182a39f029c1a08a4b820d572d6a608f63d493aae8 Sources/Shared/FanModels.swift
 45ca96112afc2631bdefa77a4b8b4220eec433af3058e66c551454fbb93ec74b Sources/Shared/FanOwnershipPreflight.swift
-47311664dbb8e0e947bc497d1f8a157a459009d54c7352654fee8e16bfa0fc4e Sources/Shared/HeliosServiceIdentity.swift
-1822fa3a710112e48979602da5950e63113845eb2ae3bde577b9255b35b5b9db Sources/Shared/HeliosXPCProtocol.swift
+d7e54b868d3f53d6f6a57d1629ad45ae8f191fc1f5d06ba38f0e1c0a527cb0bb Sources/Shared/HeliosServiceIdentity.swift
+5b021673189353fb31760c1c9204302d3f60986340eac6bf33351f653c8f71ed Sources/Shared/HeliosXPCProtocol.swift
 5ceb7e32fd10efad3a16e7ccc8e295984fafad7f2f35d876874dddc5e58c477c Sources/Shared/SMCClient.swift
 414a1e48f601eb21215668c042c7084199641948c08b37fd41cc343e5fd72be5 Sources/Shared/XPCTrustRequirement.swift
+35945248191059dfa5634b563de7e7bc1d4ecc4833181d6ca91a2f1b8db4f354 Sources/Shared/FanLayerPolicy.swift
+6f372f086f242aa5353af0c4b0e7d214376a97c9aa601c22c862906b764a4da0 Sources/Shared/FanLayerProfile.swift
+eabd9aa5047ca30bfed6bda4f180877bd99e481ffdf6b0da99773109275e0414 Sources/HeliosDaemon/FanLayerEngine.swift
+7c0fbb0e86d25a432a8c7cac0788b88d2922e770ee718e25d368a18d535852df Sources/HeliosDaemon/FanLayerHardware.swift
+bd4009415a510140889540e50f8fb050e4768b7ca0507c3ff41a3c8200585471 Sources/HeliosDaemon/FanLayerJournal.swift
+3d98e07b0d0fd10cabfcf7c37e7511b0d9281453fe4be42c1d4233c874b92bbd Sources/HeliosDaemon/FanLayerRuntime.swift
+01ad6913124569a38298a1071a18003e0cafc6443f7095ae6c8392a49a573777 Sources/HeliosDaemon/FanLayerThermals.swift
 HASHES
 
 if [ "$fail" -ne 0 ]; then exit 1; fi
-echo "PASS Next23 UI boundary: validated fan daemon/control/XPC/SMC and battery provider remain byte-identical to Next22 functional freeze"
+echo "PASS Next23 boundary: 31 protected fingerprints verified (fan layer manifest update 2026-10-05); fan control/authentication/XPC/SMC/battery sources change only through a reviewed manifest update"
 
 # Presentation checks execute as a plain command-line Mach-O, not as Helios.app.
 # They must never eagerly instantiate bundle-only notification/persistence services.
@@ -115,11 +141,11 @@ if ! grep -Fq 'controller.showOnboardingIfNeeded()' Sources/HeliosApp/HeliosApp.
   echo "FAIL: UI8 first-run onboarding is not wired into app launch" >&2
   exit 1
 fi
-if ! grep -Fq 'List(preferences.monitorRoutes' Sources/HeliosApp/HeliosWindows.swift; then
+if ! grep -Fq 'List(preferences.monitorRoutes' Sources/HeliosApp/Windows/*.swift; then
   echo "FAIL: UI8 Full Monitor sidebar is not driven by user-configurable modules" >&2
   exit 1
 fi
-if ! grep -Fq 'HeliosMenuBarPreview(' Sources/HeliosApp/HeliosWindows.swift; then
+if ! grep -Fq 'HeliosMenuBarPreview(' Sources/HeliosApp/Windows/*.swift; then
   echo "FAIL: UI8 menu-bar customization is missing its live preview" >&2
   exit 1
 fi
@@ -212,7 +238,7 @@ for required in \
 done
 
 # Raw thermal keys stay behind an expert disclosure and never become fan-safety inputs.
-if ! grep -Fq 'Other raw / unclassified' Sources/HeliosApp/HeliosWindows.swift; then
+if ! grep -Fq 'Other raw / unclassified' Sources/HeliosApp/Windows/*.swift; then
   echo "FAIL: UI8 thermals page does not isolate raw sensor inventory behind expert disclosure" >&2
   exit 1
 fi
@@ -301,7 +327,7 @@ if grep -Fq 'HeliosBrandMark(size:' Sources/HeliosApp/HeliosMetricPopovers.swift
   echo "FAIL: UI8 metric popovers repeat the Helios brand mark" >&2
   exit 1
 fi
-chart_toolbar="$(sed -n '/private var chartToolbar/,/^  }/p' Sources/HeliosApp/HeliosWindows.swift)"
+chart_toolbar="$(sed -n '/private var chartToolbar/,/^  }/p' Sources/HeliosApp/Windows/*.swift)"
 if printf '%s\n' "$chart_toolbar" | grep -Eq 'graphLineStyle|animateGraphUpdates'; then
   echo "FAIL: UI8 Raw/Smooth or Animate controls leaked back into every Full Monitor page" >&2
   exit 1
@@ -343,9 +369,9 @@ if grep -Fq 'clock.arrow.circlepath' Sources/HeliosApp/HeliosMetricPopovers.swif
   echo "FAIL: UI9 metric popover range control still uses the misleading refresh/history symbol" >&2
   exit 1
 fi
-if ! grep -Fq 'window.setContentSize(NSSize(width: 720, height: 560))' Sources/HeliosApp/HeliosWindows.swift || \
-   ! grep -Fq '.frame(minWidth: 600, idealWidth: 720, minHeight: 440, idealHeight: 560)' Sources/HeliosApp/HeliosWindows.swift || \
-   ! grep -Fq 'window.contentMinSize = NSSize(width: 600, height: 440)' Sources/HeliosApp/HeliosWindows.swift; then
+if ! grep -Fq 'window.setContentSize(NSSize(width: 720, height: 560))' Sources/HeliosApp/Windows/*.swift || \
+   ! grep -Fq '.frame(minWidth: 600, idealWidth: 720, minHeight: 440, idealHeight: 560)' Sources/HeliosApp/Windows/*.swift || \
+   ! grep -Fq 'window.contentMinSize = NSSize(width: 600, height: 440)' Sources/HeliosApp/Windows/*.swift; then
   echo "FAIL: Onboarding must retain its default size and bounded resizing geometry" >&2
   exit 1
 fi
@@ -582,11 +608,11 @@ fi
 # folded directly into HeliosModuleDetail.body as a giant opaque SwiftUI type.
 # Xcode 26 / Swift 6.3 can abort in substOpaqueTypesWithUnderlyingTypes when
 # that tree contains every route plus the complete diagnostics extension.
-if ! grep -Fq 'private var routeContent: AnyView' Sources/HeliosApp/HeliosWindows.swift; then
+if ! grep -Fq 'private var routeContent: AnyView' Sources/HeliosApp/Windows/*.swift; then
   echo "FAIL: Full Monitor route switch is missing its concrete AnyView compile boundary" >&2
   exit 1
 fi
-if ! grep -Fq 'private var detailedBackendTelemetry: AnyView' Sources/HeliosApp/HeliosWindows.swift; then
+if ! grep -Fq 'private var detailedBackendTelemetry: AnyView' Sources/HeliosApp/Windows/*.swift; then
   echo "FAIL: exhaustive Detailed telemetry is missing its concrete AnyView compile boundary" >&2
   exit 1
 fi
@@ -628,15 +654,15 @@ for required in \
   'Storage devices' \
   'Raw NVMe counters' \
   'Process sampler'; do
-  if ! grep -Fq "$required" Sources/HeliosApp/HeliosWindows.swift; then
+  if ! grep -Fq "$required" Sources/HeliosApp/Windows/*.swift; then
     echo "FAIL: RC8 compact diagnostics polish is missing: $required" >&2
     exit 1
   fi
 done
 
-if grep -Fq 'Complete Process Telemetry' Sources/HeliosApp/HeliosWindows.swift || \
-   grep -Fq 'Complete Storage Telemetry' Sources/HeliosApp/HeliosWindows.swift || \
-   grep -Fq 'Complete Thermal Telemetry' Sources/HeliosApp/HeliosWindows.swift; then
+if grep -Fq 'Complete Process Telemetry' Sources/HeliosApp/Windows/*.swift || \
+   grep -Fq 'Complete Storage Telemetry' Sources/HeliosApp/Windows/*.swift || \
+   grep -Fq 'Complete Thermal Telemetry' Sources/HeliosApp/Windows/*.swift; then
   echo "FAIL: RC8 still exposes legacy full-width Complete-* diagnostic headings" >&2
   exit 1
 fi

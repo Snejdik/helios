@@ -73,6 +73,18 @@ final class DaemonLifecycle: @unchecked Sendable {
         }
     }
 
+    /// A configuration change (fan layer consent) restarts the daemon from a
+    /// fresh process. Exit 0 after verified System restoration: launchd starts
+    /// the helper again on the next app connection (MachServices). Failure
+    /// exits 1 so KeepAlive restarts it at once and start-up recovery runs.
+    func restartForConfigurationChange() {
+        DispatchQueue.main.async { [self] in
+            guard !terminating else { return }
+            logger.notice("Restarting to apply a fan layer configuration change.")
+            terminate()
+        }
+    }
+
     private func terminate() {
         guard !terminating else { return }
         terminating = true

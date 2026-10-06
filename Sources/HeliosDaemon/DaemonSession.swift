@@ -15,11 +15,17 @@ final class DaemonSession: NSObject, HeliosDaemonXPC, @unchecked Sendable {
     private var lastNonce: UUID?
     private var closed = false
     private let fans: FanControlCoordinator
+    private let layer: FanLayerRuntime?
+    private let requestRestart: @Sendable () -> Void
 
-    init(connection: NSXPCConnection, requirement: XPCTrustRequirement, fans: FanControlCoordinator, onClose: @escaping @Sendable (UUID) -> Void) {
+    init(connection: NSXPCConnection, requirement: XPCTrustRequirement, fans: FanControlCoordinator,
+         layer: FanLayerRuntime? = nil, requestRestart: @escaping @Sendable () -> Void = {},
+         onClose: @escaping @Sendable (UUID) -> Void) {
         self.connection = connection
         self.onClose = onClose
         self.fans = fans
+        self.layer = layer
+        self.requestRestart = requestRestart
         super.init()
         connection.setCodeSigningRequirement(requirement.expression)
         connection.exportedInterface = NSXPCInterface(with: HeliosDaemonXPC.self)
@@ -55,14 +61,65 @@ final class DaemonSession: NSObject, HeliosDaemonXPC, @unchecked Sendable {
     }
 
     func calculate(session: UUID, sequence: UInt64, sampleTicks: UInt64, mode: HeliosFanMode, targetRPM: Double, temperature: Double,
+                   smoothness: Double,
                    reply: @escaping @Sendable (HeliosReplyCode, HeliosFanState, String) -> Void) {
         queue.async { [self] in
             guard !closed, lease.ready, !lease.expire(now: .now), session == id else {
                 reply(.invalidSession, .recoveryRequired, "Handshake required"); close(.invalidRequest); return
             }
+            guard let response = FanLayerResponse(smoothness: smoothness) else {
+                reply(.invalidCalculation, .recoveryRequired, "Invalid response setting"); close(.invalidRequest); return
+            }
             // Only completed calculations reach the control lease. Heartbeats
             // and status requests deliberately cannot renew it.
-            fans.calculate(owner: id, sequence: sequence, sample: sampleTicks, mode: mode, rpm: targetRPM, temperature: temperature, reply: reply)
+            fans.calculate(owner: id, sequence: sequence, sample: sampleTicks, mode: mode, rpm: targetRPM,
+                           temperature: temperature, response: response, reply: reply)
+        }
+    }
+
+    func fanLayerInfo(session: UUID, reply: @escaping @Sendable (Int, Bool, String, String, Bool) -> Void) {
+        queue.async { [self] in
+            guard !closed, lease.ready, session == id else {
+                reply(FanLayerTier.unsupported.rawValue, false, "", "Handshake required", false); return
+            }
+            guard let layer else {
+                reply(FanLayerTier.unsupported.rawValue, false, "", "This helper has no fan layer.", false); return
+            }
+            reply(layer.tier.rawValue, layer.consented, layer.identity?.summary ?? "", layer.reason,
+                  layer.fullMaximumAllowed)
+        }
+    }
+
+    func setFanLayerFullMaximum(session: UUID, allowed: Bool, reply: @escaping @Sendable (Bool, String) -> Void) {
+        queue.async { [self] in
+            guard !closed, lease.ready, session == id, let layer else {
+                reply(false, "Handshake required"); return
+            }
+            do {
+                try layer.setFullMaximumAllowed(allowed)
+                logger.notice("Fan layer speed limit \(allowed ? "unlocked to the full factory maximum" : "set to 90 % of the factory maximum", privacy: .public).")
+                reply(true, allowed ? "The full factory maximum is allowed." : "Fans stay at or below 90 % of the factory maximum.")
+            } catch {
+                reply(false, error.localizedDescription)
+            }
+        }
+    }
+
+    func setFanLayerConsent(session: UUID, accepted: Bool, reply: @escaping @Sendable (Bool, String) -> Void) {
+        queue.async { [self] in
+            guard !closed, lease.ready, session == id, let layer else {
+                reply(false, "Handshake required"); return
+            }
+            do {
+                let changed = try layer.setConsent(accepted)
+                logger.notice("Fan layer consent \(accepted ? "granted" : "revoked", privacy: .public) for \(layer.identity?.summary ?? "?", privacy: .public).")
+                reply(true, changed ? "The helper restarts to apply this change." : "No change.")
+                // Restore System and restart so the new setting starts from a
+                // fresh process, probe and journal check.
+                if changed { requestRestart() }
+            } catch {
+                reply(false, error.localizedDescription)
+            }
         }
     }
 
