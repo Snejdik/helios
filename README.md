@@ -9,209 +9,224 @@
 Native menu-bar monitoring for Apple Silicon: system activity, temperatures,
 battery and energy history, with carefully gated fan controls.
 
-**[⬇ Download Helios 0.1.0 Pre-beta 2](https://github.com/Snejdik/helios/releases/tag/v0.1.0-prebeta.2)**
+**[⬇ Download Helios 0.2.0 Beta 1](https://github.com/Snejdik/helios/releases/tag/v0.2.0-beta.1)**
 
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-111111?logo=apple&logoColor=white)
 ![Apple Silicon / arm64](https://img.shields.io/badge/Apple%20Silicon-arm64-111111)
 ![Swift 6](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)
-![Pre-beta / source preview](https://img.shields.io/badge/status-pre--beta%20%2F%20source%20preview-orange)
+![Beta 1](https://img.shields.io/badge/status-beta%201-orange)
 [![PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue)](LICENSE)
 
-[Installation guide](docs/INSTALLATION.md) · [Build from source](docs/BUILDING.md) ·
+[Installation guide](docs/INSTALLATION.md) · [How it works](docs/HOW_IT_WORKS.md) ·
+[Build from source](docs/BUILDING.md) ·
 [Report a bug](https://github.com/Snejdik/helios/issues) ·
 [Buy Me a Coffee](https://buymeacoffee.com/snejda)
 
 </div>
 
-Helios puts a quick Dashboard in your menu bar and a larger Full Monitor one
-click away. Use it to understand resource use, inspect hardware capabilities,
-and follow changes over time without keeping a large monitoring window open.
+Helios tells you whether your Mac is OK, what is happening and why. Open the
+menu-bar popover for a quick answer, or the main window for charts, processes,
+sensors, battery and energy history. The details are always one step away, never
+in the way.
 
-**Pre-beta development build / source preview.**
-Helios is an **external testing build**, not a finished public release or
-notarized public distribution. The support matrix is still being established;
-not every Apple Silicon Mac has been validated. Successful compilation or
-working telemetry does **not** establish fan-write compatibility.
+<p align="center">
+  <a href="docs/images/popover-overview-dark.png"><img src="docs/images/popover-overview-dark.png" alt="Helios menu-bar popover: Your Mac is doing well, with CPU, temperature, battery and storage status" width="300"></a>
+  &nbsp;
+  <a href="docs/images/popover-cooling-dark.png"><img src="docs/images/popover-cooling-dark.png" alt="Cooling popover with temperature, fan and System, Boost, Manual and Auto modes" width="300"></a>
+</p>
 
-## What Helios can do today
+<p align="center">
+  <a href="docs/images/menu-bar-dark.png"><img src="docs/images/menu-bar-dark.png" alt="Helios menu-bar items: CPU, RAM, fan state over average and hottest temperature, power, and the Helios sun" width="420"></a>
+</p>
 
-| Area | Available functionality |
+> **Beta 1 is an external test build.** It is not notarized, and not every
+> Apple Silicon Mac has been tested. Monitoring adapts to what your Mac exposes.
+> **Fan control is experimental, off until you turn it on, and System (macOS) is
+> always the recommended mode.**
+
+## What you get
+
+| | |
 | --- | --- |
-| Menu bar & Dashboard | Configurable metric items, focused popovers, Dashboard presets and live graphs |
-| Full Monitor | Native sidebar navigation, detailed monitoring views and Expert diagnostics |
-| CPU, memory & GPU | Aggregate/per-core CPU activity, memory pressure and composition, swap, GPU activity where available |
-| Thermals & fans | Temperature groups, fan readouts and System mode; Boost, Manual and Automatic Rules require an authenticated helper and an exact validated hardware profile |
-| Battery & energy | Charge, health, cycles, charger information, battery flow, system power where exposed and energy history |
-| Processes | Per-process CPU, memory and I/O, plus per-app energy attribution where macOS exposes it |
-| Storage & network | Volumes, throughput, read-only NVMe SMART where available, interface and Wi-Fi diagnostics |
-| Devices & utilities | Device/system inventories, sleep blockers and read-only Cleanup Scout; no destructive cleanup engine |
-| History & alerts | Bounded local history, health events, optional notifications and CSV exports |
-| Settings & support | Onboarding, interface/module preferences, launch at login, optional diagnostics with previews, built-in preparation for removal |
+| **Overview & Why?** | One honest answer for your Mac, four health areas and an explanation behind every status. |
+| **Menu bar** | Live items you choose (CPU, memory, temperature, power, cooling…) and a compact popover. |
+| **CPU, memory, GPU** | Per-core activity, memory pressure and breakdown, swap, GPU load where available. |
+| **Thermals & cooling** | Average and hottest temperature, fan speed, and optional fan control: Boost, Manual or your own Automatic curve. |
+| **Battery & Energy** | Health, cycles and power flow, plus which apps use the most energy, compared with the period before. |
+| **Activity & History** | A timeline of health events, power changes and peaks, with history charts. |
+| **Storage & network** | Free space, SSD health where exposed, throughput and Wi-Fi details. |
+| **Hardware** | What this Mac is and what Helios can read on it. |
+| **Alerts** | Optional notifications with thresholds you can edit. They only inform; they never change fan control. |
 
-**Hardware dependent:** GPU counters, temperature sensors, system power, NVMe
-SMART, Wi-Fi details and process energy depend on the Mac, macOS and permissions.
-An unavailable reading is not a zero reading. Battery charging policy remains controlled by macOS.
+Some readings depend on your Mac and macOS. An unavailable reading is shown as
+unavailable, never as zero.
 
 ## A look inside
 
-Live captures from the Pre-beta 1-era UI on the primary M4 MacBook Pro,
-12 September 2026. They illustrate the interface and may not include every later
-pre-beta polish change; they are not evidence of universal hardware compatibility.
-Select an image to inspect its original resolution.
-[Capture details and secondary views](docs/images/README.md).
-
-### Quick Dashboard
-
-Your essential readings in one menu-bar panel, with the simple Helios sun and
-**System control** recommended.
-
-<a href="docs/images/dashboard-dark.png"><img src="docs/images/dashboard-dark.png" alt="Live dark Dashboard with CPU, memory, GPU, battery, power and recommended System cooling" width="360"></a>
-
-### Full Monitor
-
-A larger workspace for live trends, hardware details and history.
-
-<a href="docs/images/full-monitor-overview-dark.png"><img src="docs/images/full-monitor-overview-dark.png" alt="Full Monitor Overview with live resource graphs and System cooling selected" width="760"></a>
+<a href="docs/images/overview-dark.png"><img src="docs/images/overview-dark.png" alt="Helios Overview with live CPU chart, what is using the Mac right now and recent events" width="760"></a>
 
 <details>
-<summary><strong>Thermals &amp; Fans — System mode</strong></summary>
+<summary><strong>Thermals and your own fan curve</strong></summary>
 
-macOS manages the fan in System mode. The additional controls shown here are
-specific to this validated machine; they are not a recommendation to enable Auto.
+Drag points on the curve, or type exact values. The curve is kept separately for
+power adapter and battery. Above your speed limit Helios hands the fans back to
+macOS.
 
-<a href="docs/images/thermals-fans-system-dark.png"><img src="docs/images/thermals-fans-system-dark.png" alt="Thermals and Fans with thermal history, sensor groups and System mode selected" width="760"></a>
+<a href="docs/images/fan-curve-dark.png"><img src="docs/images/fan-curve-dark.png" alt="Automatic cooling with an editable temperature to fan speed curve" width="760"></a>
+
+<a href="docs/images/thermals-dark.png"><img src="docs/images/thermals-dark.png" alt="Thermals page with temperature history, sensor groups and cooling modes" width="760"></a>
 
 </details>
 
 <details>
-<summary><strong>Settings — choose your modules</strong></summary>
+<summary><strong>CPU, GPU and memory</strong></summary>
 
-Choose what Helios collects and which modules appear in each interface.
+<a href="docs/images/cpu-dark.png"><img src="docs/images/cpu-dark.png" alt="CPU page with per-core usage and temperatures" width="760"></a>
 
-<a href="docs/images/settings-modules-dark.png"><img src="docs/images/settings-modules-dark.png" alt="Settings Modules showing separate data-collection and interface controls" width="660"></a>
+<a href="docs/images/gpu-dark.png"><img src="docs/images/gpu-dark.png" alt="GPU page with device, renderer and tiler utilization" width="760"></a>
+
+<a href="docs/images/memory-dark.png"><img src="docs/images/memory-dark.png" alt="Memory page with pressure, breakdown and swap" width="760"></a>
 
 </details>
 
 <details>
-<summary><strong>About Helios</strong></summary>
+<summary><strong>Battery, energy and activity</strong></summary>
 
-The official application icon, version and project links.
+<a href="docs/images/battery-dark.png"><img src="docs/images/battery-dark.png" alt="Battery page with health, capacity, power and health over time" width="760"></a>
 
-<a href="docs/images/about-dark.png"><img src="docs/images/about-dark.png" alt="About Helios with the official orbital icon, version 0.1.0 build 1 and author links" width="660"></a>
+<a href="docs/images/energy-dark.png"><img src="docs/images/energy-dark.png" alt="Energy page with ranges, the apps using the most energy and a selected-app detail" width="760"></a>
+
+<a href="docs/images/activity-dark.png"><img src="docs/images/activity-dark.png" alt="Activity timeline of health events, power changes and daily peaks" width="760"></a>
 
 </details>
 
-## Install a test build
+<details>
+<summary><strong>Popovers</strong></summary>
 
-Start with the [step-by-step installation guide](docs/INSTALLATION.md).
-The recommended download is **Helios-0.1.0-prebeta.2.dmg** from
-[GitHub Releases](https://github.com/Snejdik/helios/releases/tag/v0.1.0-prebeta.2).
-Open the DMG, drag **Helios.app** to Applications, then eject the disk image.
-Launch the Applications copy and look for Helios in the menu bar.
-If you use a **ZIP** test build, extract it and copy **Helios.app** to Applications.
+<a href="docs/images/popover-cpu-dark.png"><img src="docs/images/popover-cpu-dark.png" alt="CPU popover with cores, load and temperature" width="280"></a>
+&nbsp;
+<a href="docs/images/popover-memory-dark.png"><img src="docs/images/popover-memory-dark.png" alt="Memory popover with pressure and breakdown" width="280"></a>
+&nbsp;
+<a href="docs/images/popover-power-dark.png"><img src="docs/images/popover-power-dark.png" alt="System power popover" width="280"></a>
 
-This build is **Apple Development signed and not notarized**, so you may need
-**System Settings → Privacy & Security → Open Anyway** to launch it.
+</details>
 
-The guide covers macOS **Open Anyway**, optional helper approval, troubleshooting
-and clean removal. Basic monitoring does not require the fan helper.
+<details>
+<summary><strong>Settings</strong></summary>
 
-GitHub's **Code → Download ZIP** downloads source code, not an installable app.
-To build from source, use the separate [developer build guide](docs/BUILDING.md)
-or ask [support](mailto:helios@snejda.cz).
+<a href="docs/images/settings-general-dark.png"><img src="docs/images/settings-general-dark.png" alt="General settings with goals, units and updates" width="660"></a>
 
-## Compatibility & cooling safety
+<a href="docs/images/settings-modules-dark.png"><img src="docs/images/settings-modules-dark.png" alt="Modules: what Helios collects and what it costs" width="660"></a>
 
-- **Apple Silicon (`arm64`) only; macOS 13.0+ is the deployment target.**
-- Read-only telemetry adapts to available hardware capabilities; some readings may
-  be unavailable. Compatibility requires independent testing across Macs and macOS versions.
-- Fan control is enabled only for specifically validated hardware and OS profiles.
-  Unvalidated profiles remain **System/read-only**.
-- **System is the recommended cooling mode.** Successful monitoring or helper
-  installation does not establish fan-control support.
+<a href="docs/images/settings-menu-bar-dark.png"><img src="docs/images/settings-menu-bar-dark.png" alt="Menu bar layout and visible metrics" width="660"></a>
 
-The privileged helper is fan-only, with authentication and thermal safety
-checks; it is not a general-purpose root service. Battery charging policy remains
-controlled by macOS.
-See the [compatibility contract](docs/APPLE_SILICON_COMPATIBILITY.md) for exact
-validated profiles and [security information](https://www.snejda.cz/helios/security)
-for the protection boundaries.
+<a href="docs/images/settings-cooling-dark.png"><img src="docs/images/settings-cooling-dark.png" alt="Cooling settings with helper status and experimental fan control" width="660"></a>
+
+<a href="docs/images/settings-privacy-dark.webp"><img src="docs/images/settings-privacy-dark.webp" alt="Privacy and diagnostics settings, all sharing off by default" width="660"></a>
+
+<a href="docs/images/settings-notifications-dark.png"><img src="docs/images/settings-notifications-dark.png" alt="Notification thresholds" width="660"></a>
+
+<a href="docs/images/settings-graphs-colors-dark.png"><img src="docs/images/settings-graphs-colors-dark.png" alt="Graph style, default ranges and colors" width="660"></a>
+
+<a href="docs/images/settings-about-dark.png"><img src="docs/images/settings-about-dark.png" alt="About Helios 0.2.0 Beta 1" width="660"></a>
+
+</details>
+
+Captures from a MacBook Pro with Apple M4. Select an image to see it in full size.
+
+## How it works
+
+Helios is two programs.
+
+- **Helios.app** runs as you. It only reads: sensors, system counters and its own
+  local history.
+- **A small helper** exists only for fan control and is optional. It is fan-only,
+  accepts requests from the signed Helios app alone, and gives the fans back to
+  macOS the moment anything looks wrong: the app stops responding, the Mac sleeps,
+  Helios quits, the helper restarts or it gets too hot.
+
+Helios never cools *less* than macOS. It adds cooling on top, within a speed limit
+you set, and macOS stays in charge otherwise.
+[Read the full explanation →](docs/HOW_IT_WORKS.md)
+
+## Install Beta 1
+
+1. Download **Helios-0.2.0-beta.1.dmg** from
+   [GitHub Releases](https://github.com/Snejdik/helios/releases/tag/v0.2.0-beta.1).
+2. Open it and drag **Helios** to Applications. If you got a ZIP, unzip it first.
+3. Open Helios from Applications and look for it in the menu bar.
+
+The build is **not notarized** (Helios has no paid Apple Developer ID yet), so macOS
+may block the first launch. Open **System Settings → Privacy & Security → Open
+Anyway**. The [installation guide](docs/INSTALLATION.md) walks through it, the
+optional helper approval, troubleshooting and clean removal.
+
+GitHub's **Code → Download ZIP** is source code, not the app. To build it yourself,
+see the [developer guide](docs/BUILDING.md) or ask [support](mailto:helios@snejda.cz).
+
+## Compatibility and cooling safety
+
+- **Apple Silicon only, macOS 13 or later.**
+- Monitoring works on any supported Mac; unavailable sensors are simply marked.
+- Fan control is **experimental**. A read-only check classifies your Mac first, and
+  you turn it on yourself, for your exact Mac model and macOS version.
+- Installing the helper does not by itself make a Mac fan-controllable.
+- Battery charging is always left to macOS.
+
+See the [compatibility contract](docs/APPLE_SILICON_COMPATIBILITY.md) for the exact
+profiles and [security information](https://www.snejda.cz/helios/security) for the
+protection boundaries.
 
 ## Privacy
 
-Monitoring history is stored locally. After Welcome Setup is complete, Helios
-may contact GitHub on launch for release information, at most roughly once per
-day. Update requests contain no Helios telemetry or Helios device identifier.
-This happens independently of diagnostics consent.
+Monitoring history stays on your Mac. Helios may ask GitHub for the latest release
+(Settings → General: never, daily, weekly or monthly); that request contains
+nothing about your Mac.
 
-**Automatic beta diagnostics are off by
-default** and can be enabled in Settings → Privacy & Diagnostics. Manual health
-and compatibility reports require a preview and a separate Send confirmation;
-they do not turn on automatic sharing. These optional reports use the project's
-HTTPS diagnostics endpoint, so “local monitoring” does not mean “never uses the network.”
-
-The app provides **View exactly what is shared**. Review reports before sending,
-and check screenshots or exported diagnostics for personal information before
-attaching them publicly. Microphone access is not requested for audio inventory;
-Bluetooth information and some other fields may be restricted by macOS.
+**Diagnostics are off by default.** If you opt in, reports contain only coarse
+categories, you can read exactly what is sent first, and manual reports need a
+separate Send. Fan-control statistics are another opt-in. Microphone access is
+never requested.
 
 [Privacy information](https://www.snejda.cz/helios/privacy) ·
 [Diagnostics information](https://www.snejda.cz/helios/diagnostics)
 
-## Bugs, questions & support
+## Bugs, questions and support
 
 [Open a GitHub issue](https://github.com/Snejdik/helios/issues/new/choose) for a
-reproducible bug. Include your Helios version (Settings → About), Mac model,
-chip, macOS version, exact steps, expected result, what actually happened and a
-reviewed screenshot. Include the build number shown in About when available. Mention
-whether the problem is monitoring, first launch or helper connection. Never
-post credentials, serial numbers, unreviewed diagnostic reports or sensitive
-screenshots publicly.
+reproducible bug. Please include the Helios version (Settings → About), your Mac
+model, macOS version, what you did and what happened, and review screenshots for
+personal information first.
 
-For private questions or security-sensitive reports, contact
-[helios@snejda.cz](mailto:helios@snejda.cz) instead of posting public details.
+For private or security-sensitive reports, write to
+[helios@snejda.cz](mailto:helios@snejda.cz).
 
 Helios is independently developed by Jakub Šnejda. If it helps you,
-[Buy Me a Coffee](https://buymeacoffee.com/snejda) supports continued development.
-This is the same support link included in Settings → About.
+[Buy Me a Coffee](https://buymeacoffee.com/snejda).
 
-## ROADMAP / PLANNED — not implemented
+## Roadmap
 
-The following are future product directions, **not available features** and not
-promises for the first beta. No delivery dates are committed.
-
-- LinearMouse-style mouse controls and customization.
-- Keep Awake.
-- Drag-and-drop utilities and workflows.
-- Clipboard / copy-paste history and tools.
-- Future unified Mac utility modules.
-
-The immediate priority is beta validation, compatibility, signing, notarization,
-packaging and distribution. See the
-[roadmap](docs/ROADMAP.md) for the distinction between current functionality,
-release preparation and future ideas.
+Next up: testing on more Macs, signing and notarization, and polishing fan control.
+Ideas such as Keep Awake or mouse customization are not available features and have
+no dates. See the [roadmap](docs/ROADMAP.md).
 
 ## For developers
 
-[Building Helios](docs/BUILDING.md) covers cloning, Xcode, local signing,
-build/run commands and the full regression gate. The app uses Swift 6, AppKit,
-SwiftUI and native frameworks without third-party runtime packages.
-
-`Sources/HeliosApp` contains the app and telemetry; `Sources/HeliosDaemon` holds
-the fan-only helper; `Sources/Shared` contains shared models and trust contracts.
-Changes must preserve the frozen backend boundary. The canonical check is:
+[Building Helios](docs/BUILDING.md) covers Xcode, local signing and the regression
+gate. The app uses Swift 6, AppKit and SwiftUI with no third-party runtime
+packages. `Sources/HeliosApp` is the app, `Sources/HeliosDaemon` the fan-only
+helper and `Sources/Shared` the shared contracts. The canonical check is:
 
 ```sh
 ./scripts/check-all.sh
 ```
 
-## License & notices
+## License and notices
 
 Helios original material is source-available under the
-[PolyForm Noncommercial License 1.0.0](LICENSE). See the license for its terms;
-commercial use requires separate permission from the project owner.
-[Third-party notices](THIRD_PARTY_NOTICES.md), including the MIT-licensed Stats
-mappings, retain their separate terms.
+[PolyForm Noncommercial License 1.0.0](LICENSE); commercial use requires separate
+permission. [Third-party notices](THIRD_PARTY_NOTICES.md), including the MIT-licensed
+Stats mappings, keep their own terms.
 
 Helios is independent software and is not affiliated with or endorsed by Apple.
 Hardware telemetry can depend on undocumented or macOS-version-specific interfaces.
