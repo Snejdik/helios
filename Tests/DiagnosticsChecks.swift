@@ -323,6 +323,36 @@ private func builderChecks() throws {
   thermalReport = try thermalTracker.buildHealth(type: .manualHealth, reason: .userInitiated)
   try require(thermalReport.providers.thermal.failureCount == .twoToFive,
     "Trusted key did not begin a new episode after an observed recovery")
+  // A burst of trusted keys failing together (as right after wake) is one episode per
+  // category, not one per key; a later burst after recovery is a new episode.
+  let burstTracker = DiagnosticsSessionTracker(launchStartedAt: launch)
+  let burstKeys = ["Tp01", "Tp05", "Tp09", "Tp0D", "Te05", "Te09", "Tg0G", "Tg0H"]
+  let burstFailures = Dictionary(uniqueKeysWithValues: burstKeys.map {
+    ($0, TelemetryError.invalidData("\($0) inactive or outside plausible temperature range"))
+  })
+  var burstTick: UInt64 = 100
+  func acceptBurst(_ trusted: [String: TelemetryError]) {
+    burstTick += 1
+    thermalSnapshot.thermals = MetricSample(.success(ThermalMetrics(
+      readings: [identified], failures: trusted, trustedFailures: trusted)), capturedTicks: burstTick)
+    burstTracker.accept(thermalSnapshot)
+  }
+  acceptBurst([:])
+  acceptBurst(burstFailures)
+  acceptBurst(burstFailures.filter { $0.key.hasPrefix("Tp") })
+  var burstReport = try burstTracker.buildHealth(type: .manualHealth, reason: .userInitiated)
+  try require(burstReport.providers.thermal.failureCount == .one
+    && burstReport.runtime.providerFailureTotal == .one,
+    "Several trusted keys failing together counted one episode per key")
+  acceptBurst([:])
+  acceptBurst(burstFailures.merging(["Te0S": .ioKit("private", -1)]) { current, _ in current })
+  burstReport = try burstTracker.buildHealth(type: .manualHealth, reason: .userInitiated)
+  try require(burstReport.providers.thermal.failureCount == .twoToFive,
+    "A new burst after recovery, with a second category, was not counted as new episodes")
+  let burstTotal = DiagnosticsFailureCount(count: 3)
+  try require(burstReport.runtime.providerFailureTotal == burstTotal,
+    "Burst total must be invalid_data twice plus io_error once")
+
   let capabilityTracker = DiagnosticsSessionTracker(launchStartedAt: launch)
   thermalSnapshot.thermals = MetricSample(.success(ThermalMetrics(readings: [identified],
     failures: ["Te05": .warmingUp], trustedFailures: ["Te05": .warmingUp])), capturedTicks: 76)
@@ -651,6 +681,31 @@ private func thermalFailureEvidenceChecks() throws {
   try require(metadataBatch.readings.isEmpty && metadataBatch.trustedFailures["Tp01"] != nil,
     "Trusted metadata failure disappeared when no valid temperature keys remained")
 
+  // A power-gated GPU cluster reads -4.5 °C on Mac16,1 (measured read-only, 2026-10-07).
+  // That is "not measuring", not a failure: no episodes however often the GPU sleeps, while the
+  // key stays in `failures` so the frozen fan-readiness guard sees exactly what it saw before.
+  func gpuBatch(_ gpuCelsius: Double) throws -> ThermalMetrics {
+    try SMCThermalReader(client: SMCClient(transport: MockSMCReadTransport(
+      values: ["Tp01": sp78(52), "Te05": sp78(48), "Tg0G": flt(Float(gpuCelsius)), "Tg0H": sp78(45)])),
+      classifier: ThermalClassifier(cpuBrand: "Apple M4")).read(rawDetailsVisible: false)
+  }
+  let gated = try gpuBatch(-4.5)
+  try require(gated.failures["Tg0G"] != nil && gated.trustedFailures["Tg0G"] == .unavailable("Tg0G inactive"),
+    "An inactive trusted sensor must stay visible to the fan guard but be unavailable, not invalid")
+  try require(try gated.maximumSoCCelsius.get() == 52, "An inactive sensor changed Max SoC")
+  let implausible = try gpuBatch(151)
+  try require({ if case .invalidData = implausible.trustedFailures["Tg0G"] { true } else { false } }(),
+    "An implausibly hot reading must remain invalid data")
+  let gatingTracker = DiagnosticsSessionTracker()
+  for (tick, celsius) in [45.0, -4.5, 46, -4.5, -4.5, 47, 0, 45].enumerated() {
+    snapshot.thermals = MetricSample(.success(try gpuBatch(celsius)), capturedTicks: UInt64(tick + 1))
+    gatingTracker.accept(snapshot)
+  }
+  let gatingReport = try gatingTracker.buildHealth(type: .automaticHealth, reason: .daily)
+  try require(gatingReport.providers.thermal.failureCount == .zero
+    && gatingReport.runtime.providerFailureTotal == .zero,
+    "GPU power gating was counted as thermal failure episodes")
+
   // Do not slow the legacy frozen fan-readiness prefix evidence while hidden.
   let legacyTransport = MockSMCReadTransport(
     values: ["Tp01": sp78(42), "TpZZ": sp78(0)])
@@ -712,11 +767,38 @@ private func compatibilityChecks() async throws {
   try require(
     thermalEvidence.compatibilityState == .needsReview,
     "unclassified raw SMC decode evidence incorrectly downgraded compatibility to partial")
+  // A key in a format Helios cannot decode is a known limitation, not a provider failure:
+  // the raw evidence (key, type, size) stays in smc_thermal_discovery, but it must not fill
+  // the bounded provider_diagnostics list or look like an error in the report.
   try require(
-    thermalEvidence.rawHardware.providerDiagnostics.contains {
+    !thermalEvidence.rawHardware.providerDiagnostics.contains {
+      $0.provider == .thermal && $0.stage == .decode
+    },
+    "an unsupported SMC temperature format was reported as a provider failure")
+
+  // Apple Silicon's 8-byte `ioft` and 4-byte `si32` thermal keys: kept as evidence, no error.
+  var ioftValues = fanValues(count: 1)
+  ioftValues["Tp01"] = sp78(47.5)
+  ioftValues["TG0B"] = MockSMCValue(type: "ioft", bytes: [1, 2, 3, 4, 5, 6, 7, 8])
+  ioftValues["TVDi"] = MockSMCValue(type: "si32", bytes: [0, 0, 0, 1])
+  let ioftEvidence = await fixtureProbe(values: ioftValues, classifier: exactClassifier).gather()
+  try require(
+    ioftEvidence.rawHardware.smcThermalDiscovery.first(where: { $0.key == "TG0B" })?.dataType == "ioft"
+      && ioftEvidence.rawHardware.smcThermalDiscovery.first(where: { $0.key == "TVDi" })?.dataType == "si32",
+    "unsupported-format thermal keys lost their raw evidence")
+  try require(
+    ioftEvidence.rawHardware.providerDiagnostics.allSatisfy { $0.provider != .thermal },
+    "ioft/si32 thermal keys produced provider failures")
+
+  // A supported format that is genuinely corrupt is still a failure.
+  var corruptValues = fanValues(count: 1)
+  corruptValues["Tp01"] = MockSMCValue(type: "flt ", bytes: [1, 2])
+  let corruptEvidence = await fixtureProbe(values: corruptValues, classifier: exactClassifier).gather()
+  try require(
+    corruptEvidence.rawHardware.providerDiagnostics.contains {
       $0.provider == .thermal && $0.stage == .decode && $0.category == .invalidData
     },
-    "unclassified raw SMC decode evidence was not preserved")
+    "a corrupt supported-format temperature stopped being reported as a failure")
 
   let liveReader = SMCThermalReader(
     client: SMCClient(transport: MockSMCReadTransport(values: thermalAndFanless)),
@@ -1192,6 +1274,11 @@ private func exportNativeContractFixturesIfRequested() async throws {
     evidence: evidence, generatedAt: generatedAt)
   let compatibilityBytes = try DiagnosticsPayloadEncoder.freeze(
     compatibility, reportType: .manualCompatibility, now: generatedAt)
+  let weekly = DiagnosticsCompatibilityAssembler.report(
+    common: tracker.commonFields(generatedAt: generatedAt, bundle: bundle),
+    evidence: evidence, generatedAt: generatedAt, type: .automaticCompatibility, reason: .weekly)
+  let weeklyBytes = try DiagnosticsPayloadEncoder.freeze(
+    weekly, reportType: .automaticCompatibility, now: generatedAt)
   tracker.fanLayerSource = { sampleFanLayer() }
   let withFanLayer = try tracker.buildHealth(
     type: .automaticHealth, reason: .daily, generatedAt: generatedAt, bundle: bundle)
@@ -1201,15 +1288,94 @@ private func exportNativeContractFixturesIfRequested() async throws {
     "Native contract export must preserve exact frozen preview bytes")
   try fanLayerBytes.data.write(
     to: directory.appendingPathComponent("automatic_health_fan_layer.json"), options: .atomic)
-  for payload in [automaticBytes, manualBytes, compatibilityBytes] {
+  for payload in [automaticBytes, manualBytes, compatibilityBytes, weeklyBytes] {
     try require(Data(payload.preview.utf8) == payload.data,
       "Native contract export must preserve exact frozen preview bytes")
     try payload.data.write(
       to: directory.appendingPathComponent("\(payload.reportType.rawValue).json"), options: .atomic)
   }
-  print("PASS exported all three native-frozen contract fixture types (fake evidence, no network/hardware)")
+  print("PASS exported all four native-frozen contract fixture types (fake evidence, no network/hardware)")
 }
 
+
+@MainActor
+private func weeklyCompatibilityChecks() async throws {
+  // Schedule: first report soon after opt-in, then a week after the last success, a day
+  // after a failure, never in the first minutes after launch.
+  let now = Date(timeIntervalSince1970: 1_800_000_000)
+  let launched = now.addingTimeInterval(-3_600)
+  let day: TimeInterval = 24 * 60 * 60
+  var plan = DiagnosticsCompatibilitySchedule.next(
+    now: now, launchStartedAt: launched, lastSuccess: nil, nextAttempt: nil, minimumDelay: 60)
+  try require(plan.at == now.addingTimeInterval(60) && plan.reason == .initialOptIn,
+    "First weekly compatibility report is not one minute after opt-in")
+  plan = DiagnosticsCompatibilitySchedule.next(
+    now: now, launchStartedAt: now, lastSuccess: nil, nextAttempt: nil)
+  try require(plan.at == now.addingTimeInterval(DiagnosticsCompatibilitySchedule.launchDelay),
+    "Compatibility probe may run while telemetry is still warming up")
+  plan = DiagnosticsCompatibilitySchedule.next(
+    now: now, launchStartedAt: launched, lastSuccess: now.addingTimeInterval(-2 * day), nextAttempt: nil)
+  try require(plan.at == now.addingTimeInterval(5 * day) && plan.reason == .weekly,
+    "Weekly report is not due seven days after the last success")
+  plan = DiagnosticsCompatibilitySchedule.next(
+    now: now, launchStartedAt: launched, lastSuccess: now.addingTimeInterval(-9 * day),
+    nextAttempt: now.addingTimeInterval(0.5 * day))
+  try require(plan.at == now.addingTimeInterval(0.5 * day), "A failed report is not retried a day later")
+  plan = DiagnosticsCompatibilitySchedule.next(
+    now: now, launchStartedAt: launched, lastSuccess: now.addingTimeInterval(30 * day), nextAttempt: nil)
+  try require(plan.at == now.addingTimeInterval(7 * day),
+    "A last success in the future (clock moved back) postponed reports indefinitely")
+
+  // Grammar: automatic compatibility takes only initial_opt_in or weekly.
+  let evidence = await fixtureProbe(values: fanValues(count: 1)).gather()
+  for (type, reason, valid) in [
+    (DiagnosticsReportType.automaticCompatibility, DiagnosticsReportReason.weekly, true),
+    (.automaticCompatibility, .initialOptIn, true),
+    (.automaticCompatibility, .userInitiatedCompatibility, false),
+    (.manualCompatibility, .weekly, false),
+  ] {
+    let report = DiagnosticsCompatibilityAssembler.report(
+      common: compatibilityCommon(fanCount: 1), evidence: evidence, generatedAt: now,
+      type: type, reason: reason)
+    let accepted = (try? DiagnosticsPayloadEncoder.freeze(report, reportType: type, now: now)) != nil
+    try require(accepted == valid, "\(type.rawValue)/\(reason.rawValue) acceptance should be \(valid)")
+  }
+
+  // End to end with a fake transport and probe: opt-in sends one automatic report and
+  // keeps automatic health consent untouched; opting out stops further sends.
+  let suiteName = "Helios.WeeklyCompatibility.\(UUID().uuidString)"
+  guard let defaults = UserDefaults(suiteName: suiteName) else {
+    throw CheckFailure(description: "could not create isolated weekly compatibility defaults")
+  }
+  defaults.removePersistentDomain(forName: suiteName)
+  defer { defaults.removePersistentDomain(forName: suiteName) }
+  let preferences = DiagnosticsPreferences(defaults: defaults)
+  let transport = MockDiagnosticsTransport()
+  let probe = fixtureProbe(values: fanValues(count: 1))
+  let controller = DiagnosticsController(
+    preferences: preferences,
+    // Short delays pass at once; the next weekly slot waits until the test shuts down.
+    sleep: { seconds in if seconds > 3_600 { try await Task.sleep(for: .seconds(3_600)) } },
+    transportFactory: { transport },
+    compatibilityProbeFactory: { probe })
+  controller.start()
+  try require(transport.received.isEmpty, "Weekly compatibility ran without its own opt-in")
+  controller.setWeeklyCompatibilityEnabled(true)
+  for _ in 0..<200 where transport.received.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+  try require(transport.received.count == 1, "Opt-in did not send exactly one compatibility report")
+  let sent = try JSONSerialization.jsonObject(with: transport.received[0]) as? [String: Any]
+  try require(sent?["report_type"] as? String == "automatic_compatibility"
+    && sent?["report_reason"] as? String == "initial_opt_in",
+    "Weekly report used the wrong type or reason")
+  try require(preferences.lastCompatibilitySend != nil && preferences.consent == .notDecided,
+    "Weekly report did not record success or changed health-report consent")
+  controller.setWeeklyCompatibilityEnabled(false)
+  try require(!preferences.weeklyCompatibilityEnabled
+    && !DiagnosticsPreferences(defaults: defaults).weeklyCompatibilityEnabled,
+    "Opting out of weekly reports did not persist")
+  controller.shutdown()
+  try require(transport.received.count == 1, "A report was sent after opting out")
+}
 
 /// A fixed fan-layer section used by the grammar checks and the contract fixture.
 private func sampleFanLayer() -> DiagnosticsFanLayer {
@@ -1358,6 +1524,8 @@ struct DiagnosticsChecks {
     print("PASS manual compatibility probe, topology, raw-SMC bounds, provenance and zero-network preview")
     try fanLayerChecks()
     print("PASS optional fan_layer section: opt-in only, closed enums and buckets, consistency rules, no free text")
+    try await weeklyCompatibilityChecks()
+    print("PASS weekly compatibility report: separate opt-in, schedule, grammar, one send, opt-out")
     try await exportNativeContractFixturesIfRequested()
   }
 }

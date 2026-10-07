@@ -82,6 +82,7 @@ struct HeliosSettingsView: View {
   @State private var showingPrepareRemoval = false
   @State private var eraseLocalDataOnRemoval = false
   @State private var removalStatus: String?
+  @State private var removing = false
   @State private var diagnosticsPreview: FrozenDiagnosticsPayload?
   @State private var showingDiagnosticsPreview = false
   @State private var previewAllowsSend = false
@@ -316,17 +317,23 @@ struct HeliosSettingsView: View {
         .toggleStyle(.checkbox)
       if let threshold = preferences.healthAlerts[rule].threshold {
         Text(rule.isLowThreshold ? "below" : "at").foregroundStyle(.secondary)
+        // Thresholds are stored in °C; only the field and its unit follow the °C/°F setting.
+        let fahrenheit = !rule.isLowThreshold && preferences.temperatureUnit == .fahrenheit
+        let shown: (Double) -> Double = { fahrenheit ? $0 * 9 / 5 + 32 : $0 }
+        let stored: (Double) -> Double = { fahrenheit ? ($0 - 32) * 5 / 9 : $0 }
+        let unit = rule.isLowThreshold ? rule.unit : preferences.temperatureUnit.suffix
         let value = Binding<Double>(
-          get: { preferences.healthAlerts[rule].threshold ?? threshold },
-          set: { preferences.setHealthAlert(rule, threshold: $0) })
+          get: { shown(preferences.healthAlerts[rule].threshold ?? threshold) },
+          set: { preferences.setHealthAlert(rule, threshold: stored($0)) })
         TextField("Threshold", value: value, format: .number.precision(.fractionLength(0...1)))
-          .frame(width: 44)
+          .frame(width: 48)
           .multilineTextAlignment(.trailing)
           .textFieldStyle(.roundedBorder)
-          .accessibilityLabel("\(rule.title) threshold in \(rule.unit)")
-        Stepper("Adjust \(rule.title) threshold", value: value, in: rule.range, step: 1)
+          .accessibilityLabel("\(rule.title) threshold in \(unit)")
+        Stepper("Adjust \(rule.title) threshold", value: value,
+          in: shown(rule.range.lowerBound)...shown(rule.range.upperBound), step: 1)
           .labelsHidden()
-        Text(rule.unit).foregroundStyle(.secondary)
+        Text(unit).foregroundStyle(.secondary)
       }
     }
     .opacity(enabled ? 1 : 0.6)
@@ -1159,6 +1166,19 @@ struct HeliosSettingsView: View {
             .font(.subheadline).foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
           Divider()
+          Toggle(
+            "Send a weekly compatibility report",
+            isOn: Binding(
+              get: { diagnosticsPreferences.weeklyCompatibilityEnabled },
+              set: { diagnostics.setWeeklyCompatibilityEnabled($0) }))
+          Text("Once a week Helios sends the same report as Compatibility report… without asking each time: which temperature sensors and fans this Mac has and what they read. It is how Helios learns Macs I do not own. Separate from the switch above and off by default.")
+            .font(.subheadline).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+          if diagnosticsPreferences.weeklyCompatibilityEnabled {
+            settingsFact("Last compatibility report", diagnosticsPreferences.lastCompatibilitySend?
+              .formatted(date: .abbreviated, time: .shortened) ?? "Not yet")
+          }
+          Divider()
           HStack {
             Button("View what is shared", action: showAutomaticPreview)
             Button("Send report now…", action: showManualHealthPreview)
@@ -1187,7 +1207,8 @@ struct HeliosSettingsView: View {
   }
 
   private var backgroundNetworkSummary: String {
-    switch (updateChecker.automaticallyChecksForUpdates, diagnosticsPreferences.automaticEnabled) {
+    let sharing = diagnosticsPreferences.automaticEnabled || diagnosticsPreferences.weeklyCompatibilityEnabled
+    return switch (updateChecker.automaticallyChecksForUpdates, sharing) {
     case (true, true): "Automatic update checks + optional beta diagnostics"
     case (true, false): "Automatic update checks"
     case (false, true): "Optional beta diagnostics"
@@ -1347,11 +1368,12 @@ struct HeliosSettingsView: View {
             .font(.subheadline).foregroundStyle(.tertiary)
         }
       }
-      GroupBox("Remove Helios") {
+      GroupBox("Uninstall Helios") {
         VStack(alignment: .leading, spacing: 10) {
           Toggle("Erase local Helios settings and monitoring history", isOn: $eraseLocalDataOnRemoval)
-          Button("Prepare for removal…") { showingPrepareRemoval = true }
-          Text("Returns fans to macOS, turns off Launch at Login and unregisters the helper. Then move Helios.app to the Trash.")
+          Button("Uninstall Helios…") { showingPrepareRemoval = true }
+            .disabled(removing)
+          Text("Returns fans to macOS, turns off Launch at Login, unregisters the helper, then moves Helios.app to the Trash and quits.")
             .font(.subheadline).foregroundStyle(.tertiary)
             .fixedSize(horizontal: false, vertical: true)
           if let removalStatus {
@@ -1361,50 +1383,62 @@ struct HeliosSettingsView: View {
         }
       }
     }
-    .alert("Prepare Helios for Removal?", isPresented: $showingPrepareRemoval) {
+    .alert("Uninstall Helios?", isPresented: $showingPrepareRemoval) {
       Button("Cancel", role: .cancel) {}
-      Button("Prepare", role: .destructive) {
-        Task { await prepareForRemoval() }
+      Button("Uninstall", role: .destructive) {
+        Task { await uninstall() }
       }
     } message: {
       Text(
         eraseLocalDataOnRemoval
-          ? "Helios will return fan control to macOS, disable Launch at Login, unregister its helper, erase its local preferences/history and then quit. Move the app to Trash afterwards."
-          : "Helios will return fan control to macOS, disable Launch at Login and unregister its helper. Monitoring history and preferences will be kept."
+          ? "Helios will return fan control to macOS, turn off Launch at Login, unregister its helper, erase its local settings and history, move itself to the Trash and quit."
+          : "Helios will return fan control to macOS, turn off Launch at Login, unregister its helper, move itself to the Trash and quit. Settings and monitoring history stay on this Mac."
       )
     }
   }
 
-  private func prepareForRemoval() async {
-    removalStatus = "Preparing removal…"
-    service.fanControl.setMode(.system)
+  private func uninstall() async {
+    removing = true
+    removalStatus = "Uninstalling…"
+    let uninstaller = HeliosUninstaller(
+      returnFansToMacOS: { service.fanControl.setMode(.system) },
+      disableLaunchAtLogin: {
+        guard service.launchAtLoginEnabled || service.launchAtLoginRequiresApproval else { return true }
+        return await service.setLaunchAtLogin(false)
+      },
+      unregisterHelper: {
+        guard service.state == .installed || service.state == .requiresApproval else { return true }
+        return await service.uninstall()
+      },
+      eraseLocalData: eraseLocalHeliosData,
+      moveAppToTrash: { await HeliosUninstaller.trashRunningApp() })
+    let outcome = await uninstaller.run(eraseData: eraseLocalDataOnRemoval)
+    removing = false
 
-    if service.launchAtLoginEnabled || service.launchAtLoginRequiresApproval {
-      guard await service.setLaunchAtLogin(false) else {
-        removalStatus =
-          "Removal stopped: Launch at Login could not be disabled. Resolve the Service Management state and try again; no local data was erased."
-        return
-      }
-    }
-
-    if service.state == .installed || service.state == .requiresApproval {
-      guard await service.uninstall() else {
-        removalStatus =
-          "Removal stopped: the privileged helper is still registered. Resolve the helper state and try again; no local data was erased."
-        return
-      }
-    }
-
-    guard eraseLocalDataOnRemoval else {
+    switch outcome {
+    case .stoppedAtLaunchAtLogin:
       removalStatus =
-        "Helios is prepared for removal. The helper is unregistered and Launch at Login is off; you can move Helios.app to Trash."
-      return
+        "Uninstall stopped: Launch at Login could not be turned off. Resolve the Service Management state and try again; nothing was erased."
+    case .stoppedAtHelper:
+      removalStatus =
+        "Uninstall stopped: the privileged helper is still registered. Resolve the helper state and try again; nothing was erased."
+    case .movedToTrash:
+      removalStatus = "Helios was moved to the Trash and is quitting."
+      quitAfterRemoval()
+    case .needsManualTrash(let blocker):
+      removalStatus =
+        "The helper is unregistered and Launch at Login is off. \(blocker.explanation) Move Helios.app to the Trash yourself."
+      if blocker != .translocated, blocker != .notAnAppBundle {
+        NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
+      }
+      // After erasing, no service may get another chance to recreate files.
+      if eraseLocalDataOnRemoval { quitAfterRemoval() }
     }
+  }
 
-    eraseLocalHeliosData()
-    // Persistent/history services must not get another opportunity to recreate
-    // files after a complete cleanup. The app cannot delete its own bundle, so
-    // terminate cleanly and let the user move Helios.app to Trash.
+  private func quitAfterRemoval() {
+    // A short delay lets the status line render; persistent/history services
+    // must not run again after a complete cleanup.
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { NSApp.terminate(nil) }
   }
 

@@ -189,6 +189,8 @@ final class DiagnosticsController: ObservableObject {
   private var transport: (any DiagnosticsTransporting)?
   private var compatibilityProbe: DiagnosticsCompatibilityProbe?
   private var automaticTask: Task<Void, Never>?
+  private var compatibilityTask: Task<Void, Never>?
+  private var compatibilityRequestInFlight = false
   private var started = false
   private var stopped = false
   private var automaticRequestInFlight = false
@@ -233,6 +235,7 @@ final class DiagnosticsController: ObservableObject {
       lifecycle.clear()
       session.stability = lifecycle.summary
     }
+    scheduleCompatibility()
   }
 
   func shutdown() {
@@ -241,7 +244,23 @@ final class DiagnosticsController: ObservableObject {
     lifecycle.end()
     automaticTask?.cancel()
     automaticTask = nil
+    compatibilityTask?.cancel()
+    compatibilityTask = nil
     transport?.cancel()
+  }
+
+  /// The weekly compatibility report is a separate opt-in from automatic health reports.
+  func setWeeklyCompatibilityEnabled(_ enabled: Bool) {
+    guard !stopped else { return }
+    preferences.setWeeklyCompatibilityEnabled(enabled)
+    if enabled {
+      // Give telemetry a minute to settle before the first probe.
+      scheduleCompatibility(minimumDelay: DiagnosticsCompatibilitySchedule.enableDelay)
+    } else {
+      compatibilityTask?.cancel()
+      compatibilityTask = nil
+      if compatibilityRequestInFlight { transport?.cancel() }
+    }
   }
 
   func accept(_ snapshot: TelemetrySnapshot, helper: DiagnosticsHelperObservation) {
@@ -291,13 +310,18 @@ final class DiagnosticsController: ObservableObject {
       report, reportType: type, now: now, generation: generation)
   }
 
-  func makeCompatibilityPayload(now: Date = Date()) async throws -> FrozenDiagnosticsPayload {
+  func makeCompatibilityPayload(
+    now: Date = Date(),
+    type: DiagnosticsReportType = .manualCompatibility,
+    reason: DiagnosticsReportReason = .userInitiatedCompatibility
+  ) async throws -> FrozenDiagnosticsPayload {
     let evidence = await resolvedCompatibilityProbe().gather()
     let report = DiagnosticsCompatibilityAssembler.report(
-      common: session.commonFields(generatedAt: now), evidence: evidence, generatedAt: now)
+      common: session.commonFields(generatedAt: now), evidence: evidence, generatedAt: now,
+      type: type, reason: reason)
     generation &+= 1
     return try DiagnosticsPayloadEncoder.freeze(
-      report, reportType: .manualCompatibility, now: now, generation: generation)
+      report, reportType: type, now: now, generation: generation)
   }
 
   func sendManual(_ payload: FrozenDiagnosticsPayload) async -> DiagnosticsTransportResult {
@@ -430,6 +454,62 @@ final class DiagnosticsController: ObservableObject {
     scheduleNextAutomatic()
   }
 
+  private func scheduleCompatibility(minimumDelay: TimeInterval = 0) {
+    compatibilityTask?.cancel()
+    compatibilityTask = nil
+    guard !stopped, preferences.weeklyCompatibilityEnabled else { return }
+    let now = now()
+    let plan = DiagnosticsCompatibilitySchedule.next(
+      now: now, launchStartedAt: session.launchStartedAt,
+      lastSuccess: preferences.lastCompatibilitySend,
+      nextAttempt: preferences.nextCompatibilityAttempt, minimumDelay: minimumDelay)
+    let delay = max(0, plan.at.timeIntervalSince(now))
+    let sleep = self.sleep
+    compatibilityTask = Task(priority: .utility) { [weak self] in
+      if delay > 0 {
+        do { try await sleep(delay) } catch { return }
+      }
+      guard let self, !self.stopped, !Task.isCancelled, self.preferences.weeklyCompatibilityEnabled
+      else { return }
+      await self.runCompatibility(reason: plan.reason)
+    }
+  }
+
+  private func runCompatibility(reason: DiagnosticsReportReason) async {
+    // One request slot is shared with health reports and manual sends.
+    while sending && !Task.isCancelled {
+      do { try await sleep(1) } catch { return }
+    }
+    guard !stopped, !Task.isCancelled, preferences.weeklyCompatibilityEnabled else { return }
+    let retryAt = now().addingTimeInterval(DiagnosticsCompatibilitySchedule.retryInterval)
+    let payload: FrozenDiagnosticsPayload
+    do {
+      payload = try await makeCompatibilityPayload(
+        now: now(), type: .automaticCompatibility, reason: reason)
+    } catch {
+      preferences.recordCompatibilityFailure(.build, nextAttempt: retryAt)
+      scheduleCompatibility()
+      return
+    }
+    guard !stopped, !Task.isCancelled, preferences.weeklyCompatibilityEnabled, !sending else {
+      if !Task.isCancelled { scheduleCompatibility(minimumDelay: 60) }
+      return
+    }
+    sending = true
+    compatibilityRequestInFlight = true
+    let result = await resolvedTransport().send(payload)
+    compatibilityRequestInFlight = false
+    sending = false
+    guard !stopped, !Task.isCancelled, preferences.weeklyCompatibilityEnabled else { return }
+    switch result {
+    case .accepted: preferences.recordCompatibilitySuccess(at: now())
+    case .rejected: preferences.recordCompatibilityFailure(.serverRejected, nextAttempt: retryAt)
+    case .retryable: preferences.recordCompatibilityFailure(.transport, nextAttempt: retryAt)
+    case .cancelled: return
+    }
+    scheduleCompatibility()
+  }
+
   private func cancelAutomaticWork() {
     automaticTask?.cancel()
     automaticTask = nil
@@ -452,5 +532,28 @@ final class DiagnosticsController: ObservableObject {
     let created = compatibilityProbeFactory()
     compatibilityProbe = created
     return created
+  }
+}
+
+/// When the weekly compatibility report is due. Pure, so it can be tested without a clock.
+enum DiagnosticsCompatibilitySchedule {
+  static let interval: TimeInterval = 7 * 24 * 60 * 60
+  static let retryInterval: TimeInterval = 24 * 60 * 60
+  /// Never probe during the first minutes after launch, while telemetry is warming up.
+  static let launchDelay: TimeInterval = 5 * 60
+  static let enableDelay: TimeInterval = 60
+
+  static func next(
+    now: Date, launchStartedAt: Date, lastSuccess: Date?, nextAttempt: Date?,
+    minimumDelay: TimeInterval = 0
+  ) -> (at: Date, reason: DiagnosticsReportReason) {
+    // A last success in the future means the clock went back; do not wait for it.
+    let success = lastSuccess.map { min($0, now) }
+    var due = success.map { $0.addingTimeInterval(interval) } ?? now
+    if let nextAttempt, nextAttempt > due {
+      due = min(nextAttempt, now.addingTimeInterval(retryInterval))
+    }
+    due = max(due, launchStartedAt.addingTimeInterval(launchDelay), now.addingTimeInterval(minimumDelay))
+    return (due, success == nil ? .initialOptIn : .weekly)
   }
 }

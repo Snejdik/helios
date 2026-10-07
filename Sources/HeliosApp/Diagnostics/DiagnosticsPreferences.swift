@@ -40,6 +40,11 @@ final class DiagnosticsPreferences: ObservableObject {
   /// Separate from automatic reports and off by default: adds the fan-control
   /// statistics section to a report. It never affects fan control itself.
   @Published private(set) var fanStatisticsEnabled: Bool
+  /// Separate opt-in, off by default: a compatibility report once a week.
+  @Published private(set) var weeklyCompatibilityEnabled: Bool
+  @Published private(set) var lastCompatibilitySend: Date?
+  /// After a failed weekly report, the earliest next attempt.
+  @Published private(set) var nextCompatibilityAttempt: Date?
 
   var automaticWorkCancellation: (() -> Void)?
   /// Called when fan statistics are switched off, so what was recorded is dropped.
@@ -62,11 +67,16 @@ final class DiagnosticsPreferences: ObservableObject {
     static let retryCount = DiagnosticsPreferences.namespace + "pendingRetryCount"
     static let nextEligible = DiagnosticsPreferences.namespace + "nextEligibleTime"
     static let fanStatistics = DiagnosticsPreferences.namespace + "fanStatistics"
+    static let weeklyCompatibility = DiagnosticsPreferences.namespace + "weeklyCompatibility"
+    static let lastCompatibilitySend = DiagnosticsPreferences.namespace + "lastCompatibilitySend"
+    static let nextCompatibilityAttempt =
+      DiagnosticsPreferences.namespace + "nextCompatibilityAttempt"
 
     static let all = [
       consent, consentRevision, lastSuccessfulReport, lastSuccessfulSend, lastStatus,
       lastStatusCategory, lastVersion,
       lastBuild, lastMacOSBuild, chainStartedAt, retryCount, nextEligible, fanStatistics,
+      weeklyCompatibility, lastCompatibilitySend, nextCompatibilityAttempt,
       DiagnosticsLifecycleStore.key,
     ]
   }
@@ -91,6 +101,33 @@ final class DiagnosticsPreferences: ObservableObject {
     pendingRetryCount = (0...2).contains(retry) ? retry : 0
     nextEligibleTime = Self.safeDate(defaults.object(forKey: Key.nextEligible))
     fanStatisticsEnabled = (defaults.object(forKey: Key.fanStatistics) as? Bool) ?? false
+    weeklyCompatibilityEnabled = (defaults.object(forKey: Key.weeklyCompatibility) as? Bool) ?? false
+    lastCompatibilitySend = Self.safeDate(defaults.object(forKey: Key.lastCompatibilitySend))
+    nextCompatibilityAttempt = Self.safeDate(defaults.object(forKey: Key.nextCompatibilityAttempt))
+  }
+
+  func setWeeklyCompatibilityEnabled(_ enabled: Bool) {
+    guard enabled != weeklyCompatibilityEnabled else { return }
+    weeklyCompatibilityEnabled = enabled
+    defaults.set(enabled, forKey: Key.weeklyCompatibility)
+    if !enabled {
+      nextCompatibilityAttempt = nil
+      defaults.removeObject(forKey: Key.nextCompatibilityAttempt)
+    }
+  }
+
+  func recordCompatibilitySuccess(at date: Date) {
+    lastCompatibilitySend = date
+    nextCompatibilityAttempt = nil
+    defaults.set(date, forKey: Key.lastCompatibilitySend)
+    defaults.removeObject(forKey: Key.nextCompatibilityAttempt)
+    recordLocalStatus(.success, category: .none, at: date)
+  }
+
+  func recordCompatibilityFailure(_ category: DiagnosticsErrorCategory, nextAttempt: Date) {
+    nextCompatibilityAttempt = nextAttempt
+    defaults.set(nextAttempt, forKey: Key.nextCompatibilityAttempt)
+    recordLocalStatus(.failed, category: category)
   }
 
   func setFanStatisticsEnabled(_ enabled: Bool) {
@@ -212,6 +249,9 @@ final class DiagnosticsPreferences: ObservableObject {
     lastAutomaticChainStartedAt = nil
     pendingRetryCount = 0
     nextEligibleTime = nil
+    weeklyCompatibilityEnabled = false
+    lastCompatibilitySend = nil
+    nextCompatibilityAttempt = nil
   }
 
   private func setOptionalDate(_ date: Date?, key: String) {

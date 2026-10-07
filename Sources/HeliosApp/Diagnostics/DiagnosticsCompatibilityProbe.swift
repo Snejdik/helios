@@ -12,7 +12,9 @@ enum DiagnosticsCompatibilityAssembler {
   static func report(
     common: DiagnosticsCommonFields,
     evidence: DiagnosticsCompatibilityEvidence,
-    generatedAt: Date
+    generatedAt: Date,
+    type: DiagnosticsReportType = .manualCompatibility,
+    reason: DiagnosticsReportReason = .userInitiatedCompatibility
   ) -> DiagnosticsCompatibilityReport {
     let system = DiagnosticsSystem(
       macOSVersion: common.system.macOSVersion, macOSBuild: common.system.macOSBuild,
@@ -22,9 +24,9 @@ enum DiagnosticsCompatibilityAssembler {
       fanCount: evidence.safelyObservedFanCount ?? common.system.fanCount,
       batteryPresent: common.system.batteryPresent)
     return DiagnosticsCompatibilityReport(
-      schemaVersion: 1, reportType: .manualCompatibility,
+      schemaVersion: 1, reportType: type,
       generatedAt: DiagnosticsTimestamp.minuteUTC(generatedAt),
-      reportReason: .userInitiatedCompatibility, helios: common.helios, system: system,
+      reportReason: reason, helios: common.helios, system: system,
       capabilities: common.capabilities, providers: common.providers, helper: common.helper,
       runtime: common.runtime, stability: common.stability, rawHardware: evidence.rawHardware,
       heliosClassification: DiagnosticsHeliosClassification(
@@ -90,7 +92,12 @@ actor DiagnosticsCompatibilityProbe {
           DiagnosticsThermalClassification(
             key: key, semanticGroup: semanticGroup(classifier.group(for: key)),
             classificationSource: "helios_rule_v1"))
-        if let category = item.failureCategory {
+        // A key stored in a format Helios cannot decode as a temperature (for example the
+        // 8-byte `ioft` keys on Apple Silicon) is raw evidence, kept in `smc_thermal_discovery`
+        // with its data type. It is a known limitation, not a provider failure.
+        let isUnsupportedFormat =
+          item.readState == .decodeFailed && item.dataType.map { !Self.decodableTemperatureTypes.contains($0) } == true
+        if let category = item.failureCategory, !isUnsupportedFormat {
           diagnostics.append(
             DiagnosticsProviderDiagnostic(
               provider: .thermal,
@@ -151,6 +158,8 @@ actor DiagnosticsCompatibilityProbe {
       safelyObservedFanCount: fanResult.fanCount,
       compatibilityState: state)
   }
+
+  private static let decodableTemperatureTypes: Set<String> = ["sp78", "flt "]
 
   private func thermalItem(key: String, client: SMCClient) -> DiagnosticsSMCThermalDiscovery {
     let info: SMCKeyInfo

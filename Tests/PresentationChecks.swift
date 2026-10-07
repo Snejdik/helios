@@ -79,6 +79,22 @@ private final class MaintenanceFixtureSampler<Value: Sendable> {
   }
 }
 
+@MainActor
+private final class UninstallRecorder {
+  private(set) var steps: [String] = []
+
+  func uninstaller(launchAtLogin: Bool = true, helper: Bool = true, trash: HeliosTrashBlocker? = nil)
+    -> HeliosUninstaller
+  {
+    HeliosUninstaller(
+      returnFansToMacOS: { self.steps.append("fans") },
+      disableLaunchAtLogin: { self.steps.append("login"); return launchAtLogin },
+      unregisterHelper: { self.steps.append("helper"); return helper },
+      eraseLocalData: { self.steps.append("erase") },
+      moveAppToTrash: { self.steps.append("trash"); return trash })
+  }
+}
+
 @main
 @MainActor
 private struct PresentationChecks {
@@ -94,6 +110,9 @@ private struct PresentationChecks {
         print("PASS pure SMC and maintenance action ownership, isolation and cancellation")
         return
       }
+      try await uninstallChecks()
+      try whatsNewDecisionChecks()
+      try thermalInventoryChecks()
       try run()
     } catch {
       print("FAIL: \(error)")
@@ -276,6 +295,87 @@ private struct PresentationChecks {
     deathGate.finish(cleanup)
     await orphan.value
     try require(deathGate.completedCanceled, "Maintenance deinit did not cancel owned scan")
+  }
+
+  private static func uninstallChecks() async throws {
+    let cases: [(String, Bool, Bool, HeliosTrashBlocker?, Bool, HeliosUninstallOutcome, [String])] = [
+      ("complete with erase", true, true, nil, true, .movedToTrash,
+        ["fans", "login", "helper", "erase", "trash"]),
+      ("complete keeping data", true, true, nil, false, .movedToTrash,
+        ["fans", "login", "helper", "trash"]),
+      ("Launch at Login refused", false, true, nil, true, .stoppedAtLaunchAtLogin, ["fans", "login"]),
+      ("helper still registered", true, false, nil, true, .stoppedAtHelper, ["fans", "login", "helper"]),
+      ("Trash unavailable", true, true, .readOnlyVolume, false, .needsManualTrash(.readOnlyVolume),
+        ["fans", "login", "helper", "trash"]),
+    ]
+    for (name, login, helper, trash, erase, outcome, steps) in cases {
+      let recorder = UninstallRecorder()
+      let result = await recorder.uninstaller(launchAtLogin: login, helper: helper, trash: trash)
+        .run(eraseData: erase)
+      try require(result == outcome && recorder.steps == steps,
+        "Uninstall \(name): \(result) after \(recorder.steps)")
+    }
+
+    let blockers: [(String, Bool, HeliosTrashBlocker?)] = [
+      ("/Applications/Helios.app", false, nil),
+      ("/Users/tester/Applications/Helios.app", false, nil),
+      ("/Volumes/Helios/Helios.app", true, .readOnlyVolume),
+      ("/private/var/folders/ab/T/AppTranslocation/1234/d/Helios.app", true, .translocated),
+      ("/Users/tester/Helios/.build/DerivedData/Build/Products/Debug/Helios.app", false, .developmentBuild),
+      ("/Users/tester/Library/Developer/Xcode/DerivedData/Helios-x/Build/Products/Debug/Helios.app", false,
+        .developmentBuild),
+      ("/usr/local/bin/helios", false, .notAnAppBundle),
+    ]
+    for (path, readOnly, expected) in blockers {
+      let blocker = HeliosUninstaller.trashBlocker(for: URL(fileURLWithPath: path), onReadOnlyVolume: readOnly)
+      try require(blocker == expected, "Trash blocker for \(path) was \(String(describing: blocker))")
+    }
+    print("PASS uninstall order: helper and Launch at Login before data and Trash; stops leave the app in place")
+  }
+
+  private static func thermalInventoryChecks() throws {
+    let failures: [String: TelemetryError] = [
+      "Tg0G": .inactiveSensor("Tg0G"), "TVM0": .inactiveSensor("TVM0"),
+      "TG0B": .unsupportedSensorFormat("TG0B"), "Tbad": .ioKit("Read SMC Tbad", -1),
+      "Tp05": .invalidData("Tp05 outside plausible temperature range"),
+    ]
+    let metrics = ThermalMetrics(
+      readings: [ThermalReading(key: "Tp01", group: .performanceCPU, celsius: 50)],
+      failures: failures,
+      trustedFailures: ["Tg0G": .inactiveSensor("Tg0G"), "Tp05": failures["Tp05"]!])
+    let inventory = ThermalInventoryPresentation(metrics)
+    try require(inventory.inactive == ["TVM0", "Tg0G"], "Inactive sensors: \(inventory.inactive)")
+    try require(inventory.unsupported == ["TG0B"], "Unsupported sensors: \(inventory.unsupported)")
+    try require(Set(inventory.trustedFailures.keys) == ["Tp05"],
+      "A switched-off trusted sensor was listed as a read failure")
+    try require(Set(inventory.advisoryFailures.keys) == ["Tbad"],
+      "Only genuine optional failures belong under Read failures")
+    print("PASS thermal inventory separates switched-off, unreadable-format and genuinely failing sensors")
+  }
+
+  private static func whatsNewDecisionChecks() throws {
+    let current = HeliosReleaseVersion(tag: "v0.2.1")
+    let cases: [(String?, HeliosReleaseVersion?, Bool, HeliosWhatsNew.Decision)] = [
+      (nil, current, true, .show),  // updated from a build that never stored a release
+      (nil, current, false, .recordOnly),  // fresh installation: the welcome flow explains Helios
+      ("v0.2.1", current, true, .nothing),
+      ("v0.2.1", current, false, .nothing),
+      ("v0.2.0-beta.1", current, true, .show),
+      ("v0.2.1-beta.1", current, true, .recordOnly),  // beta to final of the same release
+      ("v0.3.0", current, true, .recordOnly),  // downgrade
+      ("not-a-tag", current, true, .show),
+      (nil, nil, true, .nothing),  // development build without a release tag
+      ("v0.2.1", HeliosReleaseVersion(tag: "v0.2.2"), true, .recordOnly),  // release without notes
+      (nil, HeliosReleaseVersion(tag: "v9.0.0"), true, .recordOnly),
+    ]
+    for (lastSeen, release, onboarded, expected) in cases {
+      let decision = HeliosWhatsNew.decide(
+        lastSeen: lastSeen, current: release, onboardingCompleted: onboarded)
+      try require(decision == expected,
+        "What's New for \(lastSeen ?? "nil") -> \(release?.tag ?? "nil") onboarded=\(onboarded) was \(decision)")
+    }
+    try require(HeliosWhatsNew.notes["0.2.1"]?.isEmpty == false, "0.2.1 has no What's New notes")
+    print("PASS What's New shows once per updated release, never on a fresh install or a dev build")
   }
 
   private static func run() throws {
@@ -987,13 +1087,18 @@ private struct PresentationChecks {
         _ = flow.advance(diagnostics: controller, shareDiagnostics: false)
         try require(consentPreferences.consentRevision == revision + 1, "Unchanged choice incremented revision")
       } else {
-        try require(flow.page == .support, "Replay re-prompted diagnostics")
+        // The page is always shown; its checkbox starts at the stored choice, and
+        // continuing with that choice must not touch consent or scheduling.
+        try require(flow.page == .diagnostics, "Replay skipped the diagnostics page")
+        let keep = consent == .enabled
+        try require(!flow.advance(diagnostics: controller, shareDiagnostics: keep), "Replay diagnostics skipped Support")
         flow.back()
-        try require(flow.page == .interface, "Replay Support Back re-prompted diagnostics")
-        _ = flow.advance(diagnostics: controller, shareDiagnostics: false)
+        try require(flow.page == .diagnostics, "Replay Support Back lost the diagnostics page")
+        _ = flow.advance(diagnostics: controller, shareDiagnostics: keep)
         try require(consentPreferences.consent == consent, "Replay overwrote consent")
         try require(consentPreferences.consentRevision == revision, "Replay changed consent revision")
         try require(consentPreferences.nextEligibleTime == originalSchedule, "Replay changed diagnostics scheduling")
+        try require(!consentPreferences.weeklyCompatibilityEnabled, "Replay enabled weekly compatibility reports")
       }
       try require(flow.page == .support, "Support page missing")
       try require(flow.advance(diagnostics: controller, shareDiagnostics: false), "Finish required donation")
@@ -1039,9 +1144,9 @@ private struct PresentationChecks {
     try require(!helperFlow.advance(diagnostics: DiagnosticsController(preferences: DiagnosticsPreferences(defaults: goalDefaults)),
       shareDiagnostics: false, wantsFanHelper: true) && helperFlow.page == .helper, "Cooling goal shows the helper step")
     try require(!helperFlow.advance(diagnostics: DiagnosticsController(preferences: DiagnosticsPreferences(defaults: goalDefaults)),
-      shareDiagnostics: false) && helperFlow.page == .support, "Helper step continues to Support when consent is known")
+      shareDiagnostics: false) && helperFlow.page == .diagnostics, "Helper step continues to the diagnostics choice")
     helperFlow.back()
-    try require(helperFlow.page == .helper, "Support Back returns to the helper step it followed")
+    try require(helperFlow.page == .helper, "Diagnostics Back returns to the helper step it followed")
     print("PASS welcome goals: pure plan, combination, persistence and the optional fan-helper step")
 
     for (name, enabled, approval, busy, message) in [
@@ -1092,6 +1197,27 @@ private struct PresentationChecks {
     try require(!onboardingPreferences.onboardingCompleted,
       "Rendering support must not complete onboarding")
     print("PASS three onboarding pages at small/default/large sizes in light/dark; diagnostics remain off")
+
+    let whatsNewRelease = HeliosReleaseVersion(tag: "v0.2.1")!
+    for (name, service) in [("no-helper", Optional<DaemonService>.none), ("helper", uiService)] {
+      for size in [CGSize(width: 480, height: 480), CGSize(width: 560, height: 760)] {
+        for dark in [false, true] {
+          let whatsNew = HeliosWhatsNewView(
+            preferences: onboardingPreferences, service: service, release: whatsNewRelease,
+            diagnostics: service == nil ? nil : onboardingDiagnostics, onContinue: {})
+            .frame(width: size.width, height: size.height)
+            .environment(\.colorScheme, dark ? .dark : .light)
+          guard let rendered = nativeImage(whatsNew, width: size.width),
+            let png = NSBitmapImageRep(cgImage: rendered).representation(using: .png, properties: [:])
+          else { throw PresentationCheckFailure(message: "What's New \(name) render failed") }
+          try require(rendered.width == Int(size.width * 2) && rendered.height == Int(size.height * 2),
+            "What's New \(name) escaped its window bounds")
+          try png.write(to: directory.appendingPathComponent(
+            "whats-new-\(name)-\(Int(size.width))-\(dark ? "dark" : "light").png"))
+        }
+      }
+    }
+    print("PASS What's New window renders with and without the helper at small/default sizes in light/dark")
 
     for metric in [HeliosMenuBarMetric.cpu, .memory, .temperature, .battery] {
       let popup = HeliosMetricPopoverView(

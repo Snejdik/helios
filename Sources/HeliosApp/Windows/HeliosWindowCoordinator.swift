@@ -35,6 +35,7 @@ final class HeliosWindowCoordinator: NSObject, NSWindowDelegate {
   private var energyInspectorController: NSWindowController?
   private var settingsController: NSWindowController?
   private var onboardingController: NSWindowController?
+  private var whatsNewController: NSWindowController?
   private var lastMonitorRoute: HeliosMonitorRoute = .overview
   private let energyInspectorState = HeliosEnergyInspectorState()
   private let settingsState = HeliosSettingsState()
@@ -178,6 +179,7 @@ final class HeliosWindowCoordinator: NSObject, NSWindowDelegate {
   }
 
   func showOnboardingIfNeeded() {
+    showWhatsNewIfNeeded()
     guard !preferences.onboardingCompleted else { return }
     if let onboardingController {
       show(onboardingController.window)
@@ -205,6 +207,34 @@ final class HeliosWindowCoordinator: NSObject, NSWindowDelegate {
     let controller = NSWindowController(window: window)
     window.delegate = self
     onboardingController = controller
+    show(window)
+  }
+
+  /// Shown once per updated release, never on a fresh installation (see HeliosWhatsNew.decide).
+  func showWhatsNewIfNeeded(defaults: UserDefaults = .standard) {
+    let current = HeliosReleaseVersion.current()
+    let decision = HeliosWhatsNew.decide(
+      lastSeen: defaults.string(forKey: HeliosWhatsNew.lastSeenReleaseKey), current: current,
+      onboardingCompleted: preferences.onboardingCompleted)
+    guard decision != .nothing, let current else { return }
+    // Recorded before showing, so a crash or a closed window never repeats it.
+    defaults.set(current.tag, forKey: HeliosWhatsNew.lastSeenReleaseKey)
+    guard decision == .show, whatsNewController == nil else { return }
+
+    let content = HeliosWhatsNewView(
+      preferences: preferences, service: service, release: current, diagnostics: diagnostics,
+      onContinue: { [weak self] in self?.whatsNewController?.close() })
+    let window = NSWindow(contentViewController: NSHostingController(rootView: content))
+    window.title = "What’s New in Helios"
+    window.styleMask = [.titled, .closable, .resizable]
+    window.titlebarAppearsTransparent = true
+    window.contentMinSize = NSSize(width: 480, height: 480)
+    window.setContentSize(NSSize(width: 560, height: 760))
+    window.isReleasedWhenClosed = false
+    window.center()
+    let controller = NSWindowController(window: window)
+    window.delegate = self
+    whatsNewController = controller
     show(window)
   }
 
@@ -279,6 +309,11 @@ final class HeliosWindowCoordinator: NSObject, NSWindowDelegate {
       onboardingController = nil
       detachPresentationTree(from: window)
       controller?.window = nil
+    } else if window === whatsNewController?.window {
+      let controller = whatsNewController
+      whatsNewController = nil
+      detachPresentationTree(from: window)
+      controller?.window = nil
     }
 
     // Application icons are reconstructible presentation data. Never keep a
@@ -292,7 +327,8 @@ final class HeliosWindowCoordinator: NSObject, NSWindowDelegate {
   /// ⌘-Tab, main menu); with no windows it returns to the menu bar only.
   private func updateActivationPolicy() {
     let anyOpen = [monitorController?.window, mainController?.window,
-      settingsController?.window, energyInspectorController?.window, onboardingController?.window]
+      settingsController?.window, energyInspectorController?.window, onboardingController?.window,
+      whatsNewController?.window]
       .contains { $0?.isVisible == true || $0?.isMiniaturized == true }
     let policy: NSApplication.ActivationPolicy = anyOpen ? .regular : .accessory
     if NSApp.activationPolicy() != policy { NSApp.setActivationPolicy(policy) }

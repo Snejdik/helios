@@ -40,8 +40,10 @@ struct HeliosOnboardingFlow {
   /// Whether the optional fan-helper step was part of this run (it follows the goals).
   private(set) var showsHelper = false
 
+  /// The diagnostics page is always part of the welcome: it is the one place most people
+  /// see the choice. `consent` only decides the starting state of its checkbox.
   init(consent: DiagnosticsConsentState, initialPage: Page = .interface) {
-    asksForDiagnostics = consent == .notDecided
+    asksForDiagnostics = true
     page = initialPage
   }
 
@@ -54,7 +56,8 @@ struct HeliosOnboardingFlow {
   }
 
   mutating func advance(
-    diagnostics: DiagnosticsController, shareDiagnostics: Bool, wantsFanHelper: Bool = false
+    diagnostics: DiagnosticsController, shareDiagnostics: Bool, wantsFanHelper: Bool = false,
+    weeklyCompatibility: Bool? = nil
   ) -> Bool {
     switch page {
     case .interface:
@@ -64,6 +67,7 @@ struct HeliosOnboardingFlow {
       page = asksForDiagnostics ? .diagnostics : .support
     case .diagnostics:
       diagnostics.setAutomaticEnabled(shareDiagnostics)
+      if let weeklyCompatibility { diagnostics.setWeeklyCompatibilityEnabled(weeklyCompatibility) }
       page = .support
     case .support:
       return true
@@ -117,9 +121,10 @@ struct HeliosOnboardingView: View {
   @State private var goals: Set<HeliosGoal> = []
   /// Once the person edits the goals, new detection no longer replaces them.
   @State private var customized = false
-  @State private var showsCustomize = false
   @State private var flow: HeliosOnboardingFlow
   @State private var shareDiagnostics = false
+  @State private var weeklyCompatibility = false
+  @State private var preparingCompatibilityPreview = false
   @State private var previewPayload: FrozenDiagnosticsPayload?
   @State private var showingPreview = false
   @State private var previewError: String?
@@ -144,32 +149,30 @@ struct HeliosOnboardingView: View {
 
   private var traits: HeliosMacTraits { traitsObserver.traits }
   private var plan: HeliosGoalPlan { HeliosGoalPlan.make(for: goals, traits: traits) }
-  private var wantsFanHelper: Bool { plan.wantsFanHelper }
+  /// Only when the person chose cooling, and not again once the helper is installed.
+  private var wantsFanHelper: Bool { plan.wantsFanHelper && service?.state != .installed }
 
   var body: some View {
     VStack(spacing: 0) {
-      ScrollView {
-        Group {
-          switch flow.page {
-          case .interface: goalsPage
-          case .helper: helperPage
-          case .diagnostics: diagnosticsPage
-          case .support: supportPage
+      GeometryReader { proxy in
+        ScrollView {
+          Group {
+            switch flow.page {
+            case .interface: goalsPage
+            case .helper: helperPage
+            case .diagnostics: diagnosticsPage
+            case .support: supportPage
+            }
           }
+          // Short pages sit in the middle of the window instead of at the top.
+          .frame(maxWidth: .infinity, minHeight: proxy.size.height)
         }
-        .frame(maxWidth: .infinity)
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity)
 
       Divider()
       HStack {
-        if flow.page == .interface {
-          Text("You can change this any time in Settings → General.")
-            .font(.subheadline).foregroundStyle(.secondary)
-        } else {
-          Button("Back") { flow.back() }
-          Text(footerNote).font(.subheadline).foregroundStyle(.secondary)
-        }
+        if flow.page != .interface { Button("Back") { flow.back() } }
         Spacer()
         Button(flow.page == .support ? "Finish Setup" : "Continue", action: continueAction)
           .keyboardShortcut(.defaultAction)
@@ -178,120 +181,94 @@ struct HeliosOnboardingView: View {
     }
     .frame(minWidth: 600, idealWidth: 720, minHeight: 440, idealHeight: 560)
     .background(.regularMaterial)
-    .onAppear { shareDiagnostics = diagnostics.preferences.automaticEnabled }
+    .onAppear {
+      shareDiagnostics = diagnostics.preferences.automaticEnabled
+      weeklyCompatibility = diagnostics.preferences.weeklyCompatibilityEnabled
+    }
     .sheet(isPresented: $showingPreview) {
       if let previewPayload {
         DiagnosticsPayloadView(
-          title: "Beta diagnostics preview",
-          explanation: "This local preview shows the exact automatic diagnostics body. It is not sent from this screen.",
+          title: previewPayload.reportType.isCompatibility
+            ? "Weekly compatibility report preview" : "Beta diagnostics preview",
+          explanation: previewPayload.reportType.isCompatibility
+            ? "This local preview shows exactly what a weekly compatibility report from this Mac contains. It is not sent from this screen."
+            : "This local preview shows the exact automatic diagnostics body. It is not sent from this screen.",
           payload: previewPayload)
       }
     }
   }
 
-  private var footerNote: String {
-    switch flow.page {
-    case .helper: "You can set up fan control later in Settings → Cooling."
-    case .diagnostics: "You can change this later in Settings → Privacy & Diagnostics."
-    default: "That's everything. Thanks for trying Helios."
-    }
-  }
-
   private var goalsPage: some View {
-    VStack(spacing: 0) {
-      VStack(spacing: 8) {
-        HeliosApplicationIcon(size: 54)
-        Text("Welcome to Helios").font(.system(size: 26, weight: .semibold))
-        Text("Helios sets itself up for this Mac. You can change anything later.")
-          .font(.system(size: 13))
-          .foregroundStyle(.secondary)
-          .multilineTextAlignment(.center)
-          .frame(maxWidth: 520)
-      }
-      .padding(.top, 28)
-      .padding(.bottom, 20)
-
-      VStack(alignment: .leading, spacing: 10) {
-        Text("Recommended for this Mac").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
-        VStack(alignment: .leading, spacing: 0) {
-          recommendationRow(
-            "Menu bar", plan.menuBarMetrics.isEmpty
-              ? "Just the Helios icon" : plan.menuBarMetrics.map(\.shortLabel).joined(separator: " · "))
-          Divider()
-          recommendationRow(
-            "Fan control", wantsFanHelper
-              ? "Optional setup comes next" : (traits.hasFans == false ? "This Mac has no fan" : "Off"))
+    VStack(spacing: 18) {
+      HStack(spacing: 14) {
+        HeliosApplicationIcon(size: 44)
+        VStack(alignment: .leading, spacing: 2) {
+          Text("Welcome to Helios").font(.system(size: 24, weight: .semibold))
+          Text("What should it do for you?").font(.system(size: 13)).foregroundStyle(.secondary)
         }
-        .padding(.horizontal, 14)
-        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-
-        DisclosureGroup("Customize…", isExpanded: $showsCustomize) {
-          HeliosGoalPicker(
-            selection: Binding(get: { goals }, set: { goals = $0; customized = true }),
-            available: HeliosGoal.available(on: traits))
-            .padding(.top, 10)
-        }
-        .font(.system(size: 13))
+        Spacer(minLength: 0)
       }
-      .frame(maxWidth: 520)
-      .padding(.horizontal, 24)
-      .padding(.bottom, 20)
+      HeliosGoalPicker(
+        selection: Binding(get: { goals }, set: { goals = $0; customized = true }),
+        available: HeliosGoal.available(on: traits), compact: true)
     }
+    .frame(maxWidth: 640)
+    .padding(24)
     .onChange(of: traitsObserver.traits) { updated in
       guard !customized else { return }
       goals = HeliosGoalPlan.recommendedGoals(for: updated)
     }
   }
 
-  private func recommendationRow(_ title: String, _ value: String) -> some View {
-    HStack {
-      Text(title)
-      Spacer(minLength: 12)
-      Text(value).foregroundStyle(.secondary).multilineTextAlignment(.trailing)
+  private func pageHeader(_ title: String, _ text: String, symbol: String? = nil) -> some View {
+    VStack(spacing: 12) {
+      if let symbol {
+        Image(systemName: symbol).font(.system(size: 38)).foregroundStyle(.secondary)
+      } else {
+        HeliosApplicationIcon(size: 48)
+      }
+      Text(title).font(.system(size: 24, weight: .semibold))
+      Text(text)
+        .font(.system(size: 13))
+        .foregroundStyle(.secondary)
+        .multilineTextAlignment(.center)
+        .frame(maxWidth: 470)
+        .fixedSize(horizontal: false, vertical: true)
     }
-    .font(.system(size: 13))
-    .padding(.vertical, 10)
-    .accessibilityElement(children: .combine)
   }
 
   private var helperPage: some View {
     VStack(spacing: 18) {
-      Image(systemName: "fan").font(.system(size: 40)).foregroundStyle(.secondary)
-      Text("Set up fan control").font(.system(size: 26, weight: .semibold))
-      Text("Reading temperatures and fan speed works right away. Controlling the fans needs a small signed helper, and macOS will ask you to approve it.")
-        .font(.system(size: 13))
-        .foregroundStyle(.secondary)
-        .multilineTextAlignment(.center)
-        .frame(maxWidth: 480)
+      pageHeader(
+        "Fan control",
+        "Helios needs a small helper to control the fans. macOS asks you to allow it once.",
+        symbol: "fan")
       if let service {
         HeliosHelperSetupRow(service: service)
       } else {
         Button("Install Helper") {}.disabled(true)
       }
-      Text("Skip it and nothing is installed. macOS manages the fans by default, which is the safest choice.")
+      Text("Optional. Skip it and macOS keeps managing the fans.")
         .font(.subheadline).foregroundStyle(.tertiary)
-        .multilineTextAlignment(.center)
-        .frame(maxWidth: 440)
     }
     .padding(28)
   }
 
   private var diagnosticsPage: some View {
-    VStack(spacing: 20) {
-      HeliosApplicationIcon(size: 54)
-      Text("Help Helios work on more Macs").font(.system(size: 26, weight: .semibold))
-      Text("Helios is new, and every Mac model behaves a little differently. If you share anonymous technical diagnostics, I can fix problems on Macs I do not own. Nothing is sent unless you turn this on, and you can see exactly what would be sent first.")
-        .font(.system(size: 13))
-        .foregroundStyle(.secondary)
-        .multilineTextAlignment(.center)
-        .frame(maxWidth: 520)
-
-      VStack(alignment: .leading, spacing: 12) {
-        Toggle("Share anonymous diagnostics", isOn: $shareDiagnostics)
-          .toggleStyle(.checkbox)
-          .font(.system(size: 13, weight: .medium))
-        Button("See exactly what is shared", action: showAutomaticPreview)
-          .buttonStyle(.link)
+    VStack(spacing: 18) {
+      pageHeader(
+        "Help me test Helios",
+        "I am a student building Helios on my own, with just one Mac to test on. Anonymous reports from your Mac show me what to fix on the Macs I do not have.")
+      VStack(alignment: .leading, spacing: 14) {
+        diagnosticsChoice(
+          isOn: $shareDiagnostics, title: "Daily health report",
+          detail: "Which parts of Helios work on this Mac.",
+          previewTitle: "Preview", preview: showAutomaticPreview)
+        diagnosticsChoice(
+          isOn: $weeklyCompatibility, title: "Weekly compatibility report",
+          detail: "Which sensors and fans this Mac has.",
+          previewTitle: preparingCompatibilityPreview ? "Reading…" : "Preview",
+          preview: showCompatibilityPreview)
         if let previewError {
           Text(previewError).font(.subheadline).foregroundStyle(.secondary)
         }
@@ -299,22 +276,33 @@ struct HeliosOnboardingView: View {
       .padding(18)
       .frame(width: 440, alignment: .leading)
       .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 13))
-
-      Text("Off by default. It does not change any Helios feature.")
+      Text("Anonymous: no names, files or apps. Change it any time in Settings.")
         .font(.subheadline).foregroundStyle(.tertiary)
     }
     .padding(24)
   }
 
+  private func diagnosticsChoice(
+    isOn: Binding<Bool>, title: String, detail: String, previewTitle: String,
+    preview: @escaping () -> Void
+  ) -> some View {
+    HStack(alignment: .firstTextBaseline) {
+      VStack(alignment: .leading, spacing: 2) {
+        Toggle(title, isOn: isOn)
+          .toggleStyle(.checkbox)
+          .font(.system(size: 13, weight: .medium))
+        Text(detail).font(.system(size: 12)).foregroundStyle(.secondary).padding(.leading, 20)
+      }
+      Spacer(minLength: 8)
+      Button(previewTitle, action: preview).buttonStyle(.link).font(.system(size: 12))
+    }
+  }
+
   private var supportPage: some View {
-    VStack(spacing: 20) {
-      HeliosApplicationIcon(size: 54)
-      Text("Support Helios").font(.system(size: 26, weight: .semibold))
-      Text("Helios is free and built by one person alongside university studies. If it is useful to you, a coffee helps pay for test hardware and keeps development going.")
-        .font(.system(size: 13))
-        .foregroundStyle(.secondary)
-        .multilineTextAlignment(.center)
-        .frame(maxWidth: 520)
+    VStack(spacing: 18) {
+      pageHeader(
+        "Thank you for trying Helios",
+        "Helios is free, and I make it in my spare time next to university. If it makes your Mac a little better, a coffee would honestly make my day, and it helps pay for the Macs I cannot test on yet.")
       Button {
         guard let url = URL(string: "https://buymeacoffee.com/snejda") else { return }
         NSWorkspace.shared.open(url)
@@ -324,7 +312,7 @@ struct HeliosOnboardingView: View {
       }
       .buttonStyle(.borderedProminent)
       .controlSize(.large)
-      Text("Optional. Helios stays fully usable without it.")
+      Text("Completely optional. Helios stays free either way.")
         .font(.subheadline).foregroundStyle(.tertiary)
     }
     .padding(28)
@@ -332,10 +320,27 @@ struct HeliosOnboardingView: View {
 
   private func continueAction() {
     guard flow.advance(
-      diagnostics: diagnostics, shareDiagnostics: shareDiagnostics, wantsFanHelper: wantsFanHelper)
+      diagnostics: diagnostics, shareDiagnostics: shareDiagnostics, wantsFanHelper: wantsFanHelper,
+      weeklyCompatibility: weeklyCompatibility)
     else { return }
     preferences.completeOnboarding(goals: goals, traits: traits)
     onFinish()
+  }
+
+  private func showCompatibilityPreview() {
+    guard !preparingCompatibilityPreview else { return }
+    preparingCompatibilityPreview = true
+    Task {
+      defer { preparingCompatibilityPreview = false }
+      do {
+        previewPayload = try await diagnostics.makeCompatibilityPayload(
+          type: .automaticCompatibility, reason: .initialOptIn)
+        previewError = nil
+        showingPreview = true
+      } catch {
+        previewError = "A compatibility preview is not available right now. Nothing was sent."
+      }
+    }
   }
 
   private func showAutomaticPreview() {

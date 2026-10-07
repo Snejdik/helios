@@ -363,17 +363,19 @@ struct PreferencesProbe {
     let coolPlan = HeliosGoalPlan.make(for: [.cooling])
     precondition(coolPlan.wantsFanHelper && coolPlan.samplers.contains(.fans))
     precondition(coolPlan.menuBarMetrics == [.temperature] && coolPlan.popoverSections.contains(.cooling))
-    // The welcome's recommendation is the owner's bar: CPU, RAM, TEMP, PWR (+ cooling when a fan exists).
+    // The welcome's recommendation is the owner's bar: CPU, RAM, TEMP, PWR. Cooling, and with it the
+    // fan helper, is only ever the person's own choice (owner decision, 0.2.1).
     let withFan = HeliosMacTraits(hasFans: true, hasBattery: true)
     let fanless = HeliosMacTraits(hasFans: false, hasBattery: true)
     let desktop = HeliosMacTraits(hasFans: true, hasBattery: false)
-    precondition(HeliosGoalPlan.recommendedGoals(for: withFan) == [.liveStats, .cooling])
+    precondition(HeliosGoalPlan.recommendedGoals(for: withFan) == [.liveStats])
     precondition(HeliosGoalPlan.recommendedGoals(for: fanless) == [.liveStats])
     precondition(HeliosGoalPlan.recommendedGoals(for: .unknown) == [.liveStats])
     let recommended = HeliosGoalPlan.make(for: HeliosGoalPlan.recommendedGoals(for: withFan), traits: withFan)
     // With a fan the temperature item carries the fan state above it; without one it is plain TEMP.
+    // The fan state still shows and is sampled, without the helper step.
     precondition(recommended.menuBarMetrics == [.cpu, .memory, .cooling, .power])
-    precondition(recommended.wantsFanHelper)
+    precondition(!recommended.wantsFanHelper && recommended.samplers.contains(.fans))
     precondition(HeliosGoalPlan.make(for: [.liveStats], traits: fanless).menuBarMetrics == [.cpu, .memory, .temperature, .power])
     precondition(HeliosGoalPlan.make(for: [.liveStats], traits: .unknown).menuBarMetrics == [.cpu, .memory, .temperature, .power])
     // A Mac without a fan never gets the cooling goal or the helper step; a desktop never gets battery.

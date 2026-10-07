@@ -135,9 +135,10 @@ struct HeliosGoalPlan: Equatable, Sendable {
   static let baseSamplers: Set<HeliosTelemetryModule> = [.cpu, .memory, .battery, .storage]
   static let maximumMenuBarMetrics = 5
 
-  /// What Helios suggests on this Mac: live stats, plus cooling where there is a fan.
+  /// What Helios suggests on this Mac: live stats. Cooling (and with it the fan helper)
+  /// is experimental, so it is only ever the person's own choice.
   static func recommendedGoals(for traits: HeliosMacTraits) -> Set<HeliosGoal> {
-    traits.hasFans == true ? [.liveStats, .cooling] : [.liveStats]
+    [.liveStats]
   }
 
   /// No goal selected behaves like "Just tell me if my Mac is OK". Goals that this
@@ -145,10 +146,13 @@ struct HeliosGoalPlan: Equatable, Sendable {
   static func make(for goals: Set<HeliosGoal>, traits: HeliosMacTraits = .unknown) -> HeliosGoalPlan {
     let usable = goals.filter { $0.isAvailable(on: traits) }
     let effective: Set<HeliosGoal> = usable.isEmpty ? [.simple] : usable
-    let samplers = effective.reduce(into: baseSamplers) { $0.formUnion($1.samplers) }
+    var samplers = effective.reduce(into: baseSamplers) { $0.formUnion($1.samplers) }
     var metrics = effective.reduce(into: Set<HeliosMenuBarMetric>()) { $0.formUnion($1.menuBarMetrics) }
     // On a Mac with a fan the temperature item carries the fan state above it.
-    if traits.hasFans == true, metrics.remove(.temperature) != nil { metrics.insert(.cooling) }
+    if traits.hasFans == true, metrics.remove(.temperature) != nil {
+      metrics.insert(.cooling)
+      samplers.insert(.fans)
+    }
     let sections = effective.reduce(into: Set<HeliosPopoverSection>()) { $0.formUnion($1.popoverSections) }
     var pages = effective.reduce(into: Set<HeliosPage>()) { $0.formUnion($1.pages) }
     pages.formUnion([.overview, .activity, .diagnostics, .cpu, .gpu, .memory, .thermals, .battery, .storage])

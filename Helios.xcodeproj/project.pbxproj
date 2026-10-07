@@ -138,6 +138,8 @@
 		0000000000000000000FC004 /* HeliosModuleDetail.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000FB004 /* HeliosModuleDetail.swift */; };
 		0000000000000000000FC005 /* HeliosSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000FB005 /* HeliosSettings.swift */; };
 		0000000000000000000FC006 /* HeliosOnboarding.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000FB006 /* HeliosOnboarding.swift */; };
+		0000000000000000000FC00E /* HeliosWhatsNew.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000FB00E /* HeliosWhatsNew.swift */; };
+		0000000000000000000FC00D /* HeliosUninstaller.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000FB00D /* HeliosUninstaller.swift */; };
 		0000000000000000000FC007 /* HeliosWindowChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0000000000000000000FB007 /* HeliosWindowChrome.swift */; };
 		000000000000000000000713 /* HeliosBrand.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000703 /* HeliosBrand.swift */; };
 		000000000000000000000714 /* HeliosGraphKit.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000704 /* HeliosGraphKit.swift */; };
@@ -317,6 +319,8 @@
 		0000000000000000000FB004 /* HeliosModuleDetail.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeliosModuleDetail.swift; sourceTree = "<group>"; };
 		0000000000000000000FB005 /* HeliosSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeliosSettings.swift; sourceTree = "<group>"; };
 		0000000000000000000FB006 /* HeliosOnboarding.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeliosOnboarding.swift; sourceTree = "<group>"; };
+		0000000000000000000FB00E /* HeliosWhatsNew.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeliosWhatsNew.swift; sourceTree = "<group>"; };
+		0000000000000000000FB00D /* HeliosUninstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeliosUninstaller.swift; sourceTree = "<group>"; };
 		0000000000000000000FB007 /* HeliosWindowChrome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeliosWindowChrome.swift; sourceTree = "<group>"; };
 		000000000000000000000703 /* HeliosBrand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeliosBrand.swift; sourceTree = "<group>"; };
 		000000000000000000000704 /* HeliosGraphKit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeliosGraphKit.swift; sourceTree = "<group>"; };
@@ -373,6 +377,8 @@
 				0000000000000000000FB004 /* HeliosModuleDetail.swift */,
 				0000000000000000000FB005 /* HeliosSettings.swift */,
 				0000000000000000000FB006 /* HeliosOnboarding.swift */,
+				0000000000000000000FB00E /* HeliosWhatsNew.swift */,
+				0000000000000000000FB00D /* HeliosUninstaller.swift */,
 				0000000000000000000FB007 /* HeliosWindowChrome.swift */,
 			);
 			path = Windows;
@@ -743,6 +749,8 @@
 				0000000000000000000FC004 /* HeliosModuleDetail.swift in Sources */,
 				0000000000000000000FC005 /* HeliosSettings.swift in Sources */,
 				0000000000000000000FC006 /* HeliosOnboarding.swift in Sources */,
+				0000000000000000000FC00E /* HeliosWhatsNew.swift in Sources */,
+				0000000000000000000FC00D /* HeliosUninstaller.swift in Sources */,
 				0000000000000000000FC007 /* HeliosWindowChrome.swift in Sources */,
 				000000000000000000000713 /* HeliosBrand.swift in Sources */,
 				000000000000000000000714 /* HeliosGraphKit.swift in Sources */,

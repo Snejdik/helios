@@ -78,14 +78,19 @@ struct HeliosGoalPicker: View {
   /// Goals this Mac can serve; the welcome hides cooling on a fanless Mac and
   /// battery on a desktop.
   var available: [HeliosGoal] = HeliosGoal.allCases
+  /// Tighter cards for the fixed-size welcome window.
+  var compact = false
 
   var body: some View {
-    LazyVGrid(
-      columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)],
-      spacing: 10
-    ) {
-      ForEach(available.filter { $0 != .simple }) { card($0) }
-      card(.simple).gridCellColumns(2)
+    VStack(spacing: 10) {
+      LazyVGrid(
+        columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)],
+        spacing: 10
+      ) {
+        ForEach(available.filter { $0 != .simple }) { card($0) }
+      }
+      // Exclusive choice, so it sits apart and spans the full width.
+      card(.simple).fixedSize(horizontal: false, vertical: true)
     }
   }
 
@@ -110,14 +115,18 @@ struct HeliosGoalPicker: View {
           .foregroundStyle(selected ? Color.accentColor : Color.secondary)
         VStack(alignment: .leading, spacing: 2) {
           Text(goal.title).font(.system(size: 13, weight: .semibold))
+            .fixedSize(horizontal: false, vertical: true)
           Text(goal.detail).font(.system(size: 11)).foregroundStyle(.secondary)
+            .lineLimit(compact ? 2 : nil)
+            .fixedSize(horizontal: false, vertical: true)
         }
         Spacer(minLength: 4)
         Image(systemName: selected ? "checkmark.circle.fill" : "circle")
           .foregroundStyle(selected ? Color.accentColor : Color.secondary.opacity(0.6))
       }
-      .padding(12)
-      .frame(maxWidth: .infinity, alignment: .leading)
+      .padding(.horizontal, 12)
+      .padding(.vertical, compact ? 9 : 12)
+      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
       .background(
         selected ? Color.accentColor.opacity(0.10) : Color.primary.opacity(0.035),
         in: RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -224,9 +233,9 @@ struct HeliosRestoreAutoToggle: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 4) {
-      Toggle("Restore Auto when Helios starts", isOn: $model.restoresAutoOnStart)
+      Toggle("Keep Auto after sleep and restart", isOn: $model.restoresAutoOnStart)
         .disabled(!isEnabled)
-      Text("If Auto was your last choice, Helios arms it again after launch and after the helper reconnects, for example following sleep. Your curve and Response setting are kept either way. Manual and Boost are never restored.")
+      Text("Before sleep and when Helios quits, the fans always go back to macOS. With this on, Helios turns Auto on again after wake, after launch and when the helper reconnects, if Auto was your last choice. Manual and Boost are never restored.")
         .font(.subheadline).foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
     }

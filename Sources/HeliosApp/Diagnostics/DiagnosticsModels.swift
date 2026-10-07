@@ -4,6 +4,10 @@ enum DiagnosticsReportType: String, Codable, Sendable, CaseIterable {
   case automaticHealth = "automatic_health"
   case manualHealth = "manual_health"
   case manualCompatibility = "manual_compatibility"
+  /// The same compatibility evidence, sent once a week after a separate opt-in.
+  case automaticCompatibility = "automatic_compatibility"
+
+  var isCompatibility: Bool { self == .manualCompatibility || self == .automaticCompatibility }
 }
 
 enum DiagnosticsReportReason: String, Codable, Sendable, CaseIterable {
@@ -13,6 +17,7 @@ enum DiagnosticsReportReason: String, Codable, Sendable, CaseIterable {
   case macOSBuildChanged = "macos_build_changed"
   case userInitiated = "user_initiated"
   case userInitiatedCompatibility = "user_initiated_compatibility"
+  case weekly
 }
 
 enum DiagnosticsCapabilityState: String, Codable, Sendable, CaseIterable {
@@ -533,7 +538,7 @@ enum DiagnosticsPayloadValidator {
       "schema_version", "report_type", "generated_at", "report_reason", "helios", "system",
       "capabilities", "providers", "helper", "runtime", "stability",
     ]
-    let compatibility = type == .manualCompatibility
+    let compatibility = type.isCompatibility
     try closed(
       root, required: common + (compatibility ? ["raw_hardware", "helios_classification"] : []),
       optional: compatibility ? [] : ["fan_layer"], at: "$")
@@ -548,6 +553,7 @@ enum DiagnosticsPayloadValidator {
       validReason = [.initialOptIn, .daily, .heliosVersionChanged, .macOSBuildChanged].contains(reason)
     case .manualHealth: validReason = reason == .userInitiated
     case .manualCompatibility: validReason = reason == .userInitiatedCompatibility
+    case .automaticCompatibility: validReason = [.initialOptIn, .weekly].contains(reason)
     }
     guard validReason, let timestamp = root["generated_at"] as? String,
       timestamp.range(
