@@ -1,6 +1,6 @@
 # Install Helios — guide for first-time testers
 
-You do not need Terminal or Xcode to install Helios. **Helios 0.2.0 Beta 1** is
+You do not need Terminal or Xcode to install Helios. **Helios 0.2.1 Beta 1** is
 available from GitHub Releases as a DMG and a ZIP. It is **not notarized**: the
 project has no paid Apple Developer ID yet, so macOS asks you to confirm the first
 launch (see [step 4](#4-first-launch-and-gatekeeper)). Basic monitoring needs nothing
@@ -16,7 +16,7 @@ version or Mac model has been tested. Most testing is on a MacBook Pro with an M
 ## 2. Download the app
 
 Use the current test build from [GitHub Releases](https://github.com/Snejdik/helios/releases).
-The recommended package is the DMG (`Helios-0.2.0-beta.1.dmg`). GitHub's **Code → Download ZIP**
+The recommended package is the DMG (`Helios-0.2.1-beta.1.dmg`). GitHub's **Code → Download ZIP**
 contains developer source files, not an app you can double-click. If a release
 asset or checksum looks inconsistent, stop and contact
 [helios@snejda.cz](mailto:helios@snejda.cz).
@@ -51,7 +51,7 @@ run the app from inside a mounted disk image.
 macOS may ask whether you want to open an app downloaded from the Internet.
 Confirm only if this is the build you obtained from the maintainer.
 
-Beta 1 is signed for development but **not notarized**, so macOS Gatekeeper cannot
+The beta is signed for development but **not notarized**, so macOS Gatekeeper cannot
 verify it and may block the first launch with a message such as "Helios can't be
 opened" or "Apple could not verify…". That is expected for this build. The exact
 wording varies by macOS version.
@@ -100,6 +100,7 @@ running. Use Helios's **Quit Helios** command to stop the app.
 | Notifications | Optional health alerts request notification permission after a user action. You can decline. |
 | Launch at Login | Optional in Settings → General. It starts the app at login; it is separate from helper boot registration. |
 | Share beta diagnostics | An in-app opt-in, off by default. Manual reports have a preview and separate Send confirmation. |
+| Weekly compatibility report | A separate opt-in, off by default: once a week Helios sends which sensors and fans the Mac has and what they read. Preview first in the welcome or Settings › Privacy & Diagnostics. |
 | Privileged helper | Needed only for fan control, not ordinary monitoring. Installing or approving it does not make a Mac fan-controllable. |
 | Experimental fan control | Off by default. Turn it on in Settings → Cooling for your exact Mac model and macOS version; a macOS update asks again. |
 
@@ -164,26 +165,42 @@ repository access you do not have, use the support email instead.
 
 ## Remove Helios cleanly
 
-Use the built-in preparation before dragging the app to Trash. Simply dragging Helios.app to Trash does **not** unregister its helper. Merely
-quitting Helios does not unregister a helper configured to start at boot.
+Use the built-in uninstall. Simply dragging Helios.app to Trash does **not** unregister
+its helper, and merely quitting Helios does not unregister a helper configured to start
+at boot.
 
-1. Open **Settings → Advanced → Removal**.
-2. To keep your layout and monitoring history for a reinstall, leave **Erase local
+1. Open **Settings → Advanced → Uninstall Helios**.
+2. To keep your layout and monitoring history for a later reinstall, leave **Erase local
    Helios settings and monitoring history** off. For a fresh start, turn it on;
    this removes the local preferences and `~/Library/Application Support/Helios`
    history and cannot be undone within Helios. Export anything you want first.
-3. Click **Prepare Helios for Removal…**, read the confirmation and click **Prepare**.
-   Helios requests System cooling, disables Launch at Login and unregisters its helper.
-4. If removal reports an error, keep the app installed and resolve it with support.
+3. Click **Uninstall Helios…**, read the confirmation and click **Uninstall**. In this
+   order, Helios returns the fans to macOS, turns off Launch at Login, unregisters its
+   helper, erases its data if you chose that, moves **Helios.app** to the Trash and quits.
+   Finder may ask for an administrator password to move it out of Applications.
+4. If Launch at Login or the helper cannot be removed, Helios stops before erasing or
+   moving anything and tells you why. Keep the app installed and resolve it with support.
    Do not manually remove daemon files or force the helper to stop.
-5. With data retention selected, wait for the prepared-for-removal message, then
-   quit Helios. With erasure selected, Helios quits automatically after preparation.
-6. Move **Applications → Helios.app** to Trash. Helios never deletes its own app bundle.
+5. If Helios cannot move itself to the Trash (for example when it runs from the disk
+   image, from a temporary location macOS chose, or Finder refuses), the helper is
+   already gone: Helios shows where the app is, and you move **Helios.app** to the Trash yourself.
 
 The erasure flow removes app-managed preferences/history; it does not erase
 exports you saved elsewhere, macOS logs, backups or reports already submitted.
 It is not a secure-wipe guarantee. If Helios will not open, request help before
 removing the app so the helper can be unregistered through the supported flow.
+
+## Updating from 0.2.0 Beta 1
+
+1. Quit Helios, replace **Helios.app** in Applications with the new one and open it.
+   Settings, history and your fan-control consent are kept.
+2. A short **What's New** window appears once. It lets you pick °C or °F and shows
+   whether the fan helper is connected.
+3. If you use fan control, click **Reinstall Helper** in that window (or **Reinstall** in
+   **Settings → Cooling**) and approve it in System Settings if macOS asks. Every new app
+   version changes the helper's signature, so the old helper does not answer it.
+
+Until the helper is connected again, macOS manages the fans and monitoring is unaffected.
 
 ## Updating from an earlier build (0.1 → 0.2)
 
@@ -201,7 +218,7 @@ Until the helper is reinstalled, macOS manages the fans and nothing else is affe
 
 ## Reinstall or replace a test build
 
-Prepare removal as above. Keep the erasure option off to preserve settings, or
-turn it on for a clean reinstall. Quit, move the old app to Trash, copy the new
-app to Applications, and open it. Revisit helper approval if you need it (it may ask for **Reinstall** in Settings → Cooling after an update). Do not
+For an ordinary update, just replace the app (see above). For a clean reinstall, use
+**Uninstall Helios** as above, with the erasure option on for a fresh start or off to keep
+your settings, then copy the new app to Applications and open it. Revisit helper approval if you need it (it may ask for **Reinstall** in Settings → Cooling after an update). Do not
 run the old and new copies together. Helios only tells you when a new release exists; it never installs updates by itself.

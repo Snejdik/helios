@@ -1,7 +1,7 @@
 # Helios roadmap
 
-Helios 0.2.0 **Beta 1** is the first external beta. Near-term work favours testing,
-compatibility and distribution over large rewrites.
+Helios 0.2.1 **Beta 1** follows the first external beta (0.2.0 Beta 1). Near-term work
+favours testing, compatibility and distribution over large rewrites.
 
 ## Done
 
@@ -16,10 +16,14 @@ compatibility and distribution over large rewrites.
 - [x] Full regression, presentation and fixture-render gates
 - [x] PolyForm Noncommercial 1.0.0 license
 - [x] DMG and ZIP packaging for beta testing; GitHub Releases update check with manual download
+- [x] Read-only CPU/GPU temperature display maps for M1, M2, M3, M5 and M6 (0.2.1; catalogue-derived, fan control unchanged)
+- [x] Compatibility reports no longer count unsupported sensor formats as errors (0.2.1)
+- [x] One-click uninstall that moves the app to the Trash, and a What's New window after updates (0.2.1)
 
-## Beta 1 → next
+## Next
 
 - [ ] Smoke tests on more Macs (M1, M2, M3, M5; fanless MacBook Air; dual-fan; desktop)
+- [ ] Confirm the 0.2.1 display maps against testers' compatibility reports and correct them
 - [ ] Older supported macOS versions
 - [ ] Trusted thermal maps beyond the M4 family, so fan control can reach more Macs
 - [ ] Remaining physical fan tests (sleep and lid close while holding, reboot with ownership, macOS reclaiming the fans)

@@ -202,5 +202,23 @@ struct UpdateChecks {
     let unknown = HeliosUpdateChecker(current: nil, defaults: defaults, fetch: { fatalError("Missing identity reached fetch") })
     require(await unknown.check(manual: true) == .unavailable, "Missing identity not guessed from build")
     print("PASS SemVer/channel filtering, frequency migration, due-date/failure/rate-limit policy and updater cancellation")
+
+    // The checked-in identity must be self-consistent, or About and update checks
+    // fall back to "unavailable" in the shipped build.
+    let xcconfig = try String(contentsOfFile: "Config/Base.xcconfig", encoding: .utf8)
+    func setting(_ name: String) -> String? {
+      xcconfig.split(separator: "\n").first { $0.hasPrefix("\(name) = ") }
+        .map { String($0.dropFirst(name.count + 3)).trimmingCharacters(in: .whitespaces) }
+    }
+    let info = NSDictionary(contentsOfFile: "Resources/HeliosApp-Info.plist")
+    guard let marketing = setting("MARKETING_VERSION"), let build = setting("CURRENT_PROJECT_VERSION"),
+      let tag = info?["HeliosReleaseTag"] as? String, let release = HeliosReleaseVersion(tag: tag)
+    else { fatalError("Repository version identity is missing or malformed") }
+    require(release.base == marketing, "HeliosReleaseTag \(tag) does not match MARKETING_VERSION \(marketing)")
+    require(Int(build).map { $0 > 4 } == true, "Build number must move past Beta 1 (4)")
+    let beta1 = HeliosReleaseVersion(tag: "v0.2.0-beta.1")!
+    require(release > beta1 && beta1.isPrerelease,
+      "Beta 1 (a prerelease build that also sees prereleases) must offer \(tag) as an update")
+    print("PASS repository identity \(tag) / \(marketing) (\(build)) is consistent and newer than Beta 1")
   }
 }

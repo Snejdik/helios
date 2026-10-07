@@ -9,12 +9,12 @@
 Native menu-bar monitoring for Apple Silicon: system activity, temperatures,
 battery and energy history, with carefully gated fan controls.
 
-**[⬇ Download Helios 0.2.0 Beta 1](https://github.com/Snejdik/helios/releases/tag/v0.2.0-beta.1)**
+**[⬇ Download Helios 0.2.1 Beta 1](https://github.com/Snejdik/helios/releases/tag/v0.2.1-beta.1)**
 
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-111111?logo=apple&logoColor=white)
 ![Apple Silicon / arm64](https://img.shields.io/badge/Apple%20Silicon-arm64-111111)
 ![Swift 6](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)
-![Beta 1](https://img.shields.io/badge/status-beta%201-orange)
+![Beta](https://img.shields.io/badge/status-beta-orange)
 [![PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue)](LICENSE)
 
 [Installation guide](docs/INSTALLATION.md) · [How it works](docs/HOW_IT_WORKS.md) ·
@@ -39,7 +39,7 @@ in the way.
   <a href="docs/images/menu-bar-dark.png"><img src="docs/images/menu-bar-dark.png" alt="Helios menu-bar items: CPU, RAM, fan state over average and hottest temperature, power, and the Helios sun" width="420"></a>
 </p>
 
-> **Beta 1 is an external test build.** It is not notarized, and not every
+> **Helios is in beta: this is an external test build.** It is not notarized, and not every
 > Apple Silicon Mac has been tested. Monitoring adapts to what your Mac exposes.
 > **Fan control is experimental, off until you turn it on, and System (macOS) is
 > always the recommended mode.**
@@ -51,7 +51,7 @@ in the way.
 | **Overview & Why?** | One honest answer for your Mac, four health areas and an explanation behind every status. |
 | **Menu bar** | Live items you choose (CPU, memory, temperature, power, cooling…) and a compact popover. |
 | **CPU, memory, GPU** | Per-core activity, memory pressure and breakdown, swap, GPU load where available. |
-| **Thermals & cooling** | Average and hottest temperature, fan speed, and optional fan control: Boost, Manual or your own Automatic curve. |
+| **Thermals & cooling** | Average and hottest temperature, fan speed, and optional fan control: Boost, Manual or your own Automatic curve. CPU and GPU temperatures on every Apple Silicon generation from M1 to M6. |
 | **Battery & Energy** | Health, cycles and power flow, plus which apps use the most energy, compared with the period before. |
 | **Activity & History** | A timeline of health events, power changes and peaks, with history charts. |
 | **Storage & network** | Free space, SSD health where exposed, throughput and Wi-Fi details. |
@@ -149,23 +149,23 @@ Helios never cools *less* than macOS. It adds cooling on top, within a speed lim
 you set, and macOS stays in charge otherwise.
 [Read the full explanation →](docs/HOW_IT_WORKS.md)
 
-## Install Beta 1
+## Install the beta
 
-1. Download **Helios-0.2.0-beta.1.dmg** from
-   [GitHub Releases](https://github.com/Snejdik/helios/releases/tag/v0.2.0-beta.1).
+1. Download **Helios-0.2.1-beta.1.dmg** from
+   [GitHub Releases](https://github.com/Snejdik/helios/releases/tag/v0.2.1-beta.1).
 2. Open it and drag **Helios** to Applications. If you got a ZIP, unzip it first.
 3. Open Helios from Applications and look for it in the menu bar.
 
 The build is **not notarized** (Helios has no paid Apple Developer ID yet), so macOS
 may block the first launch. Open **System Settings → Privacy & Security → Open
 Anyway**. The [installation guide](docs/INSTALLATION.md) walks through it, the
-optional helper approval, troubleshooting and clean removal.
+optional helper approval, troubleshooting and removal (**Settings → Advanced → Uninstall Helios**).
 
-**Updating from 0.1 (Pre-beta)?** Quit Helios, replace the app in Applications with the new
-one and open it. If you use fan control, Helios shows **Reinstall Required** for the helper
-until you open **Settings → Cooling** and click **Reinstall** (macOS asks you to approve it).
-Until then macOS manages the fans and monitoring works as usual. Experimental fan control
-stays off until you turn it on in Settings → Cooling.
+**Updating?** Quit Helios, replace the app in Applications with the new one and open it.
+A short *What's New* window appears once. If you use fan control, click **Reinstall Helper**
+there (or in **Settings → Cooling**) and approve it; a new version changes the helper's
+signature. Until then macOS manages the fans and monitoring works as usual. Experimental fan
+control stays off until you turn it on in Settings → Cooling.
 
 GitHub's **Code → Download ZIP** is source code, not the app. To build it yourself,
 see the [developer guide](docs/BUILDING.md) or ask [support](mailto:helios@snejda.cz).
@@ -174,6 +174,8 @@ see the [developer guide](docs/BUILDING.md) or ask [support](mailto:helios@snejd
 
 - **Apple Silicon only, macOS 13 or later.**
 - Monitoring works on any supported Mac; unavailable sensors are simply marked.
+- CPU and GPU temperatures are verified on M4 Macs. On M1, M2, M3, M5 and M6 they come
+  from a public sensor catalogue and are shown, but never used for fan control.
 - Fan control is **experimental**. A read-only check classifies your Mac first, and
   you turn it on yourself, for your exact Mac model and macOS version.
 - Installing the helper does not by itself make a Mac fan-controllable.
@@ -191,7 +193,8 @@ nothing about your Mac.
 
 **Diagnostics are off by default.** If you opt in, reports contain only coarse
 categories, you can read exactly what is sent first, and manual reports need a
-separate Send. Fan-control statistics are another opt-in. Microphone access is
+separate Send. A weekly compatibility report (which sensors and fans the Mac has and
+what they read) and fan-control statistics are separate opt-ins. Microphone access is
 never requested.
 
 [Privacy information](https://www.snejda.cz/helios/privacy) ·
@@ -203,6 +206,10 @@ never requested.
 reproducible bug. Please include the Helios version (Settings → About), your Mac
 model, macOS version, what you did and what happened, and review screenshots for
 personal information first.
+
+Helios is tested mostly on one M4 MacBook Pro. If you have another Mac, turning on the
+weekly compatibility report (Settings → Privacy & Diagnostics) is the easiest way to help
+it work well there.
 
 For private or security-sensitive reports, write to
 [helios@snejda.cz](mailto:helios@snejda.cz).

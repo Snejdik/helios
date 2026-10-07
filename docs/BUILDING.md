@@ -128,8 +128,25 @@ its CPU and memory use (`--watch`). `scripts/watch-helios.sh` and
 The version is `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION` in
 `Config/Base.xcconfig`, and the release tag shown in About is `HeliosReleaseTag` in
 `Resources/HeliosApp-Info.plist`. The tag must be a `v`-prefixed SemVer whose core
-matches `MARKETING_VERSION` (for Beta 1, `v0.2.0-beta.1`). Update checks compare tags,
-not build numbers.
+matches `MARKETING_VERSION` (for 0.2.1 Beta 1, `v0.2.1-beta.1`). Update checks compare tags,
+not build numbers; `scripts/check-updates.sh` fails if the two disagree. A build whose tag
+has no prerelease part is a stable build and from then on only offers stable releases.
+
+## Packaging a release
+
+```sh
+./scripts/package-release.sh --build
+```
+
+builds a signed Release and writes `Helios-<tag>.dmg`, `Helios-<tag>.zip` and
+`SHA256SUMS.txt` to `.build/dist/<tag>/`. It refuses a bundle whose tag and version
+disagree, whose helper is from another version, that is not arm64-only or whose
+signature does not verify, and it checks the DMG, the ZIP and the checksums it wrote.
+The DMG window shows Helios, an arrow and Applications on a background drawn by
+`scripts/dmg-background.swift`; Finder lays it out, so the first run asks for permission to
+control Finder. Without that permission the DMG is plain but still works.
+It prints the GitHub release title (for example *Helios 0.2.1 Beta 1*; the website
+reads the version and channel from it). It never uploads or tags anything.
 
 ## Regression gate
 
