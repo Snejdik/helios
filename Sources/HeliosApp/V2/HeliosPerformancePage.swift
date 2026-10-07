@@ -186,7 +186,7 @@ struct HeliosGPUPage: View {
 
   @ViewBuilder
   private func temperatureAndPower(_ p: OverviewPresentation) -> some View {
-    let gpuTemperatures = (try? p.thermals.get())?.readings.filter { $0.group == .gpu }.map(\.celsius) ?? []
+    let gpuTemperatures = (try? p.thermals.get())?.readings.filter { $0.displayGroup == .gpu }.map(\.celsius) ?? []
     HeliosFactRow(
       label: "GPU temperature",
       value: gpuTemperatures.max().map { "\(TelemetryFormatting.temperature($0)) max" } ?? "—")

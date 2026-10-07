@@ -203,6 +203,7 @@ private struct TelemetryChecks {
       "PASS storage capacity/counters, throughput deltas, rollover rejection, and SMART capability classification"
     )
     try smcChecks()
+    try displayThermalChecks()
     try await numericCancellationChecks()
     print("PASS SMC discovery, ABI, decoding, isolation and recovery")
     try formattingChecks()
@@ -3027,6 +3028,105 @@ private struct TelemetryChecks {
       malformed.replyOverride = reply
       try expectTelemetryFailure { try SMCClient(transport: malformed).value("Tp01") }
     }
+  }
+
+  /// Read-only display maps for chips other than the M4 family (Helios 0.2.1). They show
+  /// temperatures; they must never reach control, which keeps using `group`.
+  private static func displayThermalChecks() throws {
+    for (brand, generation) in [
+      ("Apple M1", 1), ("Apple M1 Pro", 1), ("Apple M2 Max", 2), ("Apple M3 Ultra", 3),
+      ("Apple M4", 4), ("Apple M5 Pro", 5), ("Apple M6", 6),
+    ] {
+      try require(
+        ThermalClassifier.generation(ofCPUBrand: brand) == generation,
+        "\(brand) chip generation")
+    }
+    try require(
+      ThermalClassifier.generation(ofCPUBrand: "Apple M10") == 10
+        && ThermalClassifier(cpuBrand: "Apple M10").displayGroup(for: "Tp01") == .unclassified,
+      "Apple M10 must never be mistaken for M1")
+    for brand in ["Apple Mx", "Apple M", "Intel(R) Core(TM) i7", "", "Apple A18 Pro"] {
+      try require(
+        ThermalClassifier.generation(ofCPUBrand: brand) == nil, "'\(brand)' is not an M-series chip")
+    }
+
+    // The same key means different things per generation: Tp09 is an E-core on M1 and a P-core on M2.
+    let m1 = ThermalClassifier(cpuBrand: "Apple M1 Pro")
+    let m2 = ThermalClassifier(cpuBrand: "Apple M2")
+    let m3 = ThermalClassifier(cpuBrand: "Apple M3 Max")
+    let m5 = ThermalClassifier(cpuBrand: "Apple M5")
+    let m6 = ThermalClassifier(cpuBrand: "Apple M6")
+    try require(m1.displayGroup(for: "Tp09") == .efficiencyCPU, "M1 Tp09 is an efficiency core")
+    try require(m2.displayGroup(for: "Tp09") == .performanceCPU, "M2 Tp09 is a performance core")
+    try require(m1.displayGroup(for: "Tp01") == .performanceCPU, "M1 performance core")
+    try require(m1.displayGroup(for: "Tg05") == .gpu, "M1 GPU")
+    try require(m2.displayGroup(for: "Tp1h") == .efficiencyCPU, "M2 efficiency core")
+    try require(m2.displayGroup(for: "Tg0f") == .gpu, "M2 GPU")
+    try require(m3.displayGroup(for: "Tf04") == .performanceCPU, "M3 performance core")
+    try require(m3.displayGroup(for: "Te05") == .efficiencyCPU, "M3 efficiency core")
+    try require(m3.displayGroup(for: "Tf14") == .gpu, "M3 GPU")
+    try require(m5.displayGroup(for: "Tp00") == .performanceCPU, "M5 super core is shown with the performance cores")
+    try require(m5.displayGroup(for: "Tp0O") == .performanceCPU, "M5 performance core")
+    try require(m5.displayGroup(for: "Tg0U") == .gpu, "M5 GPU")
+    try require(m6.displayGroup(for: "Te07") == .efficiencyCPU, "M6 efficiency core")
+    try require(m6.displayGroup(for: "Tg1e") == .gpu, "M6 GPU")
+    try require(
+      [m1, m2, m3, m5, m6].allSatisfy { $0.displayGroup(for: "TpZZ") == .unclassified },
+      "An unknown key must never be identified from its prefix")
+    try require(
+      m1.displayGroup(for: "Tp1h") == .unclassified && m2.displayGroup(for: "Tp0T") == .unclassified,
+      "A key from another generation's map must stay unclassified")
+
+    // Control-trusted identity is untouched: only the validated M4 family has one.
+    let everyDisplayKey = ["Tp01", "Tp09", "Tp1h", "Tf04", "Te05", "Tg05", "Tg0f", "Tf14", "Tp00", "Tg0U", "Te07"]
+    try require(
+      [m1, m2, m3, m5, m6].allSatisfy { classifier in
+        everyDisplayKey.allSatisfy { classifier.group(for: $0) == .unclassified }
+      },
+      "A catalogue display map became a fan-control trusted identity")
+    let m4 = ThermalClassifier(cpuBrand: "Apple M4 Pro")
+    try require(
+      ["Tp01", "Te05", "Tg0G", "Tzzz"].allSatisfy { m4.displayGroup(for: $0) == m4.group(for: $0) },
+      "The M4 family display identity must equal its trusted identity")
+
+    // End to end on an M2: display keys are live, implausible ones are dropped,
+    // and none of it becomes trusted thermal health.
+    let fixtures = [
+      SensorFixture(key: "Tp01", type: "flt ", bytes: word(Float(45).bitPattern)),
+      SensorFixture(key: "Tp1h", type: "flt ", bytes: word(Float(38).bitPattern)),
+      SensorFixture(key: "Tg0f", type: "flt ", bytes: word(Float(50).bitPattern)),
+      SensorFixture(key: "Tp0b", type: "flt ", bytes: word(Float(6.7).bitPattern)),
+      SensorFixture(key: "Tzzz", type: "flt ", bytes: word(Float(90).bitPattern)),
+      SensorFixture(key: "Tp05", type: "ui32", bytes: [1, 2, 3, 4]),
+      SensorFixture(key: "TG0B", type: "ioft", bytes: [1, 2, 3, 4, 5, 6, 7, 8]),
+    ]
+    let transport = FixtureTransport(fixtures)
+    let reader = SMCThermalReader(
+      client: SMCClient(transport: transport), classifier: ThermalClassifier(cpuBrand: "Apple M2 Pro"))
+    let metrics = try reader.read()
+    try require(
+      try close(metrics.maximumSoCCelsius.get(), 50),
+      "M2 hottest identified sensor is the GPU; raw Tzzz must stay excluded")
+    try require(
+      try close(metrics.averageCPUCelsius.get(), (45 + 38) / 2),
+      "M2 CPU average uses only the identified P and E cores")
+    guard let gpu = metrics.readings.first(where: { $0.key == "Tg0f" }) else {
+      throw CheckFailure(description: "M2 GPU reading missing")
+    }
+    try require(
+      gpu.group == .unclassified && gpu.displayGroup == .gpu,
+      "M2 GPU must be display-identified yet not control-trusted")
+    try require(
+      metrics.failures["Tp0b"] != nil && metrics.readings.allSatisfy { $0.key != "Tp0b" },
+      "A constant implausibly low sensor (6.7 C) must not become a reading")
+    try require(
+      metrics.trustedFailures.isEmpty,
+      "Display-only and raw failures must not count as trusted thermal health failures")
+    let readsAfterFirst = transport.requests.filter { $0.command == .bytes && $0.key == "Tg0f" }.count
+    _ = try reader.read()
+    try require(
+      transport.requests.filter { $0.command == .bytes && $0.key == "Tg0f" }.count == readsAfterFirst + 1,
+      "Display-identified sensors must stay live on every fast thermal poll")
   }
 
   private static func formattingChecks() throws {

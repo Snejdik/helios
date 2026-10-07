@@ -8,7 +8,8 @@ mappings from Stats:
 - Project: Stats
 - Upstream repository: https://github.com/exelban/stats
 - Material used: selected exact M4 P-core, E-core, GPU, and auxiliary sensor-key
-  mappings
+  mappings, and the read-only M1, M2, M3, M5 and M6 P-core, E-core and GPU
+  display mappings (Modules/Sensors/values.swift)
 - License: MIT
 
 The applicable upstream license notice follows.

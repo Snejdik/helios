@@ -20,6 +20,11 @@
 #   System" log lines limited to one per 30 s. Comment text only: CoolingRules,
 #   FanLayerPolicy, FanLayerHardware, FanLayerRuntime. No helper, XPC, SMC or safety logic.
 # - Privacy only: the helper's start-up executable path is logged privately.
+# - 0.2.1, FanControlModel.accept only: a power-gated temperature sensor
+#   (`TelemetryError.inactiveSensor`, e.g. GPU keys at -4.5 °C while the GPU sleeps) no longer
+#   counts as a Tp/Te/Tg failure. Every group still needs a valid reading and every other
+#   failure still releases the fans. Before, Auto/Manual/Boost fell back to System whenever the
+#   GPU slept. Helper, XPC, SMC and all other safety logic unchanged.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -54,7 +59,7 @@ dcaf2a0f7ca2fe9ab91a28a6f52640201ee9001ec1dacbc5eefc5146afb6a0b0 Sources/HeliosD
 ddce83d97aa307d419c1aa95af9635a739155abd92f9f460c1f6b1940e47627f Sources/HeliosDaemon/HeliosDaemon.swift
 7e128093ed68c391074ff4cb00e35492c47e8fa74d5692d59f6a21c256598234 Sources/HeliosApp/CoolingRules.swift
 71ef4ff54227931e5160e5568aaf040093b08a6163d25a911d7f4b1ad91f018c Sources/HeliosApp/DaemonClient.swift
-5a5b0e5bf89c989ee06da14a35568fcabf60e12366983bc886cc6e5a845cf388 Sources/HeliosApp/FanControlModel.swift
+248c46456f84f1ef9c5135cb12c09252c40a7a467bd9f1a550eb5130e3860b22 Sources/HeliosApp/FanControlModel.swift
 8da1779ba7c9eec424077e93d12fa92e6038c782a0fa7cdc5a7de465ed59e7df Sources/HeliosApp/FanControlView.swift
 6c698290f8c6a92f7f006969e8cb2f09bbbec79ee1d2f9cbc0d3d5f06886a10c Sources/HeliosApp/Telemetry/BatteryProvider.swift
 a6dee07d1c7b6886dd825b182a39f029c1a08a4b820d572d6a608f63d493aae8 Sources/Shared/FanModels.swift
@@ -583,10 +588,11 @@ for required in \
   'Launch Helios at Login' \
   'func setLaunchAtLogin(_ enabled: Bool) async -> Bool' \
   'Boot registration' \
-  'Prepare Helios for Removal' \
+  'Uninstall Helios?' \
   'func uninstall() async -> Bool' \
-  'Removal stopped: Launch at Login could not be disabled.' \
-  'Removal stopped: the privileged helper is still registered.' \
+  'Uninstall stopped: Launch at Login could not be turned off.' \
+  'Uninstall stopped: the privileged helper is still registered.' \
+  'struct HeliosUninstaller' \
   'Erase local Helios settings and monitoring history' \
   'validated factory fan range'; do
   if ! grep -R -Fq "$required" Sources/HeliosApp; then

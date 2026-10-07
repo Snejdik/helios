@@ -614,6 +614,25 @@ private enum IPCChecks {
             try require(engine.starts >= 2 && model.selection == .auto,
                         "Auto retry did not use a new acquisition attempt")
 
+            // A power-gated GPU cluster (-4.5 °C on Mac16,1) is not measuring, not failing:
+            // Auto keeps the fans. A genuinely invalid trusted reading still hands them back.
+            func gpuSnapshot(_ error: TelemetryError) -> TelemetrySnapshot {
+                var gated = controlSnapshot()
+                if case .success(let thermals) = gated.thermals.result {
+                    gated.thermals = MetricSample(.success(ThermalMetrics(
+                        readings: thermals.readings, failures: ["Tg0G": error], trustedFailures: ["Tg0G": error])),
+                        capturedTicks: gated.thermals.capturedTicks)
+                }
+                return gated
+            }
+            snapshot = gpuSnapshot(.inactiveSensor("Tg0G")); model.refresh(snapshot); model.accept(snapshot.thermals)
+            try require(model.selection == .auto && model.telemetryReady,
+                        "A sleeping GPU sensor released the fans from Auto")
+            snapshot = gpuSnapshot(.invalidData("Tg0G outside plausible temperature range"))
+            model.refresh(snapshot); model.accept(snapshot.thermals)
+            try require(model.selection == .system && !model.telemetryReady,
+                        "An invalid trusted reading no longer blocked fan control")
+
             model.setMode(.system)
             try require(model.selection == .system, "Explicit System selection did not disarm Auto locally")
             try await waitUntil("Auto retry test did not return to System") { client.fanState == .system }

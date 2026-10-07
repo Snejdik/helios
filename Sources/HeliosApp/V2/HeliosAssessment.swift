@@ -283,7 +283,7 @@ struct HeliosMacAssessment: Equatable, Sendable {
       maximum = reading.celsius
       evidence.append(HeliosEvidence(
         label: "Hottest sensor", value: TelemetryFormatting.temperature(reading.celsius),
-        source: "Max SoC · \(reading.group.rawValue)"))
+        source: "Max SoC · \(reading.displayGroup.rawValue)"))
     }
     if let fan = fanSummary(snapshot, now: now) {
       evidence.append(HeliosEvidence(label: "Fan", value: fan))

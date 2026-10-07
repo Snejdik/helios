@@ -443,12 +443,12 @@ struct OverviewCards: View {
         HStack(spacing: 6) {
           Text("Hottest zone")
           Spacer()
-          Text(thermalGroupLabel(hottest.group))
+          Text(thermalGroupLabel(hottest.displayGroup))
         }
         .font(.system(size: 10, weight: .medium))
         .foregroundStyle(.secondary)
         .help(
-          "Trusted raw SMC source: \(hottest.key). Fan safety uses the raw trusted maximum; the display is not smoothed."
+          "Raw SMC source: \(hottest.key). The display is not smoothed."
         )
       }
       Divider().opacity(0.55)
@@ -467,7 +467,7 @@ struct OverviewCards: View {
       if case .failure = presentation.thermals {
         notice("Temperature readings unavailable")
       } else if case .success(let thermals) = presentation.thermals,
-                !thermals.trustedFailures.isEmpty {
+                thermals.trustedFailures.values.contains(where: { !$0.isInactiveSensor }) {
         notice("Some trusted temperature readings are unavailable")
       }
       if case .success(let thermals) = presentation.thermals {
@@ -476,7 +476,7 @@ struct OverviewCards: View {
             ForEach(thermals.readings.sorted(by: { $0.key < $1.key }), id: \.key) { reading in
               HStack(spacing: 8) {
                 Text(reading.key).font(.system(size: 10, design: .monospaced))
-                Text(thermalGroupLabel(reading.group)).font(.system(size: 9)).foregroundStyle(
+                Text(thermalGroupLabel(reading.displayGroup)).font(.system(size: 9)).foregroundStyle(
                   .secondary)
                 Spacer()
                 Text(temperature(reading.celsius)).font(
@@ -1653,7 +1653,7 @@ struct OverviewCards: View {
       historyRow(
         "Max SoC", values: history.points.map(\.maxSoCCelsius),
         current: history.points.last?.maxSoCCelsius, fixedRange: 20...100
-      ) { String(format: "%.0f°C", $0) }
+      ) { TelemetryFormatting.temperature($0) }
       historyRow(
         "System Power", values: history.points.map(\.systemPowerWatts),
         current: history.points.last?.systemPowerWatts, fixedRange: nil
@@ -2074,7 +2074,7 @@ struct OverviewCards: View {
                 value: DisplayValue(
                   smart.temperatureCelsius.map { MetricResult<Double>.success($0) }
                     ?? .failure(.unavailable("NVMe SMART temperature unavailable"))
-                ) { String(format: "%.1f°C", $0) })
+                ) { TelemetryFormatting.temperature($0, decimals: 1) })
               detail(
                 "Available spare",
                 value: DisplayValue(MetricResult<UInt8>.success(smart.availableSparePercent)) {
@@ -2191,7 +2191,7 @@ struct OverviewCards: View {
       .frame(maxWidth: .infinity, alignment: .leading)
   }
 
-  private func temperature(_ value: Double) -> String { String(format: "%.1f°C", value) }
+  private func temperature(_ value: Double) -> String { TelemetryFormatting.temperature(value, decimals: 1) }
   private func percent(_ value: Double) -> String { String(format: "%.1f%%", value) }
 
   private func batteryCells(_ cells: [Double]) -> String {

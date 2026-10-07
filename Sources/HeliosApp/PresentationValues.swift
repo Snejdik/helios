@@ -28,7 +28,7 @@ struct ThermalGroupSummary: Sendable {
     var count = 0
     var total = 0.0
     var maximum = -Double.infinity
-    for reading in metrics.readings where reading.group == group {
+    for reading in metrics.readings where reading.displayGroup == group {
       guard reading.celsius.isFinite else {
         throw TelemetryError.invalidData("Non-finite sensor group temperature")
       }
@@ -59,19 +59,33 @@ struct ThermalInventoryPresentation: Sendable {
   let raw: [ThermalReading]
   let auxiliary: [ThermalDisplayReading]
   let unknown: [ThermalDisplayReading]
+  /// Real read failures. Switched-off sensors are listed in `inactive` instead.
+  let trustedFailures: [String: TelemetryError]
   let advisoryFailures: [String: TelemetryError]
+  /// Sensors that are switched off right now (for example the GPU while it sleeps).
+  let inactive: [String]
+  /// Sensors stored in a format Helios does not read (for example `ioft`).
+  let unsupported: [String]
   let summaries: [GroupSummary]
 
   init(_ metrics: ThermalMetrics) {
-    identified = metrics.readings.filter { $0.group != .unclassified }.sorted { $0.key < $1.key }
-    let raw = metrics.readings.filter { $0.group == .unclassified }.sorted {
+    identified = metrics.readings.filter { $0.displayGroup != .unclassified }.sorted { $0.key < $1.key }
+    let raw = metrics.readings.filter { $0.displayGroup == .unclassified }.sorted {
       $0.celsius == $1.celsius ? $0.key < $1.key : $0.celsius > $1.celsius
     }
     self.raw = raw
     let classified = ThermalDisplayClassifier.classify(raw)
     auxiliary = classified.filter { $0.info.kind == .knownAuxiliary }
     unknown = classified.filter { $0.info.kind == .unknown }
-    advisoryFailures = metrics.failures.filter { metrics.trustedFailures[$0.key] == nil }
+    trustedFailures = metrics.trustedFailures.filter { !$0.value.isInactiveSensor }
+    advisoryFailures = metrics.failures.filter {
+      metrics.trustedFailures[$0.key] == nil && !$0.value.isInactiveSensor
+        && !$0.value.isUnsupportedSensorFormat
+    }
+    inactive = metrics.failures.filter { $0.value.isInactiveSensor }.keys.sorted()
+    unsupported = metrics.failures.filter {
+      metrics.trustedFailures[$0.key] == nil && $0.value.isUnsupportedSensorFormat
+    }.keys.sorted()
     summaries = ThermalGroup.allCases.compactMap { group in
       guard let values = try? ThermalGroupSummary.summarize(metrics, group: group) else { return nil }
       return GroupSummary(group: group, values: values)

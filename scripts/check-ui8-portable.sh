@@ -218,7 +218,14 @@ enum ThermalGroup: String, Sendable, CaseIterable {
 struct ThermalReading: Sendable {
   let key: String
   let group: ThermalGroup
+  let displayGroup: ThermalGroup
   let celsius: Double
+  init(key: String, group: ThermalGroup, celsius: Double, displayGroup: ThermalGroup? = nil) {
+    self.key = key
+    self.group = group
+    self.displayGroup = displayGroup ?? group
+    self.celsius = celsius
+  }
 }
 SWIFT
 awk '
@@ -290,7 +297,14 @@ enum ThermalGroup: String, Sendable, CaseIterable {
 struct ThermalReading: Sendable {
   let key: String
   let group: ThermalGroup
+  let displayGroup: ThermalGroup
   let celsius: Double
+  init(key: String, group: ThermalGroup, celsius: Double, displayGroup: ThermalGroup? = nil) {
+    self.key = key
+    self.group = group
+    self.displayGroup = displayGroup ?? group
+    self.celsius = celsius
+  }
 }
 struct ThermalMetrics: Sendable {
   let readings: [ThermalReading]
@@ -318,6 +332,7 @@ struct ThermalClassifier {
     default: return .unclassified
     }
   }
+  func displayGroup(for key: String) -> ThermalGroup { group(for: key) }
 }
 struct FakeKeyInfo { let type: String; let size: Int }
 struct FakeValue { let info: FakeKeyInfo; let bytes: [UInt8] }

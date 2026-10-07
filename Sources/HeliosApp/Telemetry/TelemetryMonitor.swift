@@ -273,8 +273,10 @@ final class TelemetryMonitor: NSObject {
           self?.log(sample.result, module: "Thermals")
           if case .success(let value) = sample.result {
             self?.log(value.maximumSoCCelsius, module: "SoC temperature", field: true)
-            let details = value.failures.keys.sorted().map {
-              "\($0): \(value.failures[$0]?.localizedDescription ?? "Unavailable")"
+            // Switched-off sensors (a sleeping GPU) come and go constantly; they are not failures.
+            let failing = value.failures.filter { !$0.value.isInactiveSensor }
+            let details = failing.keys.sorted().map {
+              "\($0): \(failing[$0]?.localizedDescription ?? "Unavailable")"
             }.joined(separator: "; ")
             self?.logFailure(details, module: "Individual sensors", field: true)
           }

@@ -142,9 +142,18 @@ final class DiagnosticsSessionTracker {
   }
 
   private func recordFailureEpisodes(_ name: DiagnosticsProviderName, current: Set<String>) {
-    let newlyFailed = current.subtracting(activeFailures[name, default: []])
-    failureCounts[name] = min(21, failureCounts[name, default: 0] + newlyFailed.count)
+    // Identities may be per key ("Tp01:io_error") so recovery is tracked per key, but an
+    // episode is a failure category becoming active for the source. Many keys failing
+    // together (for example right after wake) are one episode, not one per key.
+    let active = activeFailures[name, default: []]
+    let newCategories = Set(current.subtracting(active).map(Self.failureCategory))
+      .subtracting(active.map(Self.failureCategory))
+    failureCounts[name] = min(21, failureCounts[name, default: 0] + newCategories.count)
     activeFailures[name] = current
+  }
+
+  private static func failureCategory(_ identity: String) -> Substring {
+    identity.split(separator: ":").last ?? Substring(identity)
   }
 
   private func thermalFailureIdentities(_ metrics: ThermalMetrics) -> Set<String> {

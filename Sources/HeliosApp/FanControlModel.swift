@@ -447,7 +447,11 @@ final class FanControlModel: ObservableObject {
         guard age >= 0, age <= 3, sample.capturedTicks > lastSample,
               case .success(let thermals) = sample.result,
               Set(thermals.readings.map(\.group)).isSuperset(of: [.performanceCPU, .efficiencyCPU, .gpu]),
-              !thermals.failures.keys.contains(where: { $0.hasPrefix("Tp") || $0.hasPrefix("Te") || $0.hasPrefix("Tg") }),
+              // A power-gated sensor (the GPU while it sleeps) is not measuring, not failing; every
+              // group above still needs a valid reading. Any other Tp/Te/Tg failure still blocks.
+              !thermals.failures.contains(where: { key, error in
+                  (key.hasPrefix("Tp") || key.hasPrefix("Te") || key.hasPrefix("Tg")) && !error.isInactiveSensor
+              }),
               let temperature = try? thermals.maximumSoCCelsius.get(), temperature.isFinite else {
             telemetryReady = false
             if selection != .system { transitionToSystem(graceful: false, reason: "thermal sample is not trusted") }

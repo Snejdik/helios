@@ -296,7 +296,7 @@ struct HeliosMetricStatusPopover: View {
         HeliosEvidence(label: "Swap", value: HeliosText.value(p.memory.flatMap(\.swapUsedBytes)) { TelemetryFormatting.storageBytes($0) }),
       ]
     case .gpu:
-      let hottest = (try? p.thermals.get())?.readings.filter { $0.group == .gpu }.map(\.celsius).max()
+      let hottest = (try? p.thermals.get())?.readings.filter { $0.displayGroup == .gpu }.map(\.celsius).max()
       return [
         HeliosEvidence(label: "Model", value: HeliosText.value(p.gpu.flatMap(\.model)) { $0 }),
         HeliosEvidence(label: "Cores", value: HeliosText.value(p.gpu.flatMap(\.coreCount)) { "\($0)" }),
@@ -318,7 +318,7 @@ struct HeliosMetricStatusPopover: View {
         HeliosEvidence(label: "Thermal pressure", value: HeliosText.value(p.system) { $0.thermalState.rawValue },
           source: "Reported by macOS"),
       ]
-      if let gpu = (try? p.thermals.get())?.readings.filter({ $0.group == .gpu }).map(\.celsius).max() {
+      if let gpu = (try? p.thermals.get())?.readings.filter({ $0.displayGroup == .gpu }).map(\.celsius).max() {
         rows.insert(HeliosEvidence(label: "GPU", value: TelemetryFormatting.temperature(gpu), source: "Hottest GPU sensor"), at: 2)
       }
       if metric == .fan {

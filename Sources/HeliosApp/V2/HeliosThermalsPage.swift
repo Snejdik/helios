@@ -682,10 +682,13 @@ private struct HeliosSensorInventory: View {
       let inventory = ThermalInventoryPresentation(metrics)
       VStack(alignment: .leading, spacing: 14) {
         if !inventory.identified.isEmpty {
-          HeliosSection("Trusted sensors") {
+          HeliosSection("Identified sensors") {
+            if inventory.identified.contains(where: { $0.group == .unclassified }) {
+              Text(HeliosCopy.catalogueSensors).font(.subheadline).foregroundStyle(.secondary)
+            }
             HeliosFactList(rows: inventory.identified.map {
               HeliosEvidence(label: $0.key, value: TelemetryFormatting.temperature($0.celsius, decimals: 1),
-                source: $0.group.rawValue)
+                source: $0.displayGroup.rawValue)
             })
           }
         }
@@ -707,16 +710,30 @@ private struct HeliosSensorInventory: View {
             })
           }
         }
-        if !inventory.advisoryFailures.isEmpty || !metrics.trustedFailures.isEmpty {
+        if !inventory.advisoryFailures.isEmpty || !inventory.trustedFailures.isEmpty {
           HeliosSection("Read failures") {
-            HeliosFactList(rows: (metrics.trustedFailures.map { ($0.key, $0.value, "Trusted") }
+            HeliosFactList(rows: (inventory.trustedFailures.map { ($0.key, $0.value, "Trusted") }
               + inventory.advisoryFailures.map { ($0.key, $0.value, "Optional") })
               .sorted { $0.0 < $1.0 }
               .map { HeliosEvidence(label: $0.0, value: $0.1.localizedDescription, source: $0.2) })
           }
         }
+        if !inventory.inactive.isEmpty {
+          HeliosSection("Not measuring right now") {
+            Text(HeliosCopy.inactiveSensors).font(.subheadline).foregroundStyle(.secondary)
+            Text(inventory.inactive.joined(separator: ", ")).font(.subheadline.monospaced())
+              .foregroundStyle(.secondary).textSelection(.enabled)
+          }
+        }
+        if !inventory.unsupported.isEmpty {
+          HeliosSection("Not readable by Helios") {
+            Text(HeliosCopy.unsupportedSensors).font(.subheadline).foregroundStyle(.secondary)
+            Text(inventory.unsupported.joined(separator: ", ")).font(.subheadline.monospaced())
+              .foregroundStyle(.secondary).textSelection(.enabled)
+          }
+        }
         if let captured = metrics.advisoryReadingsCapturedAt {
-          Text("Optional sensors updated \(TelemetryFormatting.ageSeconds(since: captured)) ago; they refresh less often than trusted sensors.")
+          Text("Optional sensors updated \(TelemetryFormatting.ageSeconds(since: captured)) ago; they refresh less often than identified sensors.")
             .font(.subheadline).foregroundStyle(.secondary)
         }
       }

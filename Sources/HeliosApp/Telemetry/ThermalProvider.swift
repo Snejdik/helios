@@ -30,6 +30,82 @@ struct ThermalClassifier {
   // Their physical component and CPU-cluster identities remain unknown.
   private static let mac161ValidatedHotspotKeys: Set<String> = ["Te06", "Te0T"]
 
+  /// Read-only display maps for the other Apple Silicon generations, derived from the
+  /// MIT-licensed Stats sensor catalogue (see THIRD_PARTY_NOTICES.md). They are exact
+  /// per-generation key lists: the same key means different things on different chips
+  /// (`Tp09` is an efficiency core on M1 but a performance core on M2), and a prefix is
+  /// never trusted. Only the M4 family is physically validated, so these maps are used
+  /// for showing temperatures and never for fan control or the privileged helper.
+  /// M5/M6 "super" cores are folded into the performance group.
+  private struct DisplayMap {
+    let performance: Set<String>
+    let efficiency: Set<String>
+    let gpu: Set<String>
+  }
+
+  private static let displayMaps: [Int: DisplayMap] = [
+    1: DisplayMap(
+      performance: ["Tp01", "Tp05", "Tp0D", "Tp0H", "Tp0L", "Tp0P", "Tp0X", "Tp0b"],
+      efficiency: ["Tp09", "Tp0T"],
+      gpu: ["Tg05", "Tg0D", "Tg0L", "Tg0T"]),
+    2: DisplayMap(
+      performance: ["Tp01", "Tp05", "Tp09", "Tp0D", "Tp0X", "Tp0b", "Tp0f", "Tp0j"],
+      efficiency: ["Tp1h", "Tp1t", "Tp1p", "Tp1l"],
+      gpu: ["Tg0f", "Tg0j"]),
+    3: DisplayMap(
+      performance: [
+        "Tf04", "Tf09", "Tf0A", "Tf0B", "Tf0D", "Tf0E", "Tf44", "Tf49", "Tf4A", "Tf4B", "Tf4D",
+        "Tf4E",
+      ],
+      efficiency: ["Te05", "Te0L", "Te0P", "Te0S"],
+      gpu: ["Tf14", "Tf18", "Tf19", "Tf1A", "Tf24", "Tf28", "Tf29", "Tf2A"]),
+    5: DisplayMap(
+      performance: [
+        "Tp00", "Tp04", "Tp08", "Tp0C", "Tp0G", "Tp0K",
+        "Tp0O", "Tp0R", "Tp0U", "Tp0X", "Tp0a", "Tp0d", "Tp0g", "Tp0j", "Tp0m", "Tp0p", "Tp0u",
+        "Tp0y",
+      ],
+      efficiency: [],
+      gpu: ["Tg0U", "Tg0X", "Tg0d", "Tg0g", "Tg0j", "Tg1Y", "Tg1c", "Tg1g"]),
+    6: DisplayMap(
+      performance: [
+        "Tp0j", "Tp0g", "Tp09", "Tp07",
+        "Tp0m", "Tp0L", "Tp0I", "Tp0d", "Tp0E", "Tp0G", "Tp0b", "Tp05",
+      ],
+      efficiency: ["Te07", "Te08", "Te09", "Te0c", "Te0h", "Te0i"],
+      gpu: [
+        "Tg1e", "Tg0d", "Tg0c", "Tg0b", "Tg1c", "Tg1d", "Tg07", "Tg1f", "Tg09", "Tg0a", "Tg1g",
+        "Tg1h",
+      ]),
+  ]
+
+  /// "Apple M2 Max" -> 2. Anything that is not an exact `Apple M<number>[ variant]` is nil,
+  /// so "Apple M10" can never be mistaken for M1.
+  static func generation(ofCPUBrand brand: String) -> Int? {
+    guard brand.hasPrefix("Apple M") else { return nil }
+    let rest = brand.dropFirst("Apple M".count)
+    let digits = rest.prefix(while: { $0.isASCII && $0.isNumber })
+    guard !digits.isEmpty, digits.count <= 2,
+      rest.dropFirst(digits.count).isEmpty || rest.dropFirst(digits.count).first == " "
+    else { return nil }
+    return Int(digits)
+  }
+
+  /// Identity for showing and summarizing a temperature. Equal to `group(for:)` wherever that
+  /// is known (so the M4 family is unchanged); otherwise the read-only catalogue map for this
+  /// chip generation, else unclassified.
+  func displayGroup(for key: String) -> ThermalGroup {
+    let trusted = group(for: key)
+    if trusted != .unclassified { return trusted }
+    guard let generation = Self.generation(ofCPUBrand: cpuBrand),
+      let map = Self.displayMaps[generation]
+    else { return .unclassified }
+    if map.performance.contains(key) { return .performanceCPU }
+    if map.efficiency.contains(key) { return .efficiencyCPU }
+    if map.gpu.contains(key) { return .gpu }
+    return .unclassified
+  }
+
   func group(for key: String) -> ThermalGroup {
     let isM4Family = cpuBrand == "Apple M4" || cpuBrand.hasPrefix("Apple M4 ")
     if isM4Family, machineModel == "Mac16,1", osBuild == "25G83",
@@ -137,11 +213,19 @@ final class SMCThermalReader {
   /// by monitoring it.
   private static let advisoryRefreshInterval: Duration = .seconds(15)
 
+  /// Display-only sensors below this are treated as not measuring (values such as 6.2 or 6.7 °C
+  /// are reported on some chips by inactive channels). Not a thermal safety limit.
+  private static let displayMinimumCelsius = 10.0
+
   private let client: SMCClient
   private let classifier: ThermalClassifier
 
   private var trustedTemperatureKeys: [String]?
   private var advisoryTemperatureKeys: [String]?
+  /// Keys identified only by the read-only display map (chips other than the M4 family).
+  /// Sampled at the fast cadence so the headline temperature stays live, but their
+  /// failures are raw evidence and never count as trusted thermal health or fan-guard input.
+  private var displayTemperatureKeys: [String]?
   private var discoveryFailures: [String: TelemetryError] = [:]
   private var trustedDiscoveryFailures: [String: TelemetryError] = [:]
   private var nextDiscoveryRetry: ContinuousClock.Instant?
@@ -166,12 +250,18 @@ final class SMCThermalReader {
 
     let trustedKeys = trustedTemperatureKeys ?? []
     let advisoryKeys = advisoryTemperatureKeys ?? []
-    guard !trustedKeys.isEmpty || !advisoryKeys.isEmpty || !discoveryFailures.isEmpty else {
+    let displayKeys = displayTemperatureKeys ?? []
+    guard !trustedKeys.isEmpty || !displayKeys.isEmpty || !advisoryKeys.isEmpty
+      || !discoveryFailures.isEmpty
+    else {
       throw TelemetryError.unavailable("No supported SMC temperature keys discovered")
     }
 
     // Safety-relevant curated keys are always fresh on every thermal poll.
     let trustedBatch = read(keys: trustedKeys)
+    // Display-identified keys are live too, but only plausible temperatures count: some chips
+    // report constant low values (single digits) from sensors that are not really measuring.
+    let displayBatch = read(keys: displayKeys, minimumCelsius: Self.displayMinimumCelsius)
 
     // Raw/unclassified keys are expert diagnostics, not control inputs. Reading
     // 100+ undocumented SMC channels every 1–2 seconds is needless monitoring
@@ -201,11 +291,12 @@ final class SMCThermalReader {
         background: TelemetryDetailPolicy.backgroundRawSensorInterval))
     }
 
-    let readings = trustedBatch.readings + cachedAdvisoryReadings
+    let readings = trustedBatch.readings + displayBatch.readings + cachedAdvisoryReadings
 
     // Preserve the complete raw/per-key failure inventory for expert surfaces.
     var failures = discoveryFailures
     failures.merge(trustedBatch.failures, uniquingKeysWith: { _, newest in newest })
+    failures.merge(displayBatch.failures, uniquingKeysWith: { _, newest in newest })
     failures.merge(cachedAdvisoryFailures, uniquingKeysWith: { _, newest in newest })
 
     // Ordinary provider health uses only exact classifier-trusted failures.
@@ -233,13 +324,16 @@ final class SMCThermalReader {
       // failures must not permanently hide a key after its transport recovers.
       trustedTemperatureKeys = nil
       advisoryTemperatureKeys = nil
+      displayTemperatureKeys = nil
       cachedAdvisoryReadings = []
       cachedAdvisoryFailures = [:]
       advisoryReadingsCapturedAt = nil
       nextAdvisoryRefresh = nil
       self.nextDiscoveryRetry = nil
     }
-    guard trustedTemperatureKeys == nil || advisoryTemperatureKeys == nil else { return }
+    guard trustedTemperatureKeys == nil || advisoryTemperatureKeys == nil
+      || displayTemperatureKeys == nil
+    else { return }
 
     let discovered = try client.discoverKeys()
     discoveryFailures = discovered.failures
@@ -251,16 +345,17 @@ final class SMCThermalReader {
 
     var trusted: [String] = []
     var advisory: [String] = []
+    var display: [String] = []
 
     for key in discovered.keys where key.hasPrefix("T") {
       let group = classifier.group(for: key)
+      let displayOnly = group == .unclassified && classifier.displayGroup(for: key) != .unclassified
 
       switch captureMetric({ try client.keyInfo(key) }) {
       case .success(let info):
         guard (info.type == "sp78" && info.size == 2) || (info.type == "flt " && info.size == 4)
         else {
-          let error = TelemetryError.invalidData(
-            "Unsupported temperature type/size for \(key)")
+          let error = TelemetryError.unsupportedSensorFormat(key)
           discoveryFailures[key] = error
 
           if group != .unclassified {
@@ -269,7 +364,9 @@ final class SMCThermalReader {
           continue
         }
 
-        if group == .unclassified {
+        if displayOnly {
+          display.append(key)
+        } else if group == .unclassified {
           advisory.append(key)
         } else {
           trusted.append(key)
@@ -286,6 +383,7 @@ final class SMCThermalReader {
 
     trustedTemperatureKeys = trusted.sorted()
     advisoryTemperatureKeys = advisory.sorted()
+    displayTemperatureKeys = display.sorted()
     let needsRetry = !trustedDiscoveryFailures.isEmpty || discoveryFailures.values.contains { error in
       switch error {
       case .kernel, .ioKit, .smc, .unavailable: true
@@ -295,7 +393,7 @@ final class SMCThermalReader {
     nextDiscoveryRetry = needsRetry ? now.advanced(by: .seconds(30)) : nil
   }
 
-  private func read(keys: [String]) -> (
+  private func read(keys: [String], minimumCelsius: Double = 0) -> (
     readings: [ThermalReading], failures: [String: TelemetryError]
   ) {
     var readings: [ThermalReading] = []
@@ -306,12 +404,16 @@ final class SMCThermalReader {
       switch captureMetric({
         let value = try client.value(key)
         let celsius = try SMCCodec.temperature(type: value.info.type, bytes: value.bytes)
-        // Zero commonly means an inactive sensor. This is data validation,
-        // not a thermal safety limit or a fan-control threshold.
-        guard celsius > 0, celsius <= 150 else {
-          throw TelemetryError.invalidData("\(key) inactive or outside plausible temperature range")
+        // A power-gated cluster reports zero or a small negative value (GPU keys read -4.5 °C on
+        // Mac16,1 while the GPU sleeps). That is a sensor not measuring right now, not a fault.
+        // The key stays in `failures` as evidence. Data validation, not a safety limit.
+        guard celsius > minimumCelsius else { throw TelemetryError.inactiveSensor(key) }
+        guard celsius <= 150 else {
+          throw TelemetryError.invalidData("\(key) outside plausible temperature range")
         }
-        return ThermalReading(key: key, group: classifier.group(for: key), celsius: celsius)
+        return ThermalReading(
+          key: key, group: classifier.group(for: key), celsius: celsius,
+          displayGroup: classifier.displayGroup(for: key))
       }) {
       case .success(let reading):
         readings.append(reading)
@@ -320,6 +422,28 @@ final class SMCThermalReader {
       }
     }
     return (readings, failures)
+  }
+}
+
+extension TelemetryError {
+  /// A temperature sensor that is switched off right now (for example a power-gated GPU
+  /// cluster) rather than failing. It is not measuring, so it is neither a reading nor a fault.
+  static func inactiveSensor(_ key: String) -> TelemetryError { .unavailable("\(key) inactive") }
+
+  var isInactiveSensor: Bool {
+    if case .unavailable(let reason) = self { return reason.hasSuffix(" inactive") }
+    return false
+  }
+
+  /// A temperature key stored in a format Helios does not decode (for example the 8-byte
+  /// `ioft` keys on Apple Silicon). Known limitation, kept as raw evidence.
+  static func unsupportedSensorFormat(_ key: String) -> TelemetryError {
+    .invalidData("Unsupported temperature type/size for \(key)")
+  }
+
+  var isUnsupportedSensorFormat: Bool {
+    if case .invalidData(let reason) = self { return reason.hasPrefix("Unsupported temperature type/size") }
+    return false
   }
 }
 

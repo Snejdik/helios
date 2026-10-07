@@ -69,14 +69,13 @@ enum HealthEvaluator {
         issues.append(
           HealthIssue(
             id: "soc-critical", severity: .critical, title: "Critical SoC temperature",
-            detail: String(
-              format: "Max SoC %.1f°C — informational alert; fan safety is configured separately.",
-              maximum)))
+            detail:
+              "Max SoC \(TelemetryFormatting.temperature(maximum, decimals: 1)) — informational alert; fan safety is configured separately."))
       } else if configuration.crossed(.socHot, value: maximum, previouslyActive: previouslyActive) {
         issues.append(
           HealthIssue(
             id: "soc-hot", severity: .attention, title: "High SoC temperature",
-            detail: String(format: "Max SoC %.1f°C", maximum)))
+            detail: "Max SoC \(TelemetryFormatting.temperature(maximum, decimals: 1))"))
       }
     }
 
@@ -140,12 +139,12 @@ enum HealthEvaluator {
             HealthIssue(
               id: "battery-temp-critical", severity: .critical,
               title: "Battery temperature is critical",
-              detail: String(format: "Battery %.1f°C", temperature)))
+              detail: "Battery \(TelemetryFormatting.temperature(temperature, decimals: 1))"))
         } else if configuration.crossed(.batteryTempHot, value: temperature, previouslyActive: previouslyActive) {
           issues.append(
             HealthIssue(
               id: "battery-temp-hot", severity: .attention, title: "Battery temperature is high",
-              detail: String(format: "Battery %.1f°C", temperature)))
+              detail: "Battery \(TelemetryFormatting.temperature(temperature, decimals: 1))"))
         }
       }
     }
@@ -178,12 +177,12 @@ enum HealthEvaluator {
           issues.append(
             HealthIssue(
               id: "ssd-temp-critical", severity: .critical, title: "SSD temperature is critical",
-              detail: String(format: "SSD %.1f°C", temperature)))
+              detail: "SSD \(TelemetryFormatting.temperature(temperature, decimals: 1))"))
         } else if configuration.crossed(.ssdTempHot, value: temperature, previouslyActive: previouslyActive) {
           issues.append(
             HealthIssue(
               id: "ssd-temp-hot", severity: .attention, title: "SSD temperature is high",
-              detail: String(format: "SSD %.1f°C", temperature)))
+              detail: "SSD \(TelemetryFormatting.temperature(temperature, decimals: 1))"))
         }
       }
     }

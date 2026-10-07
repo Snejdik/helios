@@ -279,8 +279,21 @@ enum ThermalGroup: String, Sendable, CaseIterable {
 
 struct ThermalReading: Sendable {
     let key: String
+    /// Identity trusted by fan control, Cooling Rules and the privileged helper.
+    /// Only exact, physically validated maps (today the M4 family) set this.
     let group: ThermalGroup
+    /// Identity used only to show and summarize temperatures. It equals `group`
+    /// wherever `group` is known and additionally covers chips whose key map is
+    /// catalogue-derived and read-only. It never feeds a control decision.
+    let displayGroup: ThermalGroup
     let celsius: Double
+
+    init(key: String, group: ThermalGroup, celsius: Double, displayGroup: ThermalGroup? = nil) {
+        self.key = key
+        self.group = group
+        self.displayGroup = displayGroup ?? group
+        self.celsius = celsius
+    }
 }
 
 struct ThermalMetrics: Sendable {
@@ -320,9 +333,9 @@ struct ThermalMetrics: Sendable {
 
     var maximumSoCReading: MetricResult<ThermalReading> {
         guard let hottest = readings
-            .filter({ $0.group != .unclassified })
+            .filter({ $0.displayGroup != .unclassified })
             .max(by: { $0.celsius < $1.celsius }) else {
-            return .failure(.unavailable("No trusted temperature sensors available"))
+            return .failure(.unavailable("No identified temperature sensors available"))
         }
         return .success(hottest)
     }
@@ -335,9 +348,9 @@ struct ThermalMetrics: Sendable {
     /// validated hotspots, so under load it sits well below `maximumSoCCelsius`
     /// and is closer to what other monitors report as the CPU temperature.
     var averageCPUCelsius: MetricResult<Double> {
-        let cores = readings.filter { $0.group == .performanceCPU || $0.group == .efficiencyCPU }
+        let cores = readings.filter { $0.displayGroup == .performanceCPU || $0.displayGroup == .efficiencyCPU }
         guard !cores.isEmpty else {
-            return .failure(.unavailable("No trusted CPU temperature sensors available"))
+            return .failure(.unavailable("No identified CPU temperature sensors available"))
         }
         return .success(cores.map(\.celsius).reduce(0, +) / Double(cores.count))
     }

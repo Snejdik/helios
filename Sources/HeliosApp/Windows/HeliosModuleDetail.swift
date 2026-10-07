@@ -560,20 +560,29 @@ struct HeliosModuleDetail: View {
             let auxiliary = inventory.auxiliary
             let unknown = inventory.unknown
 
-            row("Identified / trusted sensors", String(identified.count))
+            row("Identified sensors", String(identified.count))
             row("Raw / advisory diagnostic sensors", String(raw.count))
             Text(ThermalMetrics.primaryExplanation)
               .font(.system(size: 11)).foregroundStyle(.secondary)
               .fixedSize(horizontal: false, vertical: true)
-            if !t.trustedFailures.isEmpty {
-              DisclosureGroup("Trusted sensor failures (\(t.trustedFailures.count))") {
+            let trustedFailures = inventory.trustedFailures
+            if !trustedFailures.isEmpty {
+              DisclosureGroup("Trusted sensor failures (\(trustedFailures.count))") {
                 Text("These affect thermal provider health.")
                   .foregroundStyle(.orange)
-                ForEach(t.trustedFailures.keys.sorted(), id: \.self) { key in
-                  row(key, t.trustedFailures[key]?.localizedDescription ?? "Unavailable")
+                ForEach(trustedFailures.keys.sorted(), id: \.self) { key in
+                  row(key, trustedFailures[key]?.localizedDescription ?? "Unavailable")
                 }
               }
               .font(.system(size: 11))
+            }
+            if !inventory.inactive.isEmpty {
+              row("Not measuring right now", String(inventory.inactive.count))
+                .help("Switched-off sensors, for example while the GPU sleeps: \(inventory.inactive.joined(separator: ", ")). Normal, not a fault.")
+            }
+            if !inventory.unsupported.isEmpty {
+              row("Not readable by Helios", String(inventory.unsupported.count))
+                .help("Stored in a format Helios does not read (for example ioft): \(inventory.unsupported.joined(separator: ", ")).")
             }
             let advisoryFailures = inventory.advisoryFailures
             if !advisoryFailures.isEmpty {
@@ -586,7 +595,7 @@ struct HeliosModuleDetail: View {
               .help("Optional raw failures remain visible evidence; they do not become Max SoC readings or trusted thermal faults.")
             }
             if identified.isEmpty {
-              Text("No trusted thermal groups are currently available.")
+              Text("No identified thermal groups are currently available.")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
             } else {
@@ -598,9 +607,9 @@ struct HeliosModuleDetail: View {
             }
 
             if !identified.isEmpty {
-              DisclosureGroup("Identified / trusted readings") {
+              DisclosureGroup("Identified readings") {
                 ForEach(identified, id: \.key) { reading in
-                  row("\(reading.key) · \(reading.group.rawValue)",
+                  row("\(reading.key) · \(reading.displayGroup.rawValue)",
                     TelemetryFormatting.temperature(reading.celsius, decimals: 1))
                 }
               }
@@ -626,7 +635,7 @@ struct HeliosModuleDetail: View {
               )
 
               Text(
-                "Only the exact trusted groups above supply Max SoC and Cooling Rules temperatures. Auxiliary and unclassified values are never promoted into those metrics. The frozen fan-readiness policy additionally blocks some raw Tp/Te/Tg failures conservatively; this does not identify those sensors or grant write support."
+                "Only the identified groups above supply Max SoC, and only groups validated on this Mac model supply Cooling Rules and fan control. Auxiliary and unclassified values are never promoted into those metrics. The frozen fan-readiness policy additionally blocks some raw Tp/Te/Tg failures conservatively; this does not identify those sensors or grant write support."
               )
               .font(.system(size: 11))
               .foregroundStyle(.secondary)
@@ -1186,25 +1195,25 @@ struct HeliosModuleDetail: View {
 
   private var expertSensors: some View {
     VStack(spacing: 12) {
-      section("Trusted thermal map", "thermometer.medium") {
+      section("Identified thermal map", "thermometer.medium") {
         if case .success(let thermals) = p.thermals {
           row("Max SoC", metric(thermals.maximumSoCCelsius) { TelemetryFormatting.temperature($0, decimals: 1) })
           ForEach(ThermalGroup.allCases.filter { $0 != .unclassified }, id: \.rawValue) { group in
-            let values = thermals.readings.filter { $0.group == group }.map(\.celsius)
+            let values = thermals.readings.filter { $0.displayGroup == group }.map(\.celsius)
             if !values.isEmpty {
               let maximum = values.max() ?? 0
               let average = values.reduce(0, +) / Double(values.count)
-              row(group.rawValue, String(format: "%.1f°C max · %.1f°C avg", maximum, average))
+              row(group.rawValue, "\(TelemetryFormatting.temperature(maximum, decimals: 1)) max · \(TelemetryFormatting.temperature(average, decimals: 1)) avg")
             }
           }
         } else {
-          Text("Trusted thermal map unavailable.").foregroundStyle(.secondary)
+          Text("Identified thermal map unavailable.").foregroundStyle(.secondary)
         }
       }
 
       section("Advisory sensor browser", "waveform.path.ecg") {
         if case .success(let thermals) = p.thermals {
-          let raw = thermals.readings.filter { $0.group == .unclassified }
+          let raw = thermals.readings.filter { $0.displayGroup == .unclassified }
           let classified = ThermalDisplayClassifier.classify(raw)
           Text(
             "Attributed Stats auxiliary mappings and unclassified raw SMC keys remain display-only. Unclassified channels never enter cooling policy without independent validation."
@@ -1437,7 +1446,7 @@ struct HeliosModuleDetail: View {
     VStack(spacing: 10) {
       diagnosticSection(
         "Thermal sensors", "thermometer.medium",
-        subtitle: "Trusted groups and unclassified raw SMC temperatures",
+        subtitle: "Identified groups and unclassified raw SMC temperatures",
         summary: thermalDiagnosticSummary
       ) {
         if case .success(let t) = p.thermals {
@@ -1451,7 +1460,7 @@ struct HeliosModuleDetail: View {
           }
 
           ForEach(ThermalGroup.allCases, id: \.rawValue) { group in
-            let readings = t.readings.filter { $0.group == group }.sorted { $0.key < $1.key }
+            let readings = t.readings.filter { $0.displayGroup == group }.sorted { $0.key < $1.key }
             if !readings.isEmpty {
               VStack(alignment: .leading, spacing: 7) {
                 HStack {
@@ -3116,7 +3125,7 @@ struct HeliosModuleDetail: View {
       VStack(alignment: .leading, spacing: 1) {
         Text(reading.key)
           .font(.system(size: 11, weight: .semibold, design: .monospaced))
-        Text(reading.group.rawValue)
+        Text(reading.displayGroup.rawValue)
           .font(.system(size: 7.5))
           .foregroundStyle(.tertiary)
           .lineLimit(1)

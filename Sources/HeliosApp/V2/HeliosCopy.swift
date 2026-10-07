@@ -20,6 +20,12 @@ enum HeliosCopy {
     "Hottest valid reading among Helios’s identified CPU/GPU sensors and validated SoC hotspots. Unclassified raw sensors are excluded."
   static let unclassifiedSensor =
     "Apple does not publicly document what this sensor measures. Helios shows its value but never uses it for decisions."
+  static let inactiveSensors =
+    "These sensors are switched off at the moment, for example while the GPU sleeps. That is normal and not a fault."
+  static let unsupportedSensors =
+    "These sensors store their value in a format Helios does not read yet. That is normal on Apple Silicon and not a fault."
+  static let catalogueSensors =
+    "On this chip the sensors are identified from a public sensor catalogue. Helios has verified that map only on M4 Macs, so these values are shown but never used for fan control."
   static let processCPU =
     "Share of your Mac’s total CPU capacity. A process using one full core on a 10-core Mac shows 10 %."
   static let memoryPressure =

@@ -8,7 +8,9 @@ The unprivileged monitoring layer is capability-based. CPU, memory, GPU, battery
 
 Fanless Macs are valid telemetry-only systems. Multi-fan inventory is represented dynamically; read-only fan telemetry must not assume a single fan.
 
-Apple does not document most Apple-Silicon SMC thermal keys. Helios therefore keeps unknown/unmapped keys advisory/unclassified. Only the physically validated trusted map may enter Cooling Rules, health thresholds or privileged fan safety.
+Apple does not document most Apple-Silicon SMC thermal keys. Helios therefore keeps unknown/unmapped keys advisory/unclassified. Only the physically validated trusted map may enter Cooling Rules or privileged fan safety.
+
+**Display maps (0.2.1).** So that a Mac outside the M4 family still shows CPU and GPU temperatures, Helios also carries exact per-generation key lists for M1, M2, M3, M5 and M6, derived from the MIT-licensed Stats sensor catalogue (THIRD_PARTY_NOTICES.md). They are read-only and display-only: they feed the headline temperature, the P/E-core and GPU summaries, the sensor lists and the informational temperature alerts, and they never reach fan control, Cooling Rules or the privileged helper, which keep using the M4-only trusted map. A key is matched exactly for the detected chip generation (the same key means different things on different chips), M5/M6 "super" cores are shown with the performance cores, and a display-only sensor reading 10 °C or less is ignored because some chips report constant low values from inactive channels. Only the M4 family has been checked on real hardware; the other maps come from the catalogue and are corrected from compatibility reports.
 
 ## Fan control
 

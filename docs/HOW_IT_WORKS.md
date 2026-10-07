@@ -20,7 +20,12 @@ Helios is two programs and a clear line between them.
 - **Samples** CPU, memory, GPU, temperatures, fans, battery, power, storage,
   network and processes. Every provider is independent: a sensor that does not
   exist on your Mac shows *Unavailable*, never a made-up zero, and never stops the
-  rest.
+  rest. A sensor that is switched off for a while (the GPU's, while it sleeps) is shown
+  as *not measuring*, not as an error.
+- **Knows which sensor is which** only where that is established. On M4 Macs the CPU and
+  GPU sensors are verified on real hardware and may drive fan control. On M1, M2, M3,
+  M5 and M6 Helios uses a public sensor catalogue to show CPU and GPU temperatures;
+  those values are for display and alerts only.
 - **Remembers** a bounded history on your Mac (`~/Library/Application Support/Helios`):
   charts, health events, battery health once a day and per-app energy for seven days.
 - **Explains** instead of only listing numbers. The Overview answers *Is my Mac

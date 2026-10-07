@@ -137,7 +137,7 @@ struct HeliosFanCurveEditor: View {
       Text("Point \(index + 1)").foregroundStyle(.secondary).frame(width: 56, alignment: .leading)
       Stepper(value: Binding(get: { point.celsius }, set: { value in edit(index) { $0.move(index, celsius: value, percent: point.percent) } }),
               in: CoolingCurve.celsiusRange, step: 1) {
-        Text("\(Int(point.celsius.rounded())) °C").monospacedDigit().frame(width: 52, alignment: .trailing)
+        Text(TelemetryFormatting.temperature(point.celsius)).monospacedDigit().frame(width: 56, alignment: .trailing)
       }
       .accessibilityLabel("Point \(index + 1) temperature")
       Stepper(value: Binding(get: { point.percent }, set: { value in edit(index) { $0.move(index, celsius: point.celsius, percent: value) } }),
@@ -286,7 +286,7 @@ private struct HeliosCoolingRulesList: View {
         .frame(maxWidth: 150)
         Text("is above")
         Stepper(value: binding(rule) { $0.thresholdCelsius } set: { $0.thresholdCelsius = $1 }, in: 20...120, step: 1) {
-          Text("\(Int(rule.thresholdCelsius.rounded())) °C").monospacedDigit().frame(width: 46, alignment: .trailing)
+          Text(TelemetryFormatting.temperature(rule.thresholdCelsius)).monospacedDigit().frame(width: 52, alignment: .trailing)
         }
       }
       Text("run")
@@ -331,6 +331,7 @@ private struct HeliosCoolingRulesList: View {
 private struct HeliosFanCurveChart: View, Equatable {
   nonisolated static func == (a: Self, b: Self) -> Bool {
     a.curve == b.curve && a.fullMaximum == b.fullMaximum && a.now == b.now && a.dragging == b.dragging
+      && a.unit == b.unit
       && a.limits?.minimum == b.limits?.minimum && a.limits?.limit == b.limits?.limit
       && a.limits?.maximum == b.limits?.maximum
   }
@@ -342,6 +343,8 @@ private struct HeliosFanCurveChart: View, Equatable {
   let dragging: Int?
   let onDrag: (Int, Double, Double) -> Void
   let onEnd: () -> Void
+  /// Labels follow the °C/°F setting; the curve itself is always stored in °C.
+  let unit = TemperatureUnit.current
 
   @State private var hoverCelsius: Double?
 
@@ -384,7 +387,7 @@ private struct HeliosFanCurveChart: View, Equatable {
             path.addLine(to: CGPoint(x: x(now, plot), y: plot.maxY))
           }
           .stroke(Color.primary.opacity(0.5), style: StrokeStyle(lineWidth: 1, dash: [2, 2]))
-          Text("now \(Int(now.rounded())) °C")
+          Text("now \(TelemetryFormatting.temperature(now))")
             .font(.caption2).foregroundStyle(.secondary)
             .offset(x: min(plot.maxX - 56, x(now, plot) + 3), y: plot.maxY - 14)
         }
@@ -416,7 +419,7 @@ private struct HeliosFanCurveChart: View, Equatable {
                 }
                 .onEnded { _ in onEnd() })
             .accessibilityElement()
-            .accessibilityLabel("Point \(index + 1): \(Int(point.celsius.rounded())) °C, \(Int(point.percent.rounded())) %")
+            .accessibilityLabel("Point \(index + 1): \(TelemetryFormatting.temperature(point.celsius)), \(Int(point.percent.rounded())) %")
         }
       }
       .contentShape(Rectangle())
@@ -434,12 +437,12 @@ private struct HeliosFanCurveChart: View, Equatable {
     .accessibilityLabel("Fan curve")
   }
 
-  /// "72 °C · curve 44 % (3,890 RPM) · safety floor 12 %" for the pointer.
+  /// "72°C · curve 44 % (3,890 RPM) · safety floor 12 %" for the pointer.
   private func readout(_ celsius: Double) -> some View {
     let curveValue = curve.percent(at: celsius)
     let safety = safetyPercent(celsius)
     let handback = handbackCelsius.map { celsius >= $0 } ?? false
-    var parts = ["\(Int(celsius.rounded())) °C"]
+    var parts = [TelemetryFormatting.temperature(celsius)]
     if handback {
       parts.append("macOS takes over")
     } else if let curveValue {
@@ -509,7 +512,7 @@ private struct HeliosFanCurveChart: View, Equatable {
       }
       .stroke(Color.secondary.opacity(0.15), lineWidth: 1)
       ForEach(Array(stride(from: range.lowerBound, through: range.upperBound, by: 10)), id: \.self) { celsius in
-        Text("\(Int(celsius))°")
+        Text("\(Int(TemperatureUnit.current.convert(celsius).rounded()))°")
           .font(.caption2).foregroundStyle(.secondary).monospacedDigit()
           .position(x: x(celsius, plot), y: plot.maxY + 10)
       }
