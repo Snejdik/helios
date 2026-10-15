@@ -109,8 +109,16 @@ enum HeliosAssessmentChecks {
       "Helper processes belong to their outermost app")
     require(HeliosAppIdentity.of(process("/usr/libexec/siriactionsd", name: "siriactionsd")).name
       == "siriactionsd", "Non-bundle processes keep their name")
-    require(HeliosAppIdentity.of(process(nil, name: "kernel_task")).key == "proc:kernel_task",
+    require(HeliosAppIdentity.of(process(nil, name: "examplectl")).key == "proc:examplectl",
       "Unknown paths fall back to the process name")
+    // Known macOS background processes get plain names; related helpers share one row.
+    require(HeliosAppIdentity.of(process(nil, name: "kernel_task")).name == "macOS kernel", "kernel_task has a plain name")
+    let webContent = HeliosAppIdentity.of(process(
+      "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent",
+      name: "com.apple.WebKit.WebContent"))
+    require(webContent.name == "Web pages (WebKit)", "WebKit content has a plain name")
+    require(HeliosAppIdentity.of(process(nil, name: "mdworker_shared")).key
+      == HeliosAppIdentity.of(process(nil, name: "mds_stores")).key, "Spotlight helpers group together")
 
     func event(_ kind: HeliosActivityEvent.Kind, _ metric: HeliosChartMetric?) -> HeliosActivityEvent {
       HeliosActivityEvent(id: "t", date: now, kind: kind, tone: .neutral, title: "t", source: .history, metric: metric)

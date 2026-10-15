@@ -367,6 +367,7 @@ private struct PresentationChecks {
       (nil, nil, true, .nothing),  // development build without a release tag
       ("v0.2.1", HeliosReleaseVersion(tag: "v0.2.2"), true, .recordOnly),  // release without notes
       (nil, HeliosReleaseVersion(tag: "v9.0.0"), true, .recordOnly),
+      ("v0.2.1-beta.1", HeliosReleaseVersion(tag: "v0.3.0-beta.1"), true, .show),  // 0.2.1 → 0.3.0 beta
     ]
     for (lastSeen, release, onboarded, expected) in cases {
       let decision = HeliosWhatsNew.decide(
@@ -375,6 +376,7 @@ private struct PresentationChecks {
         "What's New for \(lastSeen ?? "nil") -> \(release?.tag ?? "nil") onboarded=\(onboarded) was \(decision)")
     }
     try require(HeliosWhatsNew.notes["0.2.1"]?.isEmpty == false, "0.2.1 has no What's New notes")
+    try require(HeliosWhatsNew.notes["0.3.0"]?.isEmpty == false, "0.3.0 has no What's New notes")
     print("PASS What's New shows once per updated release, never on a fresh install or a dev build")
   }
 
@@ -1011,29 +1013,24 @@ private struct PresentationChecks {
     print(
       "PASS Next23 presentation fixtures isolate notifications and persistent stores from command-line rendering"
     )
-    for mode in HeliosDashboardMode.allCases {
-      uiPreferences.applyDashboardPreset(mode)
-      for dark in [false, true] {
-        let content = HeliosPopoverView(
-          model: uiModel, service: uiService, preferences: uiPreferences,
-          openMonitor: {}, openCooling: {}, openSettings: {}
-        )
+    for dark in [false, true] {
+      let context = HeliosContext(
+        model: uiModel, preferences: uiPreferences, service: uiService,
+        feed: HeliosActivityFeed(fixedEvents: []))
+      let content = HeliosStatusPopoverView(context: context)
         .environment(\.colorScheme, dark ? .dark : .light)
-        guard let image = nativeImage(content, width: 420),
-          let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])
-        else {
-          throw PresentationCheckFailure(message: "Next23 \(mode.label) popover render failed")
-        }
-        try require(
-          image.width == 840 && image.height == 1200,
-          "Next23 popover outer geometry changed in \(mode.label)")
-        try png.write(
-          to: directory.appendingPathComponent(
-            "next23-\(mode.rawValue)-\(dark ? "dark" : "light").png"))
+      guard let image = nativeImage(content, width: HeliosStatusPopoverView.width),
+        let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])
+      else {
+        throw PresentationCheckFailure(message: "Helios popover render failed")
       }
+      try require(
+        image.width == Int(HeliosStatusPopoverView.width * 2) && image.height > 400,
+        "Helios popover outer geometry changed")
+      try png.write(to: directory.appendingPathComponent("helios-popover-\(dark ? "dark" : "light").png"))
     }
     print(
-      "PASS Next23 preset-driven modular popover remains fixed at 420x600 in light/dark appearances"
+      "PASS Helios popover renders at its fixed width in light/dark appearances"
     )
 
     for dark in [false, true] {
@@ -1219,26 +1216,59 @@ private struct PresentationChecks {
     }
     print("PASS What's New window renders with and without the helper at small/default sizes in light/dark")
 
+    // 0.3.0: the guided pages (highlights, four guides, choices), each within the window.
+    let tourRelease = HeliosReleaseVersion(tag: "v0.3.0-beta.1")!
+    let tourPages = (HeliosWhatsNew.guides["0.3.0"]?.count ?? 0) + 2
+    try require(tourPages == 6, "0.3.0 What's New has highlights, four guides and the choices")
+    for index in 0..<tourPages {
+      for size in [CGSize(width: 480, height: 480), CGSize(width: 560, height: 760)] {
+        let tour = HeliosWhatsNewView(
+          preferences: onboardingPreferences, service: uiService, release: tourRelease,
+          diagnostics: onboardingDiagnostics, openCooling: {}, initialPage: index, onContinue: {})
+          .frame(width: size.width, height: size.height)
+          .environment(\.colorScheme, .dark)
+        guard let rendered = nativeImage(tour, width: size.width),
+          let png = NSBitmapImageRep(cgImage: rendered).representation(using: .png, properties: [:])
+        else { throw PresentationCheckFailure(message: "What's New 0.3.0 page \(index) render failed") }
+        try require(rendered.width == Int(size.width * 2) && rendered.height == Int(size.height * 2),
+          "What's New 0.3.0 page \(index) escaped its window bounds")
+        try png.write(to: directory.appendingPathComponent("whats-new-0.3.0-page\(index)-\(Int(size.width)).png"))
+      }
+    }
+    print("PASS What's New 0.3.0 guided tour: six pages render within the window at small/default sizes")
+
     for metric in [HeliosMenuBarMetric.cpu, .memory, .temperature, .battery] {
-      let popup = HeliosMetricPopoverView(
-        metric: metric, model: uiModel, service: uiService, preferences: uiPreferences,
-        openRoute: { _ in }
-      )
-      .environment(\.colorScheme, .dark)
-      let expectedHeight = Int(HeliosMetricPopoverView.preferredHeight(for: metric) * 2)
-      guard let popupImage = nativeImage(popup, width: 344),
+      let context = HeliosContext(
+        model: uiModel, preferences: uiPreferences, service: uiService,
+        feed: HeliosActivityFeed(fixedEvents: []))
+      let popup = HeliosMetricStatusPopover(metric: metric, context: context)
+        .environment(\.colorScheme, .dark)
+      guard let popupImage = nativeImage(popup, width: HeliosMetricStatusPopover.width),
         let popupPNG = NSBitmapImageRep(cgImage: popupImage).representation(
           using: .png, properties: [:])
       else {
         throw PresentationCheckFailure(message: "UI8 \(metric.label) metric popup render failed")
       }
       try require(
-        popupImage.width == 688 && popupImage.height == expectedHeight,
+        popupImage.width == Int(HeliosMetricStatusPopover.width * 2) && popupImage.height < 2_000,
         "UI8 \(metric.label) metric popup bounded geometry changed")
       try popupPNG.write(
         to: directory.appendingPathComponent("ui8-metric-\(metric.rawValue)-dark.png"))
     }
     print("PASS Next23 UI8 CPU/Memory/Battery native metric popups render with bounded geometry")
+
+    // "All readings" reflects the whole snapshot: nested fields appear without UI code.
+    let readingGroups = HeliosReadingTree.groups(uiModel.snapshot, extra: [("ioAudit", uiModel.ioAudit)])
+    let groupNames = Set(readingGroups.map(\.name))
+    try require(["cpu", "memory", "battery", "thermals", "fans", "storage", "ioAudit"].allSatisfy(groupNames.contains),
+      "All readings must list every sampler of the snapshot")
+    let readingPaths = readingGroups.flatMap(\.rows).map(\.path).joined(separator: "\n")
+    for field in ["nicePercent", "swapFreeBytes", "speculativeBytes", "usesInstantaneousCurrent"] {
+      try require(readingPaths.contains(field), "All readings must reach nested field \(field)")
+    }
+    try require(readingGroups.allSatisfy { $0.rows.count <= HeliosReadingTree.maximumRows },
+      "All readings must stay bounded")
+    print("PASS All readings reflects every sampler and nested field of the live snapshot, bounded")
 
     uiModel.appEnergy = AppEnergyHistoryEngine.summary([
       AppEnergyBucket(
@@ -1349,25 +1379,8 @@ private struct PresentationChecks {
           to: directory.appendingPathComponent("helper-\(name)-\(dark ? "dark" : "light").png"))
       }
     }
-    for mode in FanControlSelection.allCases {
-      for dark in [false, true] {
-        let controls = FanModeControls(
-          selection: .constant(mode), targetRPM: .constant(4500), bounds: 2317...6550,
-          boostEnabled: true, overrideEnabled: true, autoEnabled: true
-        )
-        .padding(12).frame(width: 352)
-        .background(Color(nsColor: .windowBackgroundColor))
-        .environment(\.colorScheme, dark ? .dark : .light)
-        guard let image = nativeImage(controls, width: 352),
-          let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])
-        else {
-          throw PresentationCheckFailure(message: "Fan control render failed")
-        }
-        try require(image.width == 704, "Fan controls changed width")
-        try png.write(
-          to: directory.appendingPathComponent("fan-\(mode.label)-\(dark ? "dark" : "light").png"))
-      }
-    }
+    // The Legacy FanModeControls render was removed with the Legacy interface (0.3.0);
+    // the Thermals page cooling section is rendered by the UI fixtures.
   }
 
   private static func fixture(cpu: Double, temperature: Double, now: Date) -> TelemetrySnapshot {
@@ -1728,23 +1741,27 @@ private struct PresentationChecks {
     guard let appearance = NSAppearance(named: dark ? .darkAqua : .aqua) else {
       throw PresentationCheckFailure(message: "Missing native appearance")
     }
+    _ = capabilityReport
+    let model = OverviewViewModel(runtimeServicesEnabled: false)
+    model.accept(snapshot, now: now)
+    model.persistentHistory = persistentHistory
+    model.ioAudit = ioAudit
+    let context = HeliosContext(
+      model: model, preferences: HeliosPreferences(defaults: UserDefaults(suiteName: "helios.presentation.cards.\(UUID().uuidString)")!),
+      service: service, feed: HeliosActivityFeed(fixedEvents: []))
     var rendered: CGImage?
     appearance.performAsCurrentDrawingAppearance {
-      let content = OverviewCards(
-        presentation: OverviewPresentation(snapshot, now: now), service: service,
-        persistentHistory: persistentHistory, ioAudit: ioAudit, capabilityReport: capabilityReport
-      )
-      .frame(width: 380)
-      .background(Color(nsColor: .windowBackgroundColor))
-      .environment(\.colorScheme, dark ? .dark : .light)
-      rendered = nativeImage(content, width: 380)
+      let content = HeliosStatusPopoverView(context: context)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .environment(\.colorScheme, dark ? .dark : .light)
+      rendered = nativeImage(content, width: HeliosStatusPopoverView.width)
     }
     guard let rendered,
       let png = NSBitmapImageRep(cgImage: rendered).representation(using: .png, properties: [:])
     else {
       throw PresentationCheckFailure(message: "Native card render unavailable")
     }
-    try require(rendered.width == 760, "Cards changed fixed popover width")
+    try require(rendered.width == Int(HeliosStatusPopoverView.width * 2), "Popover width changed")
     try png.write(to: url)
     print("Rendered \(url.lastPathComponent): \(rendered.width)x\(rendered.height)")
   }

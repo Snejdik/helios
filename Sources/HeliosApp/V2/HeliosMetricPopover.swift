@@ -311,7 +311,7 @@ struct HeliosMetricStatusPopover: View {
       var rows = [
         HeliosEvidence(label: "Hottest sensor", value: HeliosText.value(p.thermals.flatMap(\.maximumSoCCelsius)) {
           TelemetryFormatting.temperature($0)
-        }, source: "Max SoC"),
+        }, source: Self.mapSource(p, fallback: "Max SoC")),
         HeliosEvidence(label: "CPU average", value: HeliosText.value(p.thermals.flatMap(\.averageCPUCelsius)) {
           TelemetryFormatting.temperature($0)
         }, source: "Mean of the P- and E-core sensors"),
@@ -480,5 +480,176 @@ struct HeliosMemoryGaugeBlock: View {
       if showsDivider { Divider() }
     }
     .accessibilityElement(children: .combine)
+  }
+}
+
+extension HeliosMetricStatusPopover {
+  /// "Max SoC", or the sensor-map status when the hottest reading's map is not trusted,
+  /// so an unconfirmed temperature never looks like a confirmed one.
+  static func mapSource(_ p: OverviewPresentation, fallback: String) -> String {
+    guard case .success(let metrics) = p.thermals, let status = metrics.maximumSoCMapStatus,
+      !status.isTrustedForAlerts
+    else { return fallback }
+    return "\(fallback) · \(status.title)"
+  }
+}
+
+// MARK: - Memory composition gauge
+
+enum HeliosMemoryPalette {
+  // One semantic color per category. Available memory is neutral by default so
+  // the empty arc reads literally as headroom; the optional setting may render
+  // it as a muted green segment.
+  static let app = Color.blue
+  static let wired = Color.purple
+  static let compressed = Color.pink
+  static let cache = Color.cyan
+  static let swap = Color.orange
+  static let available = Color.green.opacity(0.72)
+  static let used = Color.indigo
+  static let unfilled = Color.secondary.opacity(0.55)
+}
+
+struct HeliosMemoryComposition: Sendable, Equatable {
+  let physicalBytes: UInt64
+  let usedBytes: UInt64
+  let appBytes: UInt64
+  let wiredBytes: UInt64
+  let compressedBytes: UInt64
+  let availableBytes: UInt64
+  let cacheBytes: UInt64
+
+  init(_ memory: MemoryMetrics) {
+    let physical = memory.physicalBytes
+    let used = min(physical, memory.usedBytes)
+    let wired = min(used, memory.wiredBytes)
+    let remainingAfterWired = used - wired
+    let compressed = min(remainingAfterWired, memory.compressedBytes)
+    let app = remainingAfterWired - compressed
+
+    physicalBytes = physical
+    usedBytes = used
+    appBytes = app
+    wiredBytes = wired
+    compressedBytes = compressed
+    availableBytes = physical - used
+    cacheBytes = min(physical, memory.cacheBytes)
+  }
+
+  var usedFraction: Double {
+    physicalBytes > 0 ? Double(usedBytes) / Double(physicalBytes) : 0
+  }
+
+  func percent(_ bytes: UInt64) -> Double {
+    physicalBytes > 0 ? Double(bytes) / Double(physicalBytes) * 100 : 0
+  }
+
+  @MainActor
+  func gaugeSegments(showAvailable: Bool, preferences: HeliosPreferences) -> [HeliosArcSegment] {
+    var result = [
+      HeliosArcSegment(
+        id: "app", fraction: fraction(appBytes), tint: preferences.color(for: .memoryApp)),
+      HeliosArcSegment(
+        id: "wired", fraction: fraction(wiredBytes), tint: preferences.color(for: .memoryWired)),
+      HeliosArcSegment(
+        id: "compressed", fraction: fraction(compressedBytes),
+        tint: preferences.color(for: .memoryCompressed)),
+    ]
+    if showAvailable {
+      result.append(
+        HeliosArcSegment(
+          id: "available", fraction: fraction(availableBytes),
+          tint: preferences.color(for: .memoryAvailable)))
+    }
+    return result
+  }
+
+  private func fraction(_ bytes: UInt64) -> Double {
+    physicalBytes > 0 ? Double(bytes) / Double(physicalBytes) : 0
+  }
+}
+
+struct HeliosArcSegment: Identifiable {
+  let id: String
+  let fraction: Double
+  let tint: Color
+}
+
+private struct HeliosArcRange: Identifiable {
+  let segment: HeliosArcSegment
+  let start: Double
+  let end: Double
+  let roundedCaps: Bool
+  var id: String { segment.id }
+}
+
+struct HeliosSegmentedArcGauge: View {
+  let segments: [HeliosArcSegment]
+  let progress: Double
+  let valueText: String
+  let subtitle: String
+
+  var body: some View {
+    ZStack {
+      Circle()
+        .trim(from: 0, to: 0.75)
+        .stroke(
+          Color.secondary.opacity(0.12),
+          style: StrokeStyle(lineWidth: 9, lineCap: .round)
+        )
+        .rotationEffect(.degrees(135))
+
+      ForEach(arcRanges) { item in
+        Circle()
+          .trim(from: item.start, to: item.end)
+          .stroke(
+            item.segment.tint,
+            style: StrokeStyle(lineWidth: 9, lineCap: item.roundedCaps ? .round : .butt)
+          )
+          .rotationEffect(.degrees(135))
+      }
+
+      VStack(spacing: 0) {
+        Text(valueText)
+          .font(.system(size: 24, weight: .semibold).monospacedDigit())
+        Text(subtitle)
+          .font(.system(size: 8.5, weight: .medium))
+          .foregroundStyle(.secondary)
+      }
+      .offset(y: -2)
+    }
+    .padding(7)
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel("\(valueText) \(subtitle)")
+    .accessibilityValue(String(format: "%.0f%%", min(1, max(0, progress)) * 100))
+  }
+
+  private var arcRanges: [HeliosArcRange] {
+    let valid = segments.map {
+      HeliosArcSegment(id: $0.id, fraction: min(1, max(0, $0.fraction)), tint: $0.tint)
+    }
+    let total = valid.reduce(0) { $0 + $1.fraction }
+    guard total > 0 else { return [] }
+    // Segment fractions are absolute fractions of physical memory. Do not
+    // renormalize used categories to 100%: when Available is hidden, the
+    // remaining neutral track is intentional free/reclaimable headroom.
+    let scale = total > 1 ? 1 / total : 1
+    let gap = min(0.0032, 0.75 / Double(max(valid.count, 1)) * 0.08)
+    var cursor = 0.0
+    return valid.enumerated().compactMap { index, segment in
+      let span = 0.75 * segment.fraction * scale
+      let isFirst = index == 0
+      let reachesTrackEnd = index == valid.count - 1 && total * scale >= 0.999
+      // The first colored segment begins exactly at the rounded track cap (an
+      // inset would leave a neutral crescent under the color). Round the exposed
+      // outer cap(s) and keep internal boundaries crisp enough to read as
+      // separate memory categories.
+      let start = cursor + (isFirst ? 0 : gap / 2)
+      let end = cursor + span - (reachesTrackEnd ? 0 : gap / 2)
+      cursor += span
+      guard end > start else { return nil }
+      return HeliosArcRange(
+        segment: segment, start: start, end: end, roundedCaps: isFirst || reachesTrackEnd)
+    }
   }
 }

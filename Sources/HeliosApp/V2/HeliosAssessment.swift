@@ -1,20 +1,5 @@
 import Foundation
 
-/// The application a process belongs to: its outermost `.app` bundle, so helper
-/// processes ("Claude Helper (Renderer)") are attributed to their app ("Claude").
-enum HeliosAppIdentity {
-  static func of(_ process: ProcessActivity) -> (key: String, name: String) {
-    if let path = process.executablePath,
-      let range = path.range(of: ".app/", options: .caseInsensitive)
-    {
-      let bundle = String(path[..<range.lowerBound]) + ".app"
-      let name = URL(fileURLWithPath: bundle).deletingPathExtension().lastPathComponent
-      return ("app:" + bundle, name.isEmpty ? process.name : name)
-    }
-    return ("proc:" + process.name.lowercased(), process.name)
-  }
-}
-
 /// One status vocabulary for every Helios surface. Evidence states (waiting,
 /// stale, unavailable) are distinct from judgements and never read as "OK".
 enum HeliosStatus: Equatable, Sendable {
@@ -276,23 +261,30 @@ struct HeliosMacAssessment: Equatable, Sendable {
       evidence.append(HeliosEvidence(
         label: "Thermal pressure", value: value.thermalState.rawValue, source: "Reported by macOS"))
     }
+    var hottest: Double?
+    // Severity follows only sensors whose map is trusted on this Mac; a catalogue-only
+    // reading is shown, labelled, and never turns the page red (PLAN_0_3_0 §8.1).
     var maximum: Double?
     if case .success(let metrics) = thermals.freshResult,
       case .success(let reading) = metrics.maximumSoCReading
     {
-      maximum = reading.celsius
+      hottest = reading.celsius
+      maximum = try? metrics.alertMaximumSoCCelsius.get()
+      let trusted = metrics.isTrustedForAlerts(reading)
       evidence.append(HeliosEvidence(
         label: "Hottest sensor", value: TelemetryFormatting.temperature(reading.celsius),
-        source: "Max SoC · \(reading.displayGroup.rawValue)"))
+        source: "Max SoC · \(reading.displayGroup.rawValue)"
+          + (trusted ? "" : " · \((metrics.mapStatus[reading.displayGroup] ?? .catalogue).title)")))
     }
     if let fan = fanSummary(snapshot, now: now) {
       evidence.append(HeliosEvidence(label: "Fan", value: fan))
     }
-    let value = maximum.map { TelemetryFormatting.temperature($0) }
+    let value = hottest.map { TelemetryFormatting.temperature($0) }
     let hot = configuration[.socHot].threshold ?? HealthAlertRule.socHot.defaultThreshold ?? 90
     let critical =
       configuration[.socCritical].threshold ?? HealthAlertRule.socCritical.defaultThreshold ?? 95
-    let partial = state == nil || maximum == nil
+    let partial = state == nil || hottest == nil
+    let unconfirmedHot = (hottest ?? -.infinity) >= hot && (maximum ?? -.infinity) < hot
 
     if state == .critical || (maximum ?? -.infinity) >= critical {
       return HeliosAreaAssessment(
@@ -312,10 +304,12 @@ struct HeliosMacAssessment: Equatable, Sendable {
         evidence: evidence, isPartial: partial, chartMetric: .temperature,
         reason: state == .serious ? .thermalPressure : .hotSensor)
     }
-    if state != nil || maximum != nil {
+    if state != nil || hottest != nil {
       return HeliosAreaAssessment(
         area: .thermals, status: .normal, value: value,
-        explanation: state == .fair
+        explanation: unconfirmedHot
+          ? "The hottest reading comes from a sensor map this Mac has not confirmed yet, so Helios does not raise an alert for it."
+          : state == .fair
           ? "Warm, but within the expected range." : "Operating within the expected range.",
         evidence: evidence, isPartial: partial, chartMetric: .temperature)
     }

@@ -506,8 +506,8 @@ final class HeliosPreferences: ObservableObject {
   }
 
   private let defaults: UserDefaults
-  /// Helios interface choice and layout. A separate observable so Helios
-  /// layout edits never invalidate Legacy surfaces observing these preferences.
+  /// Helios interface layout. A separate observable so layout edits do not
+  /// invalidate every surface observing these preferences.
   let interface: HeliosInterfacePreferences
   /// Structural manual edits move the global interface preset to Custom. Preset
   /// application suppresses this so one preset can update several surfaces
@@ -1314,7 +1314,7 @@ final class HeliosPreferences: ObservableObject {
     telemetryModules = plan.samplers
     menuBarMetrics = plan.menuBarMetrics
     showMenuBarHub = true
-    // Legacy keeps its complete layout; its surfaces hide whatever is not collected.
+    // The stored module layout stays complete; surfaces hide whatever is not collected.
     popoverModules = Self.advancedPopoverModules
     dashboardMetrics = Self.dashboardMetrics(for: .advanced)
     monitorRoutes = Self.normalizedMonitorRoutes(HeliosMonitorRoute.allCases)

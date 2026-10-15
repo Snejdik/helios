@@ -28,15 +28,13 @@ final class HeliosWindowCoordinator: NSObject, NSWindowDelegate {
   private let preferences: HeliosPreferences
   private let model: OverviewViewModel
   private let diagnostics: DiagnosticsController
-  private var monitorController: HeliosMonitorWindowController?
-  /// Helios main window. At most one of this and the Legacy monitor exists.
+  /// Helios main window.
   private var mainController: HeliosMainWindowController?
   private var lastPage: HeliosPage = .overview
   private var energyInspectorController: NSWindowController?
   private var settingsController: NSWindowController?
   private var onboardingController: NSWindowController?
   private var whatsNewController: NSWindowController?
-  private var lastMonitorRoute: HeliosMonitorRoute = .overview
   private let energyInspectorState = HeliosEnergyInspectorState()
   private let settingsState = HeliosSettingsState()
 
@@ -51,34 +49,7 @@ final class HeliosWindowCoordinator: NSObject, NSWindowDelegate {
     super.init()
   }
 
-  /// Legacy callers pass a Legacy route; the Helios interface maps it to a page.
-  func showMonitor(snapshot: TelemetrySnapshot, route: HeliosMonitorRoute? = nil) {
-    guard preferences.interface.style == .legacy else {
-      showMain(page: route.map(HeliosPage.init(legacyRoute:)))
-      return
-    }
-    let isNew = monitorController == nil
-    let controller =
-      monitorController
-      ?? HeliosMonitorWindowController(
-        model: model, service: service, preferences: preferences,
-        openEnergyInspector: { [weak self] in self?.showEnergyInspector() },
-        onRouteChange: { [weak self] in self?.refreshDetailDemand() })
-    monitorController = controller
-    controller.window?.delegate = self
-    if let route {
-      controller.select(route)
-    } else if isNew {
-      controller.select(lastMonitorRoute)
-    }
-    show(controller.window)
-  }
-
   func showMain(page: HeliosPage? = nil) {
-    guard preferences.interface.style == .helios else {
-      showMonitor(snapshot: model.snapshot, route: page?.legacyRoute)
-      return
-    }
     let isNew = mainController == nil
     let controller = mainController ?? HeliosMainWindowController(
       model: model, preferences: preferences, service: service,
@@ -92,15 +63,6 @@ final class HeliosWindowCoordinator: NSObject, NSWindowDelegate {
       controller.select(lastPage)
     }
     show(controller.window)
-  }
-
-  /// Called after the interface preference changes. The open main window (if
-  /// any) is replaced by the other style's window; no runtime service changes.
-  func interfaceStyleDidChange() {
-    let wasOpen = monitorController != nil || mainController != nil
-    monitorController?.window?.close()
-    mainController?.window?.close()
-    if wasOpen { showMain() }
   }
 
   private var windowActions: HeliosActions {
@@ -223,6 +185,7 @@ final class HeliosWindowCoordinator: NSObject, NSWindowDelegate {
 
     let content = HeliosWhatsNewView(
       preferences: preferences, service: service, release: current, diagnostics: diagnostics,
+      openCooling: { [weak self] in self?.showSettings(route: .fans) },
       onContinue: { [weak self] in self?.whatsNewController?.close() })
     let window = NSWindow(contentViewController: NSHostingController(rootView: content))
     window.title = "What’s New in Helios"
@@ -243,14 +206,9 @@ final class HeliosWindowCoordinator: NSObject, NSWindowDelegate {
       guard let window else { return false }
       return window.isVisible && !window.isMiniaturized && window.occlusionState.contains(.visible)
     }
-    let monitorDemand: TelemetryDetailDemand
-    if visible(monitorController?.window) {
-      monitorDemand = preferences.detailedMonitorContent ? .all
-        : (monitorController?.selectedRoute ?? .overview).detailDemand
-    } else if visible(mainController?.window) {
-      monitorDemand = (mainController?.selectedPage ?? .overview).detailDemand
-    } else { monitorDemand = [] }
-    model.setDetailDemand(monitorDemand, owner: "monitor-window")
+    let mainDemand: TelemetryDetailDemand = visible(mainController?.window)
+      ? (mainController?.selectedPage ?? .overview).detailDemand : []
+    model.setDetailDemand(mainDemand, owner: "monitor-window")
     model.setDetailDemand(visible(energyInspectorController?.window) ? .processes : [],
       owner: "energy-inspector")
   }
@@ -269,17 +227,7 @@ final class HeliosWindowCoordinator: NSObject, NSWindowDelegate {
     // presentation hierarchy off the window explicitly before releasing our
     // controller. The shared telemetry model/preferences/service stay alive;
     // only reconstructible UI state is discarded.
-    if window === monitorController?.window {
-      // This reconstructible Expert cache is owned by the shared model. Release it on
-      // close rather than retaining raw inventory for the shared model's lifetime.
-      model.cancelSMCNumericInventory(clearCachedSample: true)
-      let controller = monitorController
-      lastMonitorRoute = controller?.selectedRoute ?? lastMonitorRoute
-      monitorController = nil
-      model.setDetailDemand([], owner: "monitor-window")
-      detachPresentationTree(from: window)
-      controller?.window = nil
-    } else if window === mainController?.window {
+    if window === mainController?.window {
       model.cancelSMCNumericInventory(clearCachedSample: true)
       mainController?.prepareForClose()
       let controller = mainController
@@ -326,7 +274,7 @@ final class HeliosWindowCoordinator: NSObject, NSWindowDelegate {
   /// A menu-bar app with a window open behaves like a regular app (Dock icon,
   /// ⌘-Tab, main menu); with no windows it returns to the menu bar only.
   private func updateActivationPolicy() {
-    let anyOpen = [monitorController?.window, mainController?.window,
+    let anyOpen = [mainController?.window,
       settingsController?.window, energyInspectorController?.window, onboardingController?.window,
       whatsNewController?.window]
       .contains { $0?.isVisible == true || $0?.isMiniaturized == true }
@@ -353,38 +301,4 @@ final class HeliosWindowCoordinator: NSObject, NSWindowDelegate {
     refreshDetailDemand()
     HeliosWindowChromeDiagnostics.logLater(window)
   }
-}
-
-@MainActor
-final class HeliosMonitorWindowController: NSWindowController {
-  private let model: OverviewViewModel
-  private let navigation = HeliosMonitorNavigation()
-
-  init(
-    model: OverviewViewModel,
-    service: DaemonService,
-    preferences: HeliosPreferences,
-    openEnergyInspector: @escaping () -> Void,
-    onRouteChange: @escaping () -> Void = {}
-  ) {
-    self.model = model
-    let root = HeliosMonitorWindowView(
-      model: model, service: service, preferences: preferences, navigation: navigation,
-      openEnergyInspector: openEnergyInspector)
-    let hosting = NSHostingController(rootView: root)
-    let window = NSWindow(contentViewController: hosting)
-    window.title = "Helios"
-    window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
-    window.minSize = NSSize(width: 720, height: 500)
-    window.setContentSize(NSSize(width: 860, height: 600))
-    window.applyHeliosChrome(toolbar: "Helios.Monitor.Toolbar")
-    window.titlebarAppearsTransparent = true
-    window.isReleasedWhenClosed = false
-    super.init(window: window)
-    navigation.onSelectionChange = onRouteChange
-  }
-
-  required init?(coder: NSCoder) { nil }
-  func select(_ route: HeliosMonitorRoute) { navigation.selection = route }
-  var selectedRoute: HeliosMonitorRoute { navigation.selection ?? .overview }
 }

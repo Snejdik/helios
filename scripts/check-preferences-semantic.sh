@@ -300,8 +300,8 @@ struct PreferencesProbe {
     precondition(detailed.dashboardMetrics == HeliosDashboardMetric.allCases)
     precondition(detailed.monitorRoutes == HeliosMonitorRoute.allCases)
 
-    // Helios 0.2 interface preference: default Helios, persistent Legacy switch,
-    // Overview never hidden, layout reset keeps the interface choice.
+    // Interface preference: Helios only since 0.3.0 (Legacy retired, decision 3); a stored
+    // Legacy choice migrates to Helios. Overview never hidden; layout reset keeps the choice.
     let interfaceSuite = "Helios.PreferencesInterface.\(UUID().uuidString)"
     guard let interfaceDefaults = UserDefaults(suiteName: interfaceSuite) else { fatalError("interface defaults unavailable") }
     interfaceDefaults.removePersistentDomain(forName: interfaceSuite)
@@ -311,7 +311,7 @@ struct PreferencesProbe {
     precondition(firstRun.interface.overviewChartMetric == nil)
     precondition(firstRun.interface.popoverSections == HeliosPopoverSection.defaults)
     precondition(firstRun.interface.visiblePages == HeliosPage.allCases)
-    firstRun.interface.style = .legacy
+    interfaceDefaults.set("legacy", forKey: HeliosInterfacePreferences.styleKey)
     firstRun.interface.overviewChartMetric = .temperature
     firstRun.interface.setPage(.network, visible: false)
     firstRun.interface.setPage(.overview, visible: false)
@@ -319,7 +319,8 @@ struct PreferencesProbe {
     firstRun.interface.setPopoverSection(.activity, enabled: true)
     firstRun.interface.movePopoverSection(.activity, by: -5)
     let reloadedInterface = HeliosPreferences(defaults: interfaceDefaults)
-    precondition(reloadedInterface.interface.style == .legacy)
+    precondition(reloadedInterface.interface.style == .helios)
+    precondition(interfaceDefaults.string(forKey: HeliosInterfacePreferences.styleKey) == "helios")
     precondition(reloadedInterface.interface.overviewChartMetric == .temperature)
     precondition(reloadedInterface.interface.hiddenPages == [.network])
     precondition(reloadedInterface.interface.visiblePages.first == .overview)
@@ -331,9 +332,8 @@ struct PreferencesProbe {
     precondition(sanitized.interface.popoverSections == [.chart, .network])
     precondition(sanitized.interface.style == .helios)
     precondition(sanitized.interface.hiddenPages.isEmpty)
-    sanitized.interface.style = .legacy
     sanitized.resetInterface()
-    precondition(sanitized.interface.style == .legacy)
+    precondition(sanitized.interface.style == .helios)
     precondition(sanitized.interface.popoverSections == HeliosPopoverSection.defaults)
     precondition(sanitized.interface.overviewChartMetric == nil)
     precondition(HeliosPreferences(defaults: interfaceDefaults).interface.overviewChartMetric == nil)
@@ -456,4 +456,4 @@ else
 fi
 "$output"
 
-printf '%s\n' "PASS Next23 preferences semantic probe: definite initialization, menu-bar reachability, reversible collection regeneration across menu/dashboard/monitor surfaces, cooling gates, spacing, migration, dashboard/color/density persistence, presets, Helios/Legacy interface preference, welcome goals, and warnings-as-errors"
+printf '%s\n' "PASS Next23 preferences semantic probe: definite initialization, menu-bar reachability, reversible collection regeneration across menu/dashboard/monitor surfaces, cooling gates, spacing, migration, dashboard/color/density persistence, presets, Helios interface preference with Legacy migration, welcome goals, and warnings-as-errors"

@@ -9,6 +9,8 @@ struct HeliosFinding: Identifiable, Equatable {
   let likelyCause: String?
   let evidence: [HeliosEvidence]
   let action: String
+  /// The "Why?" question that explains this finding further, when there is one.
+  let lens: HeliosLens?
   var id: HeliosArea { area }
 
   /// Deterministic: built only from the assessment and the shared snapshot.
@@ -23,8 +25,17 @@ struct HeliosFinding: Identifiable, Equatable {
         HeliosFinding(
           area: area.area, status: area.status, title: title(area), summary: area.explanation,
           likelyCause: likelyCause(area, snapshot: snapshot, now: now), evidence: area.evidence,
-          action: action(area))
+          action: action(area), lens: lens(area))
       }
+  }
+
+  private static func lens(_ area: HeliosAreaAssessment) -> HeliosLens? {
+    switch area.area {
+    case .performance: .slowMac
+    case .thermals: .hotOrNoisy
+    case .storage: area.reason == .lowDiskSpace ? .fillingDisk : nil
+    case .battery: nil
+    }
   }
 
   private static func title(_ area: HeliosAreaAssessment) -> String {
@@ -79,6 +90,8 @@ struct HeliosFinding: Identifiable, Equatable {
   }
 }
 
+/// Checkup: what Helios found on this Mac, what would let it see more, and what it can
+/// read right now. (The page id stays `diagnostics` for links and saved sidebars.)
 struct HeliosDiagnosticsPage: View {
   let context: HeliosContext
   @ObservedObject var model: OverviewViewModel
@@ -87,24 +100,43 @@ struct HeliosDiagnosticsPage: View {
     let assessment = HeliosMacAssessment.evaluate(
       model.snapshot, configuration: context.preferences.healthAlerts)
     let findings = HeliosFinding.findings(assessment, snapshot: model.snapshot)
+    let suggestions = HeliosCheckupSuggestion.all(context: context, snapshot: model.snapshot)
     VStack(alignment: .leading, spacing: HeliosDesign.sectionSpacing) {
-      HeliosSection("Findings") {
+      HeliosSection("What Helios found") {
         if findings.isEmpty {
           HStack(spacing: 10) {
             Image(systemName: "checkmark.circle").foregroundStyle(.green).accessibilityHidden(true)
             Text(assessment.overall.isJudgement
-              ? "No findings. Helios keeps checking performance, thermals, battery and storage."
-              : "No findings yet. Helios is still waiting for some readings.")
+              ? "Nothing needs your attention. Helios keeps checking performance, thermals, battery and storage."
+              : "Nothing to report yet. Helios is still waiting for some readings.")
               .foregroundStyle(.secondary)
           }
         } else {
           VStack(alignment: .leading, spacing: 12) {
-            ForEach(findings) { HeliosFindingView(finding: $0) }
+            ForEach(findings) { HeliosFindingView(finding: $0, context: context, model: model) }
           }
         }
       }
 
-      HeliosSection("What Helios can see") {
+      if !suggestions.isEmpty {
+        HeliosSection("What would help Helios") {
+          HeliosGroup {
+            ForEach(Array(suggestions.enumerated()), id: \.element.id) { index, suggestion in
+              HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Image(systemName: suggestion.symbol).foregroundStyle(.secondary).accessibilityHidden(true)
+                Text(suggestion.text).fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 8)
+                Button(suggestion.buttonTitle) { suggestion.perform(context) }
+                  .controlSize(.small)
+              }
+              .padding(.vertical, 6)
+              if index < suggestions.count - 1 { Divider() }
+            }
+          }
+        }
+      }
+
+      HeliosSection("What Helios can read") {
         HeliosSourceList(context: context, snapshot: model.snapshot)
       }
 
@@ -125,6 +157,8 @@ struct HeliosDiagnosticsPage: View {
         }
       }
 
+      HeliosAllReadingsSection(model: model)
+
       HeliosSection("Support") {
         HStack(spacing: 12) {
           Button("Copy System Snapshot", action: context.actions.copySystemSnapshot)
@@ -140,6 +174,8 @@ struct HeliosDiagnosticsPage: View {
 
 private struct HeliosFindingView: View {
   let finding: HeliosFinding
+  let context: HeliosContext
+  @ObservedObject var model: OverviewViewModel
   @State private var showEvidence = false
 
   var body: some View {
@@ -156,6 +192,9 @@ private struct HeliosFindingView: View {
       labeled("What you can do", finding.action)
       DisclosureGroup("Evidence", isExpanded: $showEvidence) {
         HeliosFactList(rows: finding.evidence).padding(.top, 6)
+      }
+      if let lens = finding.lens {
+        HeliosWhySection(lens: lens, context: context, model: model)
       }
     }
     .padding(14)
@@ -271,8 +310,59 @@ private struct HeliosHelperStatus: View {
       HeliosFactRow(label: "Connection", value: client.state.rawValue)
       HeliosFactRow(label: "Fan control", value: client.fanControlAvailable ? "Available" : "Unavailable",
         detail: client.fanControlAvailable ? nil : client.fanDetail)
-      HeliosFactRow(label: "Hardware check", value: HeliosText.value(preflight) { $0.summary },
-        detail: "Read-only comparison with the validated fan profile", showsDivider: false)
+      // The production check compares with the one validated Mac; on any other Mac fan control
+      // runs as the experimental layer, which is not "blocked".
+      if client.fanControlAvailable, let layer = client.fanLayer, layer.tier == .experimental {
+        HeliosFactRow(label: "Fan profile", value: "Experimental",
+          detail: "Not the validated Mac and macOS build, so the stricter experimental limits apply",
+          showsDivider: false)
+      } else {
+        HeliosFactRow(label: "Hardware check", value: HeliosText.value(preflight) { $0.summary },
+          detail: "Read-only comparison with the validated fan profile", showsDivider: false)
+      }
     }
+  }
+}
+
+/// One thing the user can do so Helios sees more. Only what is off or unconfirmed on this
+/// Mac, never a nag about optional features.
+struct HeliosCheckupSuggestion: Identifiable, Equatable {
+  enum Target: Equatable {
+    case settings(HeliosSettingsRoute)
+    case page(HeliosPage)
+  }
+
+  let id: String
+  let symbol: String
+  let text: String
+  let buttonTitle: String
+  let target: Target
+
+  @MainActor func perform(_ context: HeliosContext) {
+    switch target {
+    case .settings(let route): context.actions.openSettingsRoute(route)
+    case .page(let page): context.actions.openPage(page)
+    }
+  }
+
+  @MainActor static func all(context: HeliosContext, snapshot: TelemetrySnapshot) -> [Self] {
+    var result: [Self] = []
+    if !context.preferences.isTelemetryCollectionRequired(.processes) {
+      result.append(Self(
+        id: "processes", symbol: "list.bullet",
+        text: "Turn on Processes so Helios can name the app behind a slow, hot or draining Mac.",
+        buttonTitle: "Open Modules", target: .settings(.modules)))
+    }
+    if case .success(let thermals) = snapshot.thermals.result,
+      let status = thermals.mapStatus[.performanceCPU], status == .catalogue || status == .disputed
+    {
+      result.append(Self(
+        id: "sensor-map", symbol: "thermometer.medium",
+        text: status == .disputed
+          ? "Some CPU temperature sensors on this Mac do not behave as the catalogue expects, so Helios treats temperatures as informational."
+          : "Helios has not confirmed this Mac's CPU temperature sensors yet, so temperatures are informational. Calibrate takes 40 seconds.",
+        buttonTitle: "Open Thermals", target: .page(.thermals)))
+    }
+    return result
   }
 }

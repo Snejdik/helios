@@ -189,7 +189,7 @@ enum HeliosSidebarSummary {
       return "↓ \(TelemetryFormatting.bytesPerSecond(rate.downloadBytesPerSecond))"
     case .hardware:
       return (try? p.system.flatMap(\.modelIdentifier).get()) ?? "—"
-    case .overview, .activity, .history, .diagnostics:
+    case .overview, .longevity, .activity, .history, .diagnostics:
       return ""
     }
   }
@@ -222,6 +222,7 @@ private struct HeliosPageContainer: View {
         switch page {
         case .overview: HeliosOverviewPage(context: context, model: context.model,
           interface: context.interface, feed: context.feed, navigation: navigation)
+        case .longevity: HeliosLongevityPage(context: context, model: context.model)
         case .activity: HeliosActivityPage(feed: context.feed)
         case .history: HeliosHistoryPage(context: context, model: context.model, feed: context.feed)
         case .diagnostics: HeliosDiagnosticsPage(context: context, model: context.model)
@@ -237,7 +238,8 @@ private struct HeliosPageContainer: View {
         }
       }
       .padding(HeliosDesign.pagePadding)
-      .frame(maxWidth: HeliosDesign.maxContentWidth, alignment: .topLeading)
+      .frame(maxWidth: page == .overview ? HeliosDesign.overviewContentWidth : HeliosDesign.maxContentWidth,
+        alignment: .topLeading)
       .frame(maxWidth: .infinity, alignment: .top)
     }
     .background(Color(nsColor: .windowBackgroundColor))

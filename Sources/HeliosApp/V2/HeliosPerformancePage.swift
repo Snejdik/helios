@@ -43,6 +43,7 @@ struct HeliosCPUPage: View {
       HeliosChartPanel(
         metric: .cpu, model: model, preferences: context.preferences, scope: .cpu,
         markers: context.feed.markers(for: .cpu, range: range))
+      HeliosWhySection(lens: .slowMac, context: context, model: model)
 
       HeliosSection("Processor") {
         HeliosGroup { cpuRows(presentation) }

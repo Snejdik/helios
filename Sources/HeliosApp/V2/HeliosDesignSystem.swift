@@ -8,6 +8,10 @@ enum HeliosDesign {
   static let sectionSpacing: CGFloat = 22
   static let groupCornerRadius: CGFloat = 10
   static let maxContentWidth: CGFloat = 980
+  /// Overview only: wide enough for its second column on a large window.
+  static let overviewContentWidth: CGFloat = 1_320
+  /// Below this content width the Overview stays one column.
+  static let overviewTwoColumnWidth: CGFloat = 1_060
   /// Settings column: centred like the main window's pages, narrower for forms.
   static let settingsContentWidth: CGFloat = 720
   static let statusChange = Animation.easeInOut(duration: 0.2)

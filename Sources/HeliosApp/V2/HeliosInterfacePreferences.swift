@@ -7,7 +7,7 @@ import Foundation
 enum HeliosPage: String, CaseIterable, Identifiable, Sendable {
   case overview
   case cpu, gpu, memory, thermals, battery, energy, storage, network, hardware
-  case activity, history, diagnostics
+  case longevity, activity, history, diagnostics
 
   enum Section: String, Sendable { case main, components, insights }
 
@@ -15,9 +15,10 @@ enum HeliosPage: String, CaseIterable, Identifiable, Sendable {
   var title: String {
     switch self {
     case .overview: "Overview"
+    case .longevity: "Longevity"
     case .activity: "Activity"
     case .history: "History"
-    case .diagnostics: "Diagnostics"
+    case .diagnostics: "Checkup"
     case .cpu: "CPU"
     case .gpu: "GPU"
     case .memory: "Memory"
@@ -32,6 +33,7 @@ enum HeliosPage: String, CaseIterable, Identifiable, Sendable {
   var symbol: String {
     switch self {
     case .overview: "sun.max"
+    case .longevity: "heart.text.square"
     case .activity: "list.bullet.rectangle"
     case .history: "chart.xyaxis.line"
     case .diagnostics: "stethoscope"
@@ -50,7 +52,7 @@ enum HeliosPage: String, CaseIterable, Identifiable, Sendable {
     switch self {
     case .overview: .main
     case .cpu, .gpu, .memory, .thermals, .battery, .energy, .storage, .network, .hardware: .components
-    case .activity, .history, .diagnostics: .insights
+    case .longevity, .activity, .history, .diagnostics: .insights
     }
   }
   var area: HeliosArea? {
@@ -71,46 +73,11 @@ enum HeliosPage: String, CaseIterable, Identifiable, Sendable {
     }
   }
 
-  /// Menu-bar metric popovers of the Legacy interface land on the matching page.
-  init(legacyRoute route: HeliosMonitorRoute) {
-    switch route {
-    case .overview: self = .overview
-    case .cpu, .processes: self = .cpu
-    case .gpu: self = .gpu
-    case .memory: self = .memory
-    case .thermals: self = .thermals
-    case .battery: self = .battery
-    case .energy: self = .energy
-    case .storage, .maintenance: self = .storage
-    case .network: self = .network
-    case .system, .devices, .expert: self = .hardware
-    case .history: self = .history
-    case .health: self = .diagnostics
-    }
-  }
-
-  /// Closest Legacy route, used when the Legacy interface is active.
-  var legacyRoute: HeliosMonitorRoute {
-    switch self {
-    case .overview: .overview
-    case .activity, .history: .history
-    case .diagnostics: .health
-    case .cpu: .cpu
-    case .gpu: .gpu
-    case .memory: .memory
-    case .thermals: .thermals
-    case .battery: .battery
-    case .energy: .energy
-    case .storage: .storage
-    case .network: .network
-    case .hardware: .system
-    }
-  }
-
-  /// What a visible page asks the shared collectors for (the same demand keys the Legacy interface uses).
+  /// What a visible page asks the shared collectors for.
   var detailDemand: TelemetryDetailDemand {
     switch self {
     case .overview, .cpu, .memory, .battery, .energy, .storage: .processes
+    case .longevity: []
     case .thermals: [.rawSensors, .processes]
     case .hardware: .devices
     case .gpu, .activity, .history, .diagnostics, .network: []
@@ -135,13 +102,14 @@ enum HeliosPopoverSection: String, CaseIterable, Identifiable, Sendable {
   static let defaults: [HeliosPopoverSection] = [.chart, .processes, .cooling]
 }
 
-/// Interface choice and Helios-only presentation preferences. Kept separate from
-/// HeliosPreferences so Helios UI edits never invalidate Legacy surfaces and the
-/// Pure UI state: no collection policy.
+/// Helios presentation preferences, kept separate from HeliosPreferences so UI
+/// edits do not invalidate everything observing it. Pure UI state: no collection policy.
 @MainActor
 final class HeliosInterfacePreferences: ObservableObject {
+  /// The Legacy (0.1) interface was retired in 0.3.0 (PLAN_0_3_0 decision 3); a stored
+  /// "legacy" choice loads as Helios and is rewritten.
   enum Style: String, CaseIterable, Identifiable, Sendable {
-    case helios, legacy
+    case helios
     var id: String { rawValue }
   }
 
@@ -172,6 +140,9 @@ final class HeliosInterfacePreferences: ObservableObject {
   init(defaults: UserDefaults = .standard) {
     self.defaults = defaults
     style = defaults.string(forKey: Self.styleKey).flatMap(Style.init(rawValue:)) ?? .helios
+    if defaults.string(forKey: Self.styleKey) != nil, defaults.string(forKey: Self.styleKey) != Style.helios.rawValue {
+      defaults.set(Style.helios.rawValue, forKey: Self.styleKey)
+    }
     overviewChartMetric = defaults.string(forKey: Self.chartMetricKey)
       .flatMap(HeliosChartMetric.init(rawValue:))
     // The old single "performance" page was split; hiding it hides its three successors.

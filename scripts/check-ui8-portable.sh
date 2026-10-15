@@ -447,7 +447,7 @@ SWIFT
 run_swift "$thermal_trust" "$tmpdir/ThermalTrustProbe"
 
 if ! grep -Fq 'case .validatedHotspot: "Validated hotspot"' Sources/HeliosApp/FanControlModel.swift || \
-   ! grep -Fq 'case .validatedHotspot: return "Validated hotspot"' Sources/HeliosApp/OverviewViewController.swift; then
+   ! grep -Fq 'case validatedHotspot = "Validated hotspot"' Sources/HeliosApp/Telemetry/TelemetryModels.swift; then
   echo "FAIL: validated thermal hotspots are missing provenance-safe user-visible labels" >&2
   exit 1
 fi

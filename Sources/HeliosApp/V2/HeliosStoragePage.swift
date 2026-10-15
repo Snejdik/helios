@@ -13,6 +13,7 @@ struct HeliosStoragePage: View {
     VStack(alignment: .leading, spacing: HeliosDesign.sectionSpacing) {
       HeliosAreaHeader(
         assessment: assessment, meaning: HeliosCopy.meaning(.storage), valueCaption: "Startup disk")
+      HeliosWhySection(lens: .fillingDisk, context: context, model: model)
       if !context.preferences.isTelemetryCollectionRequired(.storage) {
         HeliosCollectionOffNotice(
           title: "Storage monitoring is off.", module: .storage, preferences: context.preferences)

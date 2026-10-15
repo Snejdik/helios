@@ -221,7 +221,7 @@ struct HeliosTimeSeriesChart: View {
   var inspectorEnabled = true
   var valueStyle: HeliosChartValueStyle = .plain
   var seriesLabel: String = "Value"
-  /// Optional Activity event markers; empty for every Legacy caller.
+  /// Optional Activity event markers.
   var markers: [HeliosChartMarker] = []
 
   var body: some View {

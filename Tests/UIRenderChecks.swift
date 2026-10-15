@@ -41,6 +41,54 @@ enum UIRenderChecks {
     return buckets
   }
 
+  /// Two months of plausible history so the Longevity page renders its charts and grades.
+  static func longevityDays() -> [LongevityDayRecord] {
+    let calendar = Calendar.current
+    let today = calendar.startOfDay(for: Date())
+    return (0..<60).map { index in
+      var day = LongevityDayRecord(day: calendar.date(byAdding: .day, value: index - 59, to: today)!)
+      day.observedSeconds = 9 * 3_600
+      day.adapterSeconds = 6 * 3_600
+      day.highChargeSeconds = 2.5 * 3_600
+      day.chargingSeconds = 1.5 * 3_600
+      day.hotChargingSeconds = 0.1 * 3_600
+      day.ssdLifetimeWrittenBytes = 18e12 + Double(index) * (24e9 + Double(index % 7) * 6e9)
+      day.ssdPercentageUsed = 1
+      day.adapterName = "70W USB-C Power Adapter"
+      day.adapterRatedWatts = 70
+      day.adapterOfferedWatts = 68
+      day.adapterNegotiatedWatts = 68
+      day.pressureWarningSeconds = Double(index % 5) * 400
+      day.swapWrittenBytes = Double(index % 4) * 0.8e9
+      day.busySeconds = 1_800
+      day.busyCelsiusSeconds = (68 + Double(index % 3)) * 1_800
+      day.busyLoadSeconds = 65 * 1_800
+      day.idleSeconds = 5 * 3_600
+      day.idleCelsiusSeconds = 41 * 5 * 3_600
+      return day
+    }
+  }
+
+  static func batteryHealth() -> BatteryHealthSummary {
+    let calendar = Calendar.current
+    let today = calendar.startOfDay(for: Date())
+    return BatteryHealthSummary(days: (0..<60).map { index in
+      BatteryDayRecord(
+        day: calendar.date(byAdding: .day, value: index - 59, to: today)!,
+        healthPercent: 97.4 - Double(index) * 0.02, maximumCapacityMAh: nil, designCapacityMAh: nil,
+        cycleCount: 140 + index / 3)
+    })
+  }
+
+  static func adapter() -> PowerAdapterDetails {
+    var adapter = PowerAdapterDetails()
+    adapter.name = "70W USB-C Power Adapter"
+    adapter.ratedWatts = 70
+    adapter.offeredWatts = 68
+    adapter.negotiatedWatts = 68
+    return adapter
+  }
+
   static func main() {
     let arguments = CommandLine.arguments
     guard arguments.count >= 2 else {
@@ -64,6 +112,8 @@ enum UIRenderChecks {
         let fixture = UIRenderFixture(UIFixtureCatalog.make(scenario))
         if scenario == .healthy {
           fixture.context.model.appEnergy = AppEnergyHistoryEngine.summary(Self.energyBuckets())
+          fixture.context.model.batteryHealth = Self.batteryHealth()
+          HeliosLongevityCenter.shared.preview(days: Self.longevityDays(), adapter: Self.adapter())
         }
         let pages: [HeliosPage] = scenario == .healthy ? HeliosPage.allCases : [.overview]
         for page in pages {
@@ -71,6 +121,13 @@ enum UIRenderChecks {
             HeliosMainWindowView(context: fixture.context, navigation: fixture.navigation(page)),
             size: CGSize(width: 1040, height: 720),
             to: output.appendingPathComponent("window-\(scenario.rawValue)-\(page.rawValue)-\(suffix).png"))
+          if scenario == .healthy, page == .overview {
+            // A large window: the Overview's second column (questions, tools, summaries).
+            rendered += render(
+              HeliosMainWindowView(context: fixture.context, navigation: fixture.navigation(page)),
+              size: CGSize(width: 1600, height: 900),
+              to: output.appendingPathComponent("window-wide-overview-\(suffix).png"))
+          }
           if scenario == .healthy {
             rendered += render(
               fullPage(page, fixture: fixture).frame(width: 800),
@@ -175,6 +232,7 @@ enum UIRenderChecks {
       case .overview:
         HeliosOverviewPage(context: context, model: context.model, interface: context.interface,
           feed: context.feed, navigation: fixture.navigation(.overview))
+      case .longevity: HeliosLongevityPage(context: context, model: context.model)
       case .activity: HeliosActivityPage(feed: context.feed)
       case .history: HeliosHistoryPage(context: context, model: context.model, feed: context.feed)
       case .diagnostics: HeliosDiagnosticsPage(context: context, model: context.model)
@@ -350,22 +408,11 @@ struct UIRenderFixture {
   }
 }
 
-/// The Settings pieces whose layout was fixed after the first runtime screenshots:
-/// the segmented preset and the telemetry sampler rows (Settings itself needs a
-/// DaemonService, which the offline renderer never creates).
+/// The Settings sampler rows, whose layout was fixed after the first runtime screenshots
+/// (Settings itself needs a DaemonService, which the offline renderer never creates).
 struct UISettingsPreview: View {
-  @State private var mode = HeliosDashboardMode.all
-
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
-      Form {
-        Section("Interface preset") {
-          HeliosPresetPicker(selection: $mode)
-          Text(mode.onboardingDetail).foregroundStyle(.secondary)
-        }
-      }
-      .formStyle(.grouped)
-      .frame(height: 150)
       GroupBox("Telemetry samplers") {
         VStack(spacing: 0) {
           let modules = Array(HeliosTelemetryModule.allCases.prefix(6))

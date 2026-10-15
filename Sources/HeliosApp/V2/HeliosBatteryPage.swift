@@ -15,6 +15,10 @@ struct HeliosBatteryPage: View {
     VStack(alignment: .leading, spacing: HeliosDesign.sectionSpacing) {
       HeliosAreaHeader(
         assessment: assessment, meaning: HeliosCopy.meaning(.battery), valueCaption: "Charge")
+      if assessment.status != .notPresent {
+        HeliosWhySection(lens: .batteryDrain, context: context, model: model)
+      }
+      HeliosWhySection(lens: .cannotSleep, context: context, model: model)
       if assessment.status == .notPresent {
         HeliosChartPanel(
           metric: .power, model: model, preferences: context.preferences, scope: .battery)
@@ -122,8 +126,10 @@ struct HeliosBatteryPage: View {
   @ViewBuilder
   private func powerRows(_ battery: BatteryMetrics) -> some View {
     HeliosFactRow(label: "Status", value: status(battery))
-    HeliosFactRow(label: "Time remaining",
-      value: HeliosText.value(battery.timeRemaining) { TelemetryFormatting.batteryTimeRemaining($0) })
+    let estimate = HeliosBatteryEstimateEngine.estimate(
+      battery: .success(battery), history: model.history)
+    HeliosFactRow(label: "Time remaining", value: estimate.compactText,
+      detail: estimate.source == .helios ? "Helios estimate from recent use while macOS is still calculating" : nil)
     HeliosFactRow(label: "Power flow",
       value: HeliosText.value(battery.power) { TelemetryFormatting.watts($0.signedWatts, signed: true) },
       detail: "+ charging · − discharging")

@@ -36,24 +36,6 @@ struct HeliosSamplerRow: View {
   }
 }
 
-/// Segmented interface preset. The label is hidden so the four segments get the
-/// whole row; with a label beside it the control overflowed and clipped "Simple".
-struct HeliosPresetPicker: View {
-  @Binding var selection: HeliosDashboardMode
-
-  var body: some View {
-    Picker("Preset", selection: $selection) {
-      ForEach(HeliosDashboardMode.allCases) { mode in
-        Text(mode.label).tag(mode)
-      }
-    }
-    .pickerStyle(.segmented)
-    .labelsHidden()
-    .frame(maxWidth: .infinity)
-    .accessibilityLabel("Interface preset")
-  }
-}
-
 /// One look for every Settings group: a quiet title above, content in a rounded
 /// grouped surface (the Helios design system's group), no heavy native box.
 struct HeliosSettingsGroupBoxStyle: GroupBoxStyle {

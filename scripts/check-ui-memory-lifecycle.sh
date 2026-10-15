@@ -6,19 +6,17 @@ cd "$(dirname "$0")/.."
 windows="$(mktemp "${TMPDIR:-/tmp}/helios-windows.XXXXXX")"
 trap 'rm -f "$windows"' EXIT
 # The window code lives in Sources/HeliosApp/Windows; read it as one text in its former file order.
-for name in HeliosWindowCoordinator HeliosEnergyInspector HeliosMonitorWindow HeliosModuleDetail HeliosSettings HeliosOnboarding HeliosWindowChrome; do
+for name in HeliosWindowCoordinator HeliosEnergyInspector HeliosSettings HeliosOnboarding HeliosWindowChrome; do
   cat "Sources/HeliosApp/Windows/$name.swift" >> "$windows"
 done
 status="Sources/HeliosApp/StatusItemController.swift"
-icons="Sources/HeliosApp/HeliosMetricPopovers.swift"
+icons="Sources/HeliosApp/V2/HeliosAppIcon.swift"
 
 grep -q 'detachPresentationTree(from: window)' "$windows"
 grep -q 'window.contentViewController = nil' "$windows"
 grep -q 'window.contentView = NSView(frame: .zero)' "$windows"
 grep -q 'controller?.window = nil' "$windows"
 grep -q 'energyInspectorState.clearDerivedCache()' "$windows"
-grep -q 'private let content: () -> Content' "$windows"
-grep -q '@ViewBuilder content: @escaping () -> Content' "$windows"
 grep -q 'popover.contentViewController = nil' "$status"
 grep -q 'cache.countLimit = 64' "$icons"
 grep -q 'cache.totalCostLimit = 64 \* Self.approximateCost' "$icons"
@@ -26,37 +24,9 @@ grep -q 'func purge() { cache.removeAllObjects() }' "$icons"
 grep -q 'HeliosAppIconCache.shared.purge()' "$windows"
 grep -q 'HeliosAppIconCache.shared.purge()' "$status"
 
-# Compile the actual disclosure implementation and exercise both branches.
-# Searching for a stored closure alone missed RC3's uncalled-content build bug.
-probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/helios-lazy-panel.XXXXXX")"
-trap 'rm -rf "$probe_dir"; rm -f "$windows"' EXIT
-printf 'import AppKit\nimport SwiftUI\n' > "$probe_dir/Probe.swift"
-sed -n '/^private struct HeliosDiagnosticDisclosurePanel</,/^}/p' "$windows" >> "$probe_dir/Probe.swift"
-cat >> "$probe_dir/Probe.swift" <<'SWIFT'
-@main
-@MainActor
-struct LazyPanelProbe {
-  static func main() {
-    var constructions = 0
-    let collapsed = HeliosDiagnosticDisclosurePanel(title: "Test", symbol: "info.circle") {
-      constructions += 1
-      return Text("Diagnostic content")
-    }
-    _ = collapsed.body
-    precondition(constructions == 0, "Collapsed diagnostics constructed their content")
-    let expanded = HeliosDiagnosticDisclosurePanel(
-      title: "Test", symbol: "info.circle", defaultExpanded: true
-    ) {
-      constructions += 1
-      return Text("Diagnostic content")
-    }
-    _ = expanded.body
-    precondition(constructions == 1, "Expanded diagnostics must build their content")
-  }
-}
-SWIFT
-xcrun swiftc -parse-as-library -swift-version 6 -strict-concurrency=complete -warnings-as-errors \
-  "$probe_dir/Probe.swift" -o "$probe_dir/Probe"
-"$probe_dir/Probe"
+# "All readings" reflects the whole snapshot only while it is open and drops the rows on close.
+readings="Sources/HeliosApp/V2/HeliosAllReadings.swift"
+grep -Fq 'if open { capture() } else { groups = [] }' "$readings"
+grep -Fq '@State private var expanded = false' "$readings"
 
-printf '%s\n' 'PASS RC3 UI memory policy: collapsed diagnostics build content lazily, app icons are bounded raster thumbnails, and closed windows/popovers detach reconstructible presentation state'
+printf '%s\n' 'PASS RC3 UI memory policy: All readings is built only while open, app icons are bounded raster thumbnails, and closed windows/popovers detach reconstructible presentation state'

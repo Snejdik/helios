@@ -107,15 +107,15 @@ private struct UIMemoryChecks {
     print("stage,rss_mib,physical_mib")
     measure("baseline")
     for cycle in 1...5 {
-      for route in [HeliosMonitorRoute.overview, .storage, .processes, .expert] {
+      for page in [HeliosPage.overview, .storage, .cpu, .thermals, .longevity, .diagnostics] {
         model.accept(UIMemoryFixture.fixture(cpu: 24, temperature: 56, now: Date()))
-        coordinator.showMonitor(snapshot: model.snapshot, route: route)
+        coordinator.showMain(page: page)
         await settle()
       }
       var references = closeWindows()
       await settle(2)
       verifyReleased(references)
-      measure("cycle-\(cycle)-monitor")
+      measure("cycle-\(cycle)-main")
       model.accept(UIMemoryFixture.fixture(cpu: 24, temperature: 56, now: Date()))
       coordinator.showEnergyInspector()
       for range in [HeliosGraphRange.oneHour, .sixHours, .twentyFourHours] {
@@ -137,16 +137,17 @@ private struct UIMemoryChecks {
       // Construct/destroy the exact dashboard and metric roots. This is not a
       // substitute for transient status-button/highlight interaction testing.
       model.accept(UIMemoryFixture.fixture(cpu: 24, temperature: 56, now: Date()))
+      let context = HeliosContext(
+        model: model, preferences: preferences, service: service, feed: HeliosActivityFeed(fixedEvents: []))
       for metric in [HeliosMenuBarMetric.cpu, .memory, .battery] {
         autoreleasepool {
-          let host = NSHostingController(rootView: HeliosMetricPopoverView(
-            metric: metric, model: model, service: service, preferences: preferences, openRoute: { _ in }))
+          let host = NSHostingController(rootView: HeliosMetricStatusPopover(metric: metric, context: context))
           host.view.layoutSubtreeIfNeeded()
         }
         await settle()
       }
       autoreleasepool {
-        let host = OverviewViewController(model: model, service: service, preferences: preferences)
+        let host = NSHostingController(rootView: HeliosStatusPopoverView(context: context))
         host.view.layoutSubtreeIfNeeded()
       }
       HeliosAppIconCache.shared.purge()

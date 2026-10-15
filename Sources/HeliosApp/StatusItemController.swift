@@ -58,15 +58,6 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
       }
       .store(in: &subscriptions)
 
-    // Interface switch: drop the old style's popover tree and swap the open main
-    // window. Only presentation changes; the shared model and collectors remain.
-    preferences.interface.$style
-      .removeDuplicates()
-      .dropFirst()
-      .sink { [weak self] _ in
-        DispatchQueue.main.async { [weak self] in self?.interfaceStyleDidChange() }
-      }
-      .store(in: &subscriptions)
     preferences.interface.$popoverSections
       .dropFirst()
       .sink { [weak self] _ in
@@ -106,12 +97,6 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         (metric == .temperature || metric == .cooling ? "\n" + ThermalMetrics.primaryExplanation : "")
       item.button?.setAccessibilityValue(text)
     }
-
-    if dashboardPopover.isShown,
-      let overview = dashboardPopover.contentViewController as? OverviewViewController
-    {
-      overview.update(snapshot)
-    }
   }
 
   func setDetailDemandHandler(_ handler: @escaping (TelemetryDetailDemand) -> Void) {
@@ -131,17 +116,10 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     windows.showSettings(route: route)
   }
 
-  /// Main window at a page (menu commands, Dock reopen). Legacy maps to its monitor.
+  /// Main window at a page (menu commands, Dock reopen).
   func showMainWindow(page: HeliosPage? = nil) {
     forceCloseAllPopovers()
     windows.showMain(page: page)
-  }
-
-  private func interfaceStyleDidChange() {
-    forceCloseAllPopovers()
-    dashboardPopover.contentViewController = nil
-    model.setDetailDemand([], owner: demandOwner(for: dashboardPopover))
-    windows.interfaceStyleDidChange()
   }
 
   func popoverDidClose(_ notification: Notification) {
@@ -302,56 +280,11 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     closeMetricPopovers(except: popover)
     setHighlighted(sender, for: popover)
 
-    if preferences.interface.style == .helios {
-      showHeliosMetricPopover(metric, popover: popover, from: sender)
-      return
-    }
-
-    // Service state is already monitored continuously. Opening a menu-bar
-    // surface must stay presentation-only and avoid synchronous registration/XPC
-    // work on the click path.
-    let content = HeliosMetricPopoverView(
-      metric: metric,
-      model: model,
-      service: service,
-      preferences: preferences,
-      openRoute: { [weak self, weak popover] route in
-        popover?.performClose(nil)
-        self?.windows.showMonitor(snapshot: self?.snapshot ?? TelemetrySnapshot(), route: route)
-      },
-      openEnergyInspector: { [weak self, weak popover] in
-        popover?.performClose(nil)
-        self?.windows.showEnergyInspector()
-      }
-    )
-    .onExitCommand { [weak self] in
-      self?.forceCloseAllPopovers()
-    }
-    let hosting = NSViewController()
-    hosting.view = HeliosEscapableHostingView(
-      rootView: content,
-      onCancel: { [weak self] in self?.forceCloseAllPopovers() })
-    popover.contentViewController = hosting
-    popover.contentSize = NSSize(
-      width: 344, height: HeliosMetricPopoverView.preferredHeight(for: metric))
-    popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
-    model.setDetailDemand(metric == .cpu || metric == .memory ? .processes : [],
-      owner: demandOwner(for: popover))
-    startDismissMonitoring(sourceButton: sender, popover: popover)
-    DispatchQueue.main.async { [weak hosting] in
-      guard let view = hosting?.view, let window = view.window else { return }
-      // A status-item click does not necessarily activate a menu-bar app. Make
-      // the popover window key so standard AppKit cancelOperation/Escape routing
-      // reaches the hosting responder without requiring Accessibility privileges.
-      window.makeKey()
-      window.makeFirstResponder(view)
-    }
+    showHeliosMetricPopover(metric, popover: popover, from: sender)
   }
 
   private func refreshPopoverDetailDemand() {
-    let wantsProcesses = preferences.interface.style == .helios
-      ? preferences.interface.isPopoverSectionEnabled(.processes)
-      : preferences.popoverModulesForPresentation.contains(.topCPU)
+    let wantsProcesses = preferences.interface.isPopoverSectionEnabled(.processes)
     model.setDetailDemand(dashboardPopover.isShown && wantsProcesses ? .processes : [],
       owner: demandOwner(for: dashboardPopover))
     for (metric, popover) in metricPopovers {
@@ -404,41 +337,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
       (sender as? NSStatusBarButton) ?? compactStatusItem?.button ?? hubStatusItem?.button
     guard let button = sourceButton else { return }
     setHighlighted(button, for: dashboardPopover)
-    if preferences.interface.style == .helios {
-      showHeliosPopover(from: button)
-      return
-    }
-
-    // Keep menu interaction presentation-only; DaemonService refreshes its
-    // registration/connection state independently in the background.
-    let overview =
-      (dashboardPopover.contentViewController as? OverviewViewController)
-      ?? OverviewViewController(
-        model: model,
-        service: service,
-        preferences: preferences,
-        openMonitor: { [weak self] in
-          self?.windows.showMonitor(snapshot: self?.snapshot ?? TelemetrySnapshot())
-        },
-        openCooling: { [weak self] in
-          self?.windows.showMonitor(
-            snapshot: self?.snapshot ?? TelemetrySnapshot(), route: .thermals)
-        },
-        openSettings: { [weak self] in self?.windows.showSettings() },
-        openRoute: { [weak self] route in
-          self?.windows.showMonitor(snapshot: self?.snapshot ?? TelemetrySnapshot(), route: route)
-        })
-    _ = overview.view
-    overview.update(snapshot)
-    overview.preferredContentSize = NSSize(width: 420, height: 600)
-    dashboardPopover.contentViewController = overview
-    dashboardPopover.contentSize = NSSize(width: 420, height: 600)
-    dashboardPopover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-    refreshPopoverDetailDemand()
-    // Match metric popovers: give native menu shortcuts a key window after a
-    // status-item click, which need not otherwise activate an accessory app.
-    dashboardPopover.contentViewController?.view.window?.makeKey()
-    startDismissMonitoring(sourceButton: button, popover: dashboardPopover)
+    showHeliosPopover(from: button)
   }
 
   private func heliosActions() -> HeliosActions {
@@ -473,7 +372,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
   }
 
   /// Helios popover. Its tree and Activity feed are released on close by
-  /// popoverDidClose, like the Legacy dashboard.
+  /// popoverDidClose, like the other popovers.
   private func showHeliosPopover(from button: NSStatusBarButton) {
     let actions = heliosActions()
     let context = HeliosContext(
@@ -620,39 +519,6 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
       let fan = inventory.fans.first
     else { return nil }
     return try? fan.actualRPM.get()
-  }
-}
-
-@MainActor
-private final class HeliosEscapableHostingView<Content: View>: NSHostingView<Content> {
-  private let onCancel: () -> Void
-
-  required init(rootView: Content) {
-    self.onCancel = {}
-    super.init(rootView: rootView)
-  }
-
-  init(rootView: Content, onCancel: @escaping () -> Void) {
-    self.onCancel = onCancel
-    super.init(rootView: rootView)
-  }
-
-  required init?(coder: NSCoder) {
-    fatalError("init(coder:) has not been implemented")
-  }
-
-  override var acceptsFirstResponder: Bool { true }
-
-  override func cancelOperation(_ sender: Any?) {
-    onCancel()
-  }
-
-  override func keyDown(with event: NSEvent) {
-    if event.keyCode == 53 {
-      onCancel()
-      return
-    }
-    super.keyDown(with: event)
   }
 }
 

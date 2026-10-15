@@ -9,6 +9,7 @@ enum HeliosSettingsRoute: String, CaseIterable, Identifiable {
   case battery
   case privacy
   case notifications
+  case automation
   case advanced
   case about
 
@@ -23,6 +24,7 @@ enum HeliosSettingsRoute: String, CaseIterable, Identifiable {
     case .battery: "Battery & Energy"
     case .privacy: "Privacy & Diagnostics"
     case .notifications: "Notifications"
+    case .automation: "Automation"
     case .advanced: "Advanced"
     case .about: "About"
     }
@@ -37,6 +39,7 @@ enum HeliosSettingsRoute: String, CaseIterable, Identifiable {
     case .battery: "battery.75percent"
     case .privacy: "hand.raised"
     case .notifications: "bell"
+    case .automation: "wand.and.stars"
     case .advanced: "slider.horizontal.3"
     case .about: "info.circle"
     }
@@ -46,18 +49,9 @@ enum HeliosSettingsRoute: String, CaseIterable, Identifiable {
 private enum HeliosModuleSettingsTab: String, CaseIterable, Identifiable {
   case collection = "Data Collection"
   case menuBar = "Menu Bar"
-  case popover = "Dashboard"
-  case monitor = "Full Monitor"
+  case popover = "Popover"
+  case monitor = "Window"
   var id: String { rawValue }
-
-  func title(_ style: HeliosInterfacePreferences.Style) -> String {
-    guard style == .helios else { return rawValue }
-    switch self {
-    case .popover: return "Popover"
-    case .monitor: return "Window"
-    default: return rawValue
-    }
-  }
 }
 
 @MainActor
@@ -74,7 +68,7 @@ struct HeliosSettingsView: View {
   @ObservedObject private var healthCenter: HealthAlertCenter
   @StateObject private var manualApproval = DiagnosticsManualApproval()
   @ObservedObject private var state: HeliosSettingsState
-  /// Helios/Legacy choice and Helios layout live in their own observable.
+  /// Helios layout lives in its own observable.
   @ObservedObject private var interface: HeliosInterfacePreferences
   @State private var moduleTab: HeliosModuleSettingsTab = .collection
   @State private var goalsDraft: Set<HeliosGoal> = []
@@ -187,6 +181,7 @@ struct HeliosSettingsView: View {
     case .battery: batterySettings
     case .privacy: privacy
     case .notifications: notificationSettings
+    case .automation: HeliosAutomationSettings()
     case .advanced: advanced
     case .about: about
     }
@@ -201,6 +196,7 @@ struct HeliosSettingsView: View {
     case .battery: "Battery estimates and energy history."
     case .privacy: "What stays on this Mac, and optional diagnostics."
     case .notifications: "Informational alerts."
+    case .automation: "Rules, the command palette, links and the command line."
     case .advanced: "Reset and removal."
     case .about: "Version and links."
     }
@@ -342,61 +338,25 @@ struct HeliosSettingsView: View {
 
   private var general: some View {
     VStack(alignment: .leading, spacing: 16) {
-      GroupBox("Interface") {
-        VStack(alignment: .leading, spacing: 8) {
-          Picker("Interface", selection: $interface.style) {
-            Text("Helios").tag(HeliosInterfacePreferences.Style.helios)
-            Text("Legacy").tag(HeliosInterfacePreferences.Style.legacy)
-          }
-          .pickerStyle(.segmented)
-          .labelsHidden()
-          .fixedSize()
-          Text(interface.style == .helios
-            ? "The new window and menu-bar popover."
-            : "The original 0.1 window and dashboard. Same monitoring underneath.")
-            .font(.subheadline).foregroundStyle(.secondary)
-          if interface.style == .legacy {
-            Toggle(
-              "Compact dashboard card spacing",
-              isOn: Binding(
-                get: { preferences.compactCards },
-                set: { preferences.setCompactCards($0) }))
-          }
-        }
-      }
-      if interface.style == .helios {
-        GroupBox("Your goals") {
-          VStack(alignment: .leading, spacing: 10) {
-            HeliosGoalPicker(selection: $goalsDraft)
-            HStack {
-              Button("Apply Goals") {
-                preferences.applyGoals(goalsDraft)
-                goalsApplied = true
-              }
-              .disabled(goalsDraft == interface.goals && !goalsDraft.isEmpty)
-              if goalsApplied { Label("Applied", systemImage: "checkmark").foregroundStyle(.secondary) }
-              Spacer(minLength: 0)
+      GroupBox("Your goals") {
+        VStack(alignment: .leading, spacing: 10) {
+          HeliosGoalPicker(selection: $goalsDraft)
+          HStack {
+            Button("Apply Goals") {
+              preferences.applyGoals(goalsDraft)
+              goalsApplied = true
             }
-            Text("Sets the menu bar, popover, sidebar and what Helios collects. Edit any of it afterwards in Modules.")
-              .font(.subheadline).foregroundStyle(.tertiary)
-              .fixedSize(horizontal: false, vertical: true)
+            .disabled(goalsDraft == interface.goals && !goalsDraft.isEmpty)
+            if goalsApplied { Label("Applied", systemImage: "checkmark").foregroundStyle(.secondary) }
+            Spacer(minLength: 0)
           }
-        }
-        .onAppear { goalsDraft = interface.goals }
-        .onChange(of: goalsDraft) { _ in goalsApplied = false }
-      } else {
-      GroupBox("What Helios collects") {
-        VStack(alignment: .leading, spacing: 8) {
-          HeliosPresetPicker(selection: Binding(
-            get: { preferences.dashboardMode },
-            set: { preferences.applyInterfacePreset($0) }))
-          Text(preferences.dashboardMode.onboardingDetail)
-            .font(.subheadline).foregroundStyle(.secondary)
-          Text("A preset is a starting point. Fine-tune every sampler in Modules.")
+          Text("Sets the menu bar, popover, sidebar and what Helios collects. Edit any of it afterwards in Modules.")
             .font(.subheadline).foregroundStyle(.tertiary)
+            .fixedSize(horizontal: false, vertical: true)
         }
       }
-      }
+      .onAppear { goalsDraft = interface.goals }
+      .onChange(of: goalsDraft) { _ in goalsApplied = false }
       GroupBox("Units") {
         HStack {
           Text("Temperature")
@@ -443,7 +403,7 @@ struct HeliosSettingsView: View {
     VStack(alignment: .leading, spacing: 14) {
       Picker("Module surface", selection: $moduleTab) {
         ForEach(HeliosModuleSettingsTab.allCases) { tab in
-          Text(tab.title(interface.style)).tag(tab)
+          Text(tab.rawValue).tag(tab)
         }
       }
       .pickerStyle(.segmented)
@@ -454,18 +414,8 @@ struct HeliosSettingsView: View {
       switch moduleTab {
       case .collection: dataCollection
       case .menuBar: menuBar
-      case .popover:
-        if interface.style == .helios {
-          HeliosPopoverSettings(interface: interface)
-        } else {
-          dashboard
-        }
-      case .monitor:
-        if interface.style == .helios {
-          HeliosWindowSettings(interface: interface)
-        } else {
-          monitor
-        }
+      case .popover: HeliosPopoverSettings(interface: interface)
+      case .monitor: HeliosWindowSettings(interface: interface)
       }
     }
   }
@@ -559,234 +509,6 @@ struct HeliosSettingsView: View {
         .font(.subheadline).foregroundStyle(.tertiary)
         .fixedSize(horizontal: false, vertical: true)
     }
-  }
-
-  private var dashboard: some View {
-    VStack(alignment: .leading, spacing: 14) {
-      GroupBox("Quick presets") {
-        VStack(alignment: .leading, spacing: 9) {
-          HStack(spacing: 8) {
-            ForEach(HeliosDashboardMode.allCases.filter { $0 != .custom }) { mode in
-              Button(mode.label) {
-                preferences.applyDashboardPreset(mode)
-              }
-              .frame(maxWidth: .infinity)
-              .help(mode.onboardingDetail)
-            }
-          }
-          Text(
-            "A preset replaces the visible module list once. After that, add, remove, or reorder anything below — Helios does not lock you into a mode."
-          )
-          .font(.system(size: 11)).foregroundStyle(.secondary)
-        }
-        .padding(4)
-      }
-
-      if preferences.isPopoverModuleEnabled(.summary) {
-        GroupBox("Summary metrics") {
-          VStack(spacing: 0) {
-            ForEach(preferences.dashboardMetrics) { metric in
-              configurableDashboardMetricRow(metric)
-              if preferences.dashboardMetrics.last != metric { Divider() }
-            }
-            let availableMetrics = HeliosDashboardMetric.allCases.filter {
-              !preferences.isDashboardMetricEnabled($0)
-            }
-            if !availableMetrics.isEmpty {
-              Divider().opacity(0.45)
-              HStack {
-                Text("Add")
-                  .font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
-                ForEach(availableMetrics) { metric in
-                  Button {
-                    preferences.setDashboardMetricEnabled(metric, enabled: true)
-                  } label: {
-                    Image(systemName: metric.symbolName)
-                  }
-                  .buttonStyle(.borderless)
-                  .help("Add \(metric.label)")
-                  .accessibilityLabel("Add \(metric.label)")
-                }
-                Spacer()
-              }
-              .padding(.vertical, 7)
-            }
-          }
-          .padding(.horizontal, 4)
-        }
-      }
-
-      GroupBox("Visible modules") {
-        VStack(spacing: 0) {
-          ForEach(preferences.popoverModules) { module in
-            configurablePopoverRow(module)
-            if preferences.popoverModules.last != module { Divider() }
-          }
-          if preferences.popoverModules.isEmpty {
-            Text("No dashboard modules are enabled.")
-              .font(.system(size: 11)).foregroundStyle(.secondary)
-              .frame(maxWidth: .infinity, alignment: .leading)
-              .padding(.vertical, 8)
-          }
-        }
-        .padding(.horizontal, 4)
-      }
-
-      let available = HeliosPopoverModule.allCases.filter {
-        !preferences.isPopoverModuleEnabled($0)
-      }
-      if !available.isEmpty {
-        GroupBox("Add a module") {
-          LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-            ForEach(available) { module in
-              Button {
-                preferences.setPopoverModuleEnabled(module, enabled: true)
-              } label: {
-                Label(module.label, systemImage: module.symbolName)
-                  .frame(maxWidth: .infinity, alignment: .leading)
-              }
-            }
-          }
-          .padding(4)
-        }
-      }
-
-      HStack {
-        Spacer()
-        Button("Reset Dashboard to Recommended") { preferences.resetDashboard() }
-      }
-    }
-  }
-
-  private func configurablePopoverRow(_ module: HeliosPopoverModule) -> some View {
-    HStack(spacing: 10) {
-      Label(module.label, systemImage: module.symbolName)
-      Spacer()
-      Button {
-        preferences.movePopoverModule(module, offset: -1)
-      } label: {
-        Image(systemName: "chevron.up")
-      }
-      .buttonStyle(.borderless)
-      .disabled(preferences.popoverModules.first == module)
-      .help("Move up")
-      .accessibilityLabel("Move up")
-      Button {
-        preferences.movePopoverModule(module, offset: 1)
-      } label: {
-        Image(systemName: "chevron.down")
-      }
-      .buttonStyle(.borderless)
-      .disabled(preferences.popoverModules.last == module)
-      .help("Move down")
-      .accessibilityLabel("Move down")
-      Button(role: .destructive) {
-        preferences.setPopoverModuleEnabled(module, enabled: false)
-      } label: {
-        Image(systemName: "minus.circle")
-      }
-      .buttonStyle(.borderless)
-      .help("Remove from dashboard")
-      .accessibilityLabel("Remove from dashboard")
-    }
-    .font(.system(size: 11))
-    .padding(.vertical, 7)
-  }
-
-  private var monitor: some View {
-    VStack(alignment: .leading, spacing: 14) {
-      GroupBox("Sidebar modules") {
-        VStack(spacing: 0) {
-          ForEach(preferences.monitorRoutes) { route in
-            configurableMonitorRow(route)
-            if preferences.monitorRoutes.last != route { Divider() }
-          }
-        }
-        .padding(.horizontal, 4)
-      }
-
-      let available = HeliosMonitorRoute.allCases.filter { !preferences.isMonitorRouteEnabled($0) }
-      if !available.isEmpty {
-        GroupBox("Add a module") {
-          LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-            ForEach(available) { route in
-              Button {
-                preferences.setMonitorRouteEnabled(route, enabled: true)
-              } label: {
-                Label(route.title, systemImage: route.symbol)
-                  .frame(maxWidth: .infinity, alignment: .leading)
-              }
-            }
-          }
-          .padding(4)
-        }
-      }
-
-      GroupBox("Behavior") {
-        VStack(alignment: .leading, spacing: 8) {
-          Toggle(
-            "Detailed Full Monitor content",
-            isOn: Binding(
-              get: { preferences.detailedMonitorContent },
-              set: { preferences.setDetailedMonitorContent($0) })
-          )
-          Text(
-            preferences.detailedMonitorContent
-              ? "Detailed content exposes per-core/process/diagnostic context by default. Detailed and Custom onboarding presets enable this automatically."
-              : "Essential content keeps Full Monitor focused. Hidden detail is not deleted and can be re-enabled at any time."
-          )
-          .font(.system(size: 11)).foregroundStyle(.secondary)
-          Text(
-            "Overview stays pinned as the landing page. Hidden sidebar modules are not deleted; you can add them back here at any time."
-          )
-          .font(.system(size: 11)).foregroundStyle(.secondary)
-          HStack {
-            Spacer()
-            Button("Show All Modules") { preferences.resetMonitor() }
-          }
-        }
-        .padding(4)
-      }
-    }
-  }
-
-  private func configurableMonitorRow(_ route: HeliosMonitorRoute) -> some View {
-    HStack(spacing: 10) {
-      Label(route.title, systemImage: route.symbol)
-      if route == .overview {
-        Text("Pinned").font(.system(size: 11, weight: .medium)).foregroundStyle(.tertiary)
-      }
-      Spacer()
-      Button {
-        preferences.moveMonitorRoute(route, offset: -1)
-      } label: {
-        Image(systemName: "chevron.up")
-      }
-      .buttonStyle(.borderless)
-      .disabled(route == .overview || preferences.monitorRoutes.firstIndex(of: route) == 1)
-      .help("Move up")
-      .accessibilityLabel("Move up")
-      Button {
-        preferences.moveMonitorRoute(route, offset: 1)
-      } label: {
-        Image(systemName: "chevron.down")
-      }
-      .buttonStyle(.borderless)
-      .disabled(route == .overview || preferences.monitorRoutes.last == route)
-      .help("Move down")
-      .accessibilityLabel("Move down")
-      Button(role: .destructive) {
-        preferences.setMonitorRouteEnabled(route, enabled: false)
-      } label: {
-        Image(systemName: "minus.circle")
-      }
-      .buttonStyle(.borderless)
-      .disabled(route == .overview)
-      .help(route == .overview ? "Overview is always available" : "Hide from Full Monitor")
-      .accessibilityLabel(route == .overview ? "Overview is always available" : "Hide from Full Monitor")
-    }
-    .font(.system(size: 11))
-    .padding(.vertical, 7)
   }
 
   private var menuBar: some View {
@@ -1078,27 +800,16 @@ struct HeliosSettingsView: View {
 
   private var fans: some View {
     VStack(alignment: .leading, spacing: 16) {
-      GroupBox("Fan helper") {
-        VStack(alignment: .leading, spacing: 10) {
-          DaemonServiceCard(service: service, client: service.client, embedded: true)
-          Text("Fan control needs this signed helper. Install it here once; macOS asks for your approval. Reading temperatures and fan speed works without it.")
-            .font(.subheadline).foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-        }
-      }
-      if preferences.coolingFeaturesEnabled {
-        HeliosFanLayerConsentBox(client: service.client)
-      }
       GroupBox("Fan control") {
         VStack(alignment: .leading, spacing: 10) {
           Toggle(
-            "Enable cooling controls",
+            "Show fan controls in Helios",
             isOn: Binding(
               get: { preferences.coolingFeaturesEnabled },
               set: { setCoolingEnabled($0) }))
           Text(preferences.coolingFeaturesEnabled
-            ? "Boost, Manual and Automatic Rules are available on the Thermals page. System (macOS) stays the recommended mode."
-            : "Fan-control UI is off. Fan speed can still be shown if Fan telemetry is on in Modules.")
+            ? "Auto, Manual and (on a validated Mac) Boost are on the Thermals page. System, where macOS decides, stays the default."
+            : "Helios only shows fan speed. Turn this on to add cooling of your own.")
             .font(.subheadline).foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
           HeliosRestoreAutoToggle(
@@ -1113,6 +824,17 @@ struct HeliosSettingsView: View {
             Spacer()
           }
         }
+      }
+      GroupBox("Fan helper") {
+        VStack(alignment: .leading, spacing: 10) {
+          DaemonServiceCard(service: service, client: service.client, embedded: true)
+          Text("Fan control needs this signed helper. Install it here once; macOS asks for your approval. Reading temperatures and fan speed works without it.")
+            .font(.subheadline).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+      }
+      if preferences.coolingFeaturesEnabled {
+        HeliosFanLayerConsentBox(client: service.client)
       }
       DisclosureGroup("Safety model") {
         VStack(alignment: .leading, spacing: 8) {
@@ -1363,11 +1085,12 @@ struct HeliosSettingsView: View {
       GroupBox("Raw sensors") {
         VStack(alignment: .leading, spacing: 6) {
           settingsFact("Where",
-            interface.style == .helios ? "Hardware → Raw SMC inventory" : "Full Monitor → Expert")
+            "Hardware → Raw SMC inventory")
           Text("Raw values are for experts and never drive cooling unless separately validated.")
             .font(.subheadline).foregroundStyle(.tertiary)
         }
       }
+      HeliosMouseToolsSettings()
       GroupBox("Uninstall Helios") {
         VStack(alignment: .leading, spacing: 10) {
           Toggle("Erase local Helios settings and monitoring history", isOn: $eraseLocalDataOnRemoval)
@@ -1699,4 +1422,62 @@ struct HeliosAlertGroup {
                       firstLabel: "Elevated", note: "Reported by macOS"),
     ]),
   ]
+}
+
+struct HeliosFanSafetyNotice: View {
+  var compact: Bool = false
+
+  var body: some View {
+    HStack(alignment: .top, spacing: 7) {
+      Image(systemName: "exclamationmark.triangle")
+        .font(.system(size: compact ? 9 : 10, weight: .semibold))
+        .foregroundStyle(.orange)
+        .padding(.top, 1)
+      Text(
+        "System, where macOS decides, is the default. Auto and Manual only add cooling on top of macOS: Helios never runs the fans slower than macOS would, stays within its speed limit, and hands the fans back to macOS on any error, before sleep and when it quits. At 95 °C the helper acts on its own: it cools as hard as it is allowed to, or returns the fans to macOS. Apple does not document fan control by other software; you use it at your own risk."
+      )
+      .font(.system(size: compact ? 9 : 10))
+      .foregroundStyle(.secondary)
+      .fixedSize(horizontal: false, vertical: true)
+    }
+    .accessibilityElement(children: .combine)
+  }
+}
+
+/// Settings › Advanced: the experimental mouse tools. Hidden behind one switch, off by default.
+struct HeliosMouseToolsSettings: View {
+  @ObservedObject private var mouse = HeliosMouseTools.shared
+
+  var body: some View {
+    GroupBox("Mouse (experimental)") {
+      VStack(alignment: .leading, spacing: 10) {
+        Toggle("Use Helios's mouse settings", isOn: Binding(get: { mouse.enabled }, set: { mouse.setEnabled($0) }))
+        Text("For a mouse with a scroll wheel. Trackpads and Magic Mouse are never changed.")
+          .font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        if mouse.enabled {
+          Toggle("Reverse the scroll wheel (keep natural scrolling on the trackpad)",
+                 isOn: Binding(get: { mouse.settings.reverseWheel }, set: { mouse.settings.reverseWheel = $0 }))
+          Stepper(value: Binding(get: { mouse.settings.wheelSpeed }, set: { mouse.settings.wheelSpeed = $0 }),
+                  in: HeliosMouseScrollSettings.speedRange) {
+            Text("Scroll distance per notch: \(mouse.settings.wheelSpeed == 1 ? "as macOS" : "\(mouse.settings.wheelSpeed)×")")
+          }
+          switch mouse.state {
+          case .active:
+            Label("On", systemImage: "checkmark.circle").foregroundStyle(.secondary)
+          case .needsPermission:
+            VStack(alignment: .leading, spacing: 6) {
+              Text("Helios needs Accessibility access to change scroll events. It sees scroll events only, never keys, clicks or the pointer. Every new Helios version asks again, because the app is not notarized.")
+                .font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+              HStack {
+                Button("Allow in System Settings…") { mouse.requestPermission() }
+                Button("Check Again") { mouse.start() }
+              }
+            }
+          case .off:
+            EmptyView()
+          }
+        }
+      }
+    }
+  }
 }

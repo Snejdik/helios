@@ -12,7 +12,7 @@ ioaudit="Sources/HeliosApp/Telemetry/IOActivityAudit.swift"
 windows="$(mktemp "${TMPDIR:-/tmp}/helios-windows.XXXXXX")"
 trap 'rm -f "$windows"' EXIT
 # The window code lives in Sources/HeliosApp/Windows; read it as one text in its former file order.
-for name in HeliosWindowCoordinator HeliosEnergyInspector HeliosMonitorWindow HeliosModuleDetail HeliosSettings HeliosOnboarding HeliosWindowChrome; do
+for name in HeliosWindowCoordinator HeliosEnergyInspector HeliosSettings HeliosOnboarding HeliosWindowChrome; do
   cat "Sources/HeliosApp/Windows/$name.swift" >> "$windows"
 done
 status="Sources/HeliosApp/StatusItemController.swift"
@@ -51,7 +51,7 @@ for file in "$energy" "$history" "$ioaudit"; do
 done
 
 grep -Fq 'private var cachedSummary: AppEnergySummary?' "$energy" || { echo 'FAIL app-energy summary cache missing' >&2; exit 1; }
-grep -Fq 'self.appEnergy != summary' Sources/HeliosApp/OverviewViewController.swift || { echo 'FAIL app-energy no-op publish suppression missing' >&2; exit 1; }
+grep -Fq 'self.appEnergy != summary' Sources/HeliosApp/OverviewViewModel.swift || { echo 'FAIL app-energy no-op publish suppression missing' >&2; exit 1; }
 grep -Fq 'popover.contentViewController = nil' "$status" || { echo 'FAIL closed popover tree release missing' >&2; exit 1; }
 grep -Fq 'func windowWillClose(_ notification: Notification)' "$windows" || { echo 'FAIL closed window controller release missing' >&2; exit 1; }
 grep -Fq 'energyInspectorState.clearDerivedCache()' "$windows" || { echo 'FAIL Energy Inspector derived-cache release missing' >&2; exit 1; }

@@ -53,10 +53,8 @@ enum LabState: String, CaseIterable {
   case settingsAdvanced = "settings-advanced"
   case settingsAbout = "settings-about"
   case heliosPopover = "helios-popover"
+  case heliosLongevity = "helios-longevity"
   case afterHelios = "after-helios"
-  case legacyMonitor = "legacy-monitor"
-  case legacyPopover = "legacy-popover"
-  case afterLegacy = "after-legacy"
 }
 
 /// Off-screen window that AppKit never pulls back onto a display.
@@ -219,7 +217,7 @@ final class Lab {
   func show(_ state: LabState) {
     close()
     switch state {
-    case .idle, .afterHelios, .afterLegacy:
+    case .idle, .afterHelios:
       HeliosAppIconCache.shared.purge()
       if ProcessInfo.processInfo.environment["HELIOS_LAB_RELIEF"] == "1" {
         malloc_zone_pressure_relief(nil, 0)
@@ -234,6 +232,7 @@ final class Lab {
     case .heliosStorage: showHelios(.storage)
     case .heliosNetwork: showHelios(.network)
     case .heliosHardware: showHelios(.hardware)
+    case .heliosLongevity: showHelios(.longevity)
     case .settingsGeneral: showSettings(.general)
     case .settingsModules: showSettings(.modules)
     case .settingsGraphs: showSettings(.graphs)
@@ -248,15 +247,6 @@ final class Lab {
         feed: HeliosActivityFeed(model: model))
       present(NSHostingController(rootView: HeliosStatusPopoverView(context: context)),
         size: NSSize(width: 340, height: 640))
-    case .legacyMonitor:
-      let controller = HeliosMonitorWindowController(
-        model: model, service: service, preferences: preferences, openEnergyInspector: {})
-      let content = controller.window?.contentViewController
-      controller.window?.contentViewController = nil
-      if let content { present(content, size: NSSize(width: 1040, height: 720)) }
-    case .legacyPopover:
-      present(OverviewViewController(model: model, service: service, preferences: preferences),
-        size: NSSize(width: 420, height: 600))
     }
   }
 

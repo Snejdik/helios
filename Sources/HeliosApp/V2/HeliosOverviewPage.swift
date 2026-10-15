@@ -6,40 +6,93 @@ struct HeliosOverviewPage: View {
   @ObservedObject var interface: HeliosInterfacePreferences
   @ObservedObject var feed: HeliosActivityFeed
   let navigation: HeliosNavigation
+  @State private var width: CGFloat = 0
 
   var body: some View {
     let assessment = HeliosMacAssessment.evaluate(
       model.snapshot, configuration: context.preferences.healthAlerts)
-    let automatic = assessment.focus.flatMap { assessment.area($0)?.chartMetric } ?? .cpu
-    let metric = interface.overviewChartMetric ?? automatic
-    let range = context.preferences.graphRange(for: .overview)
     VStack(alignment: .leading, spacing: 20) {
       if let diagnosticsPreferences = context.diagnosticsPreferences {
         HeliosDiagnosticsReminder(
           diagnosticsPreferences: diagnosticsPreferences, interface: interface,
           review: { context.actions.openSettingsRoute(.privacy) })
       }
-      HeliosOverviewHero(assessment: assessment)
-      HeliosAreaStrip(assessment: assessment) { navigation.selection = HeliosPage(focus: $0) }
-      HeliosChartPanel(
-        metric: metric, model: model, preferences: context.preferences, scope: .overview,
-        height: 140, markers: feed.markers(for: metric, range: range),
-        metricChoice: HeliosChartPanel.MetricChoice(
-          selected: $interface.overviewChartMetric, automatic: automatic,
-          available: HeliosChartMetric.available(in: model.presentation)))
-      HStack(alignment: .top, spacing: 28) {
-        HeliosRightNowSection(context: context, presentation: model.presentation, limit: 3)
-          .frame(maxWidth: .infinity, alignment: .topLeading)
-        HeliosRecentSection(events: Array(feed.recent(3))) {
-          navigation.selection = .activity
+      // A large window gets a second column for questions and tools instead of a narrow
+      // strip with empty space below; a normal window keeps one column.
+      if width >= HeliosDesign.overviewTwoColumnWidth {
+        HStack(alignment: .top, spacing: 28) {
+          VStack(alignment: .leading, spacing: 20) { status(assessment) }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+          VStack(alignment: .leading, spacing: 20) {
+            HeliosAskSection(context: context, model: model, stacked: true)
+            tools
+            summaries
+          }
+          .frame(width: 340, alignment: .topLeading)
         }
+      } else {
+        HeliosOverviewHero(assessment: assessment)
+        HeliosAreaStrip(assessment: assessment) { navigation.selection = HeliosPage(focus: $0) }
+        tools
+        HeliosAskSection(context: context, model: model)
+        chart(assessment)
+        activity
+        summaries
+      }
+    }
+    .background(GeometryReader { proxy in
+      Color.clear
+        .onAppear { width = proxy.size.width }
+        .onChange(of: proxy.size.width) { width = $0 }
+    })
+  }
+
+  @ViewBuilder
+  private func status(_ assessment: HeliosMacAssessment) -> some View {
+    HeliosOverviewHero(assessment: assessment)
+    HeliosAreaStrip(assessment: assessment) { navigation.selection = HeliosPage(focus: $0) }
+    chart(assessment)
+    activity
+  }
+
+  private func chart(_ assessment: HeliosMacAssessment) -> some View {
+    let automatic = assessment.focus.flatMap { assessment.area($0)?.chartMetric } ?? .cpu
+    let metric = interface.overviewChartMetric ?? automatic
+    let range = context.preferences.graphRange(for: .overview)
+    return HeliosChartPanel(
+      metric: metric, model: model, preferences: context.preferences, scope: .overview,
+      height: 140, markers: feed.markers(for: metric, range: range),
+      metricChoice: HeliosChartPanel.MetricChoice(
+        selected: $interface.overviewChartMetric, automatic: automatic,
+        available: HeliosChartMetric.available(in: model.presentation)))
+  }
+
+  private var activity: some View {
+    HStack(alignment: .top, spacing: 28) {
+      HeliosRightNowSection(context: context, presentation: model.presentation, limit: 3)
         .frame(maxWidth: .infinity, alignment: .topLeading)
+      HeliosRecentSection(events: Array(feed.recent(3))) {
+        navigation.selection = .activity
       }
-      if HeliosCooling.hasFans(model.presentation) {
-        HeliosCoolingSummaryRow(context: context, presentation: model.presentation) {
-          navigation.selection = .thermals
-        }
+      .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+  }
+
+  @ViewBuilder
+  private var tools: some View {
+    HeliosKeepAwakeRow()
+    HeliosDoneWatchRow(model: model)
+  }
+
+  @ViewBuilder
+  private var summaries: some View {
+    if HeliosCooling.hasFans(model.presentation) {
+      HeliosCoolingSummaryRow(context: context, presentation: model.presentation) {
+        navigation.selection = .thermals
       }
+    }
+    if interface.visiblePages.contains(.longevity) {
+      HeliosLongevitySummaryRow(model: model) { navigation.selection = .longevity }
     }
   }
 }

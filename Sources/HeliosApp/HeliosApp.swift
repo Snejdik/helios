@@ -50,7 +50,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     controller.setDetailDemandHandler { [weak monitor] demand in
       monitor?.setDetailDemand(demand)
     }
+    HeliosDiagnosisCenter.shared.beginSession()
+    HeliosDiagnosisCenter.shared.heliosFanRPM = { [weak service] in
+      guard let service, service.client.fanState == .override || service.client.fanState == .boost,
+        case .success(let inventory) = service.fanControl.inventory.result
+      else { return nil }
+      return inventory.fans.compactMap { try? $0.actualRPM.get() }.max()
+    }
+    HeliosAutomationCenter.shared.openPage = { [weak controller] page in controller?.showMainWindow(page: page) }
+    HeliosAutomationCenter.shared.setFanMode = { [weak service] mode in service?.fanControl.setMode(mode) }
+    HeliosCommandPalette.shared.start()
+    HeliosLongevityCenter.shared.start()
+    HeliosMouseTools.shared.start()
     monitor.onChange = { [weak controller, weak service, weak diagnostics, weak fanDiagnostics] snapshot in
+      HeliosAppState.latestSnapshot = snapshot
+      HeliosKeepAwake.shared.observe(snapshot)
+      HeliosAutomationCenter.shared.observe(snapshot)
+      HeliosDiagnosisCenter.shared.observe(snapshot)
+      HeliosDataUsageMonitor.shared.observe(snapshot)
+      HeliosLatencyMonitor.shared.observe(snapshot)
+      HeliosLongevityCenter.shared.observe(snapshot)
+      HeliosStatusFile.shared.observe(snapshot)
       service?.fanControl.refresh(snapshot)
       fanDiagnostics?.observe(snapshot)
       if let service {
@@ -144,9 +164,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     HeliosUpdatePresenter.shared.check(manual: false)
   }
 
-  func applicationDidBecomeActive(_ notification: Notification) { checkForAutomaticUpdates() }
+  func applicationDidBecomeActive(_ notification: Notification) {
+    checkForAutomaticUpdates()
+    HeliosMouseTools.shared.start()
+  }
+
+  /// helios:// links (Shortcuts, other apps, the command line). Only harmless commands.
+  func application(_ application: NSApplication, open urls: [URL]) {
+    for url in urls.prefix(5) { HeliosAutomationCenter.shared.handle(url) }
+  }
 
   func applicationWillTerminate(_ notification: Notification) {
+    HeliosKeepAwake.shared.stop(reason: nil)
+    HeliosDiagnosisCenter.shared.endSession()
+    HeliosLongevityCenter.shared.flush()
     NSWorkspace.shared.notificationCenter.removeObserver(self)
     HeliosUpdatePresenter.shared.shutdown()
     statusItemController?.shutdown()

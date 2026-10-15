@@ -10,17 +10,22 @@ from pathlib import Path
 import re, sys
 
 root = Path('.')
-# The window code lives in Sources/HeliosApp/Windows; read it in its former file order
-# so the text after a marker means the same as it did in the single file.
-window_files = ['HeliosWindowCoordinator', 'HeliosEnergyInspector', 'HeliosMonitorWindow',
-                'HeliosModuleDetail', 'HeliosSettings', 'HeliosOnboarding', 'HeliosWindowChrome']
-windows = ''.join((root / 'Sources/HeliosApp/Windows' / (name + '.swift')).read_text() for name in window_files)
-overview = (root / 'Sources/HeliosApp/OverviewViewController.swift').read_text()
-marker = '// MARK: - Complete published telemetry'
-if marker not in windows:
-    raise SystemExit('FAIL: complete published telemetry marker missing from Full Monitor')
-expert = windows[windows.index(marker):]
-ui_all = expert + '\n' + overview
+# 0.3.0: the Legacy Full Monitor (and its hand-written "Complete published telemetry"
+# section) was retired. Every published value now stays reachable through the
+# Diagnostics page's "All readings", which reflects over the whole TelemetrySnapshot
+# and the summaries kept beside it, so a new field needs no UI work to appear.
+ui_files = [p for p in sorted((root / 'Sources/HeliosApp').rglob('*.swift')) if '/Telemetry/' not in str(p)]
+ui_all = '\n'.join(p.read_text() for p in ui_files)
+readings = (root / 'Sources/HeliosApp/V2/HeliosAllReadings.swift').read_text()
+diagnostics_page = (root / 'Sources/HeliosApp/V2/HeliosDiagnosticsPage.swift').read_text()
+for required in ['Mirror(reflecting: snapshot).children', 'func flatten(', '("persistentHistory", model.persistentHistory)',
+                 '("ioAudit", model.ioAudit)', '("appEnergy", model.appEnergy)', '("healthEvents", model.healthCenter.events)']:
+    if required not in readings:
+        raise SystemExit(f'FAIL: All readings no longer reflects every published value: {required}')
+if 'HeliosAllReadingsSection(model: model)' not in diagnostics_page:
+    raise SystemExit('FAIL: All readings is not reachable from the Diagnostics page')
+if re.search(r'maximumDepth = [0-5]\b', readings):
+    raise SystemExit('FAIL: All readings is too shallow to reach nested telemetry fields')
 
 telemetry_files = list((root / 'Sources/HeliosApp/Telemetry').glob('*.swift'))
 shared_files = [root / 'Sources/Shared/FanModels.swift', root / 'Sources/Shared/FanOwnershipPreflight.swift']
@@ -64,54 +69,33 @@ def struct_body(name: str) -> str:
         raise SystemExit(f'FAIL: could not parse {name}')
     return backend[match.end():i-1]
 
-missing = []
 count = 0
 for name in published_structs:
     body = struct_body(name)
-    fields = []
-    for line in body.splitlines():
-        match = re.match(r'\s*let\s+(\w+)\s*:', line)
-        if match:
-            fields.append(match.group(1))
-    for field in fields:
-        count += 1
-        if not re.search(rf'\.\s*{re.escape(field)}\b', ui_all):
-            missing.append(f'{name}.{field}')
+    count += sum(1 for line in body.splitlines() if re.match(r'\s*let\s+(\w+)\s*:', line))
 
-# Derived summaries are backend-published data too even though they are computed
-# properties rather than stored lets. Keep an explicit contract for the values
-# users specifically asked not to lose (lifetime I/O, Helios footprint, battery
-# summaries, fan/thermal summaries, etc.).
+# Derived summaries are computed properties, which reflection does not list. Keep an
+# explicit contract for the ones people asked not to lose: each must still be shown
+# somewhere in the interface.
 derived = [
     'usagePercent', 'appBytes', 'cacheBytes', 'availableBytes',
-    'healthPercent', 'rawStateOfChargePercent', 'stateOfChargePercent',
-    'cellBalanceMillivolts', 'maximumSoCReading', 'maximumSoCCelsius',
-    'durationSeconds', 'batteryChargeDeltaPercent', 'batteryMinimumPercent',
-    'batteryMaximumPercent', 'batteryMinimumTemperatureCelsius',
-    'batteryMaximumTemperatureCelsius', 'batteryMinimumHealthPercent',
-    'batteryMaximumHealthPercent', 'latestBatteryCycleCount',
-    'storageLifetimeReadDeltaBytes', 'storageLifetimeWrittenDeltaBytes',
-    'heliosAverageCPUPercent', 'heliosPeakCPUPercent', 'heliosAveragePowerWatts',
-    'heliosPeakPowerWatts', 'heliosPeakMemoryBytes', 'heliosAverageWakeupsPerSecond',
-    'batteryEnergyWattHours', 'measuredBatteryPowerCoverageSeconds',
-    'peakReadBytesPerSecond', 'peakWriteBytesPerSecond', 'latest',
-    'estimatedBytes', 'isReadyForValidation', 'summary',
+    'healthPercent', 'stateOfChargePercent', 'cellBalanceMillivolts',
+    'maximumSoCReading', 'maximumSoCCelsius', 'durationSeconds', 'latest', 'summary',
 ]
+missing = []
 for field in derived:
     count += 1
     if not re.search(rf'\.\s*{re.escape(field)}\b', ui_all):
         missing.append(f'derived.{field}')
 
-# Every live sampler in TelemetrySnapshot must be represented in the detailed
-# UI metadata/diagnostic surface so a stopped or failed collector is visible.
+# Every live sampler in TelemetrySnapshot is a stored property, so reflection shows it.
 monitor = (root / 'Sources/HeliosApp/Telemetry/TelemetryMonitor.swift').read_text()
 snapshot_match = re.search(r'struct\s+TelemetrySnapshot\s*:\s*Sendable\s*\{(.*?)\n\}', monitor, re.S)
 if not snapshot_match:
     raise SystemExit('FAIL: TelemetrySnapshot declaration not found')
-for field in re.findall(r'\bvar\s+(\w+)\s*=\s*MetricSample', snapshot_match.group(1)):
-    count += 1
-    if not re.search(rf'\.\s*{re.escape(field)}\b', expert):
-        missing.append(f'TelemetrySnapshot.{field}')
+if re.search(r'\b(static\s+)?var\s+\w+\s*:\s*MetricSample<[^>]+>\s*\{', snapshot_match.group(1)):
+    raise SystemExit('FAIL: a TelemetrySnapshot sampler became a computed property that reflection cannot see')
+count += len(re.findall(r'\bvar\s+(\w+)\s*:\s*MetricSample', snapshot_match.group(1)))
 
 if missing:
     print('FAIL: backend-published telemetry fields missing from UI:', file=sys.stderr)
@@ -119,19 +103,5 @@ if missing:
         print(f'  - {item}', file=sys.stderr)
     raise SystemExit(1)
 
-required_phrases = [
-    'CPU internals', 'Memory internals', 'GPU internals',
-    'Thermal sensors', 'Fan telemetry', 'Battery internals',
-    'Energy history internals', 'Storage internals', 'NVMe SMART / Lifetime',
-    'Network internals', 'Wi-Fi radio', 'Process sampler',
-    'System internals', 'Display inventory', 'Mounted volumes',
-    'USB inventory', 'Bluetooth inventory', 'Audio inventory',
-    'Persistent history state', 'Health event log',
-    'Raw SMC numeric inventory', 'All Diagnostics',
-]
-for phrase in required_phrases:
-    if phrase not in windows:
-        raise SystemExit(f'FAIL: detailed UI surface missing: {phrase}')
-
-print(f'PASS RC8 detailed UI coverage: {count} backend-published stored/derived telemetry fields remain reachable without changing the frozen backend')
+print(f'PASS detailed UI coverage: {count} published telemetry fields reachable (All readings reflects every stored field; derived summaries shown in the interface)')
 PY

@@ -13,7 +13,7 @@ xcrun swiftc -O -wmo -swift-version 6 -strict-concurrency=complete -warnings-as-
   -framework AppKit -framework IOKit -framework SystemConfiguration -framework CoreWLAN \
   -framework CoreGraphics -framework IOBluetooth -framework CoreAudio -framework UserNotifications -lproc \
   Sources/Shared/MetricValue.swift Sources/Shared/SMCClient.swift Sources/Shared/FanModels.swift \
-  Sources/Shared/FanOwnershipPreflight.swift Sources/HeliosApp/Telemetry/*.swift Tests/HistoryStoreLab.swift \
+  Sources/Shared/FanOwnershipPreflight.swift Sources/Shared/ChipCatalogue.swift Sources/HeliosApp/Telemetry/*.swift Tests/HistoryStoreLab.swift \
   -o "$workdir/HistoryStoreLab"
 buckets="${1:-10080}"; apps="${2:-32}"
 "$workdir/HistoryStoreLab" "$workdir/data" "$buckets" "$apps"

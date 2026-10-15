@@ -51,6 +51,7 @@ struct HeliosStatusPopoverView: View {
         sectionView(section, assessment: assessment, presentation: presentation)
       }
 
+      HeliosKeepAwakeRow(compact: true).controlSize(.small)
       Divider()
       HStack(spacing: 10) {
         Button("Open Helios") { context.actions.openPage(.overview) }

@@ -99,7 +99,7 @@ extension HeliosPage {
     case .energy: .energy
     case .storage: .storage
     case .network: .network
-    case .activity, .history, .diagnostics, .hardware: .history
+    case .activity, .history, .diagnostics, .hardware, .longevity: .history
     }
   }
 }
@@ -184,6 +184,10 @@ struct HeliosChartPanel: View {
               .monospacedDigit()
               .foregroundStyle(.secondary)
           }
+          if let coverage = Self.coverageNote(samples, range: range) {
+            Text(coverage).font(.subheadline).foregroundStyle(.tertiary)
+              .help("Helios has data for only part of this range: it was closed, asleep or just started.")
+          }
           Spacer(minLength: 8)
           if showsRange {
             Picker("Range", selection: rangeBinding) {
@@ -206,6 +210,17 @@ struct HeliosChartPanel: View {
       .modifier(HeliosChartSurface(enabled: !bare))
       .accessibilityElement(children: .contain)
     }
+  }
+
+  /// "Only 4 min of data" when the samples cover less than a quarter of a range of
+  /// ten minutes or more, so a nearly empty chart explains itself.
+  static func coverageNote(_ samples: [HeliosChartSample], range: HeliosGraphRange) -> String? {
+    let dated = samples.filter { $0.value != nil }.map(\.capturedAt)
+    guard range.seconds >= 600, let first = dated.min(), let last = dated.max() else { return nil }
+    let span = last.timeIntervalSince(first)
+    guard span < range.seconds * 0.25 else { return nil }
+    let minutes = Int((span / 60).rounded())
+    return minutes < 1 ? "Just started" : minutes < 90 ? "Only \(minutes) min of data" : "Only \(Int((span / 3_600).rounded())) h of data"
   }
 
   @ViewBuilder

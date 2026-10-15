@@ -18,7 +18,8 @@ struct HeliosHardwarePage: View {
         } else {
           let rows = HeliosDeviceRows.rows(presentation)
           if rows.isEmpty {
-            HeliosEmptyState(symbol: "cable.connector", title: "Reading connected devices…")
+            HeliosEmptyState(symbol: "cable.connector",
+              title: HeliosDeviceRows.sampled(presentation) ? "Nothing else is connected." : "Reading connected devices…")
           } else {
             HeliosGroup {
               ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
@@ -61,6 +62,8 @@ struct HeliosHardwarePage: View {
           HeliosEvidence(label: "Memory",
             value: String(format: "%.0f GB", Double(system.physicalMemoryBytes) / 1_073_741_824)),
           // The version string already ends with its build, e.g. "Version 27.0.1 (Build 26A434)".
+          HeliosEvidence(label: "Storage", value: storageText(p.storage)),
+          HeliosEvidence(label: "Fans", value: fansText(p.fans)),
           HeliosEvidence(label: "macOS", value: system.osVersion),
           HeliosEvidence(label: "Model", value: HeliosText.value(system.modelIdentifier) { $0 }),
           HeliosEvidence(label: "Uptime", value: TelemetryFormatting.duration(system.uptimeSeconds)),
@@ -75,6 +78,21 @@ struct HeliosHardwarePage: View {
     guard case .success(let metrics) = cpu, let split = HeliosCPUPage.coreSplitText(metrics)
     else { return "\(logical) logical" }
     return split
+  }
+
+  private func storageText(_ storage: MetricResult<StorageMetrics>) -> String {
+    guard case .success(let metrics) = storage, let device = metrics.primaryDevice else { return "—" }
+    let size = TelemetryFormatting.storageBytes(device.capacityBytes)
+    return device.model.isEmpty ? size : "\(size) · \(device.model)"
+  }
+
+  private func fansText(_ fans: MetricResult<FanInventory>) -> String {
+    guard case .success(let inventory) = fans else { return "—" }
+    switch inventory.fans.count {
+    case 0: return "None (fanless)"
+    case 1: return "1"
+    default: return "\(inventory.fans.count)"
+    }
   }
 
   private func graphicsText(_ gpu: MetricResult<GPUMetrics>) -> String {
@@ -108,7 +126,7 @@ private enum HeliosDeviceRows {
       for device in bluetooth.devices where device.connected {
         rows.append(HeliosDeviceRow(
           id: "bt-\(device.id)", symbol: "wave.3.right", name: device.name,
-          detail: device.battery.mainPercent.map { "Bluetooth · \($0) %" } ?? "Bluetooth"))
+          detail: batteryText(device.battery).map { "Bluetooth · \($0)" } ?? "Bluetooth"))
       }
     }
     if case .success(let usb) = p.usb {
@@ -125,6 +143,20 @@ private enum HeliosDeviceRows {
         id: "audio-\(id)", symbol: "speaker.wave.2", name: output.name, detail: "Sound output"))
     }
     return rows
+  }
+
+  /// Every device sampler answered, so an empty list really means nothing is connected.
+  static func sampled(_ p: OverviewPresentation) -> Bool {
+    if case .success = p.displays, case .success = p.bluetooth, case .success = p.usb { return true }
+    return false
+  }
+
+  /// "80 %", or "L 80 % · R 75 % · Case 40 %" for earbuds.
+  static func batteryText(_ battery: BluetoothBatteryMetrics) -> String? {
+    let parts = [("L", battery.leftPercent), ("R", battery.rightPercent), ("Case", battery.casePercent)]
+      .compactMap { label, value in value.map { "\(label) \($0) %" } }
+    if !parts.isEmpty { return parts.joined(separator: " · ") }
+    return battery.mainPercent.map { "\($0) %" }
   }
 }
 
