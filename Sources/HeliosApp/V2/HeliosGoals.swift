@@ -155,7 +155,7 @@ struct HeliosGoalPlan: Equatable, Sendable {
     }
     let sections = effective.reduce(into: Set<HeliosPopoverSection>()) { $0.formUnion($1.popoverSections) }
     var pages = effective.reduce(into: Set<HeliosPage>()) { $0.formUnion($1.pages) }
-    pages.formUnion([.overview, .activity, .diagnostics, .cpu, .gpu, .memory, .thermals, .battery, .storage])
+    pages.formUnion([.overview, .longevity, .activity, .diagnostics, .cpu, .gpu, .memory, .thermals, .battery, .storage])
     if effective != [.simple] { pages.insert(.history) }
     return HeliosGoalPlan(
       menuBarMetrics: Array(HeliosMenuBarMetric.allCases.filter(metrics.contains).prefix(maximumMenuBarMetrics)),

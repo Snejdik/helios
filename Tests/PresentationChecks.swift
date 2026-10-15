@@ -367,7 +367,7 @@ private struct PresentationChecks {
       (nil, nil, true, .nothing),  // development build without a release tag
       ("v0.2.1", HeliosReleaseVersion(tag: "v0.2.2"), true, .recordOnly),  // release without notes
       (nil, HeliosReleaseVersion(tag: "v9.0.0"), true, .recordOnly),
-      ("v0.2.1-beta.1", HeliosReleaseVersion(tag: "v0.3.0-beta.1"), true, .show),  // 0.2.1 → 0.3.0 beta
+      ("v0.2.1-beta.1", HeliosReleaseVersion(tag: "v0.3.0-beta.2"), true, .show),  // 0.2.1 → 0.3.0 beta
     ]
     for (lastSeen, release, onboarded, expected) in cases {
       let decision = HeliosWhatsNew.decide(
@@ -1121,6 +1121,46 @@ private struct PresentationChecks {
       && combined.visiblePages.contains(.network), "Goals combine by union and respect the menu-bar cap")
     try require(combined.samplers == HeliosTelemetryModule.allCases.filter(Set(combined.samplers).contains),
       "Samplers keep canonical order")
+    // Longevity answers "is my Mac healthy?", so no goal selection may ever hide it
+    // (Beta 1 shipped with the page missing from the plan's base set).
+    let everyGoal = HeliosGoal.allCases
+    for mask in 0..<(1 << everyGoal.count) {
+      let goals = Set(everyGoal.enumerated().filter { mask & (1 << $0.offset) != 0 }.map(\.element))
+      for traits in [HeliosMacTraits.unknown, HeliosMacTraits(hasFans: false, hasBattery: false)] {
+        let plan = HeliosGoalPlan.make(for: goals, traits: traits)
+        try require(plan.visiblePages.contains(.longevity) && plan.visiblePages.contains(.overview),
+          "Goal plan \(goals.map(\.rawValue).sorted()) hides Longevity or Overview")
+      }
+    }
+    let revealSuite = "Helios.LongevityReveal.\(UUID().uuidString)"
+    let revealDefaults = UserDefaults(suiteName: revealSuite)!
+    defer { revealDefaults.removePersistentDomain(forName: revealSuite) }
+    revealDefaults.set(["energy", "longevity", "network"], forKey: HeliosInterfacePreferences.hiddenPagesKey)
+    let affected = HeliosInterfacePreferences(defaults: revealDefaults)
+    try require(!affected.hiddenPages.contains(.longevity) && affected.visiblePages.contains(.longevity)
+      && affected.hiddenPages == Set<HeliosPage>([.energy, .network]),
+      "Beta 1 users get Longevity back and keep every other hidden page")
+    try require(Set(revealDefaults.stringArray(forKey: HeliosInterfacePreferences.hiddenPagesKey) ?? []) == ["energy", "network"],
+      "The revealed Longevity is persisted")
+    try require(revealDefaults.bool(forKey: HeliosInterfacePreferences.longevityRevealedKey),
+      "The one-time reveal is remembered")
+    affected.setPage(.longevity, visible: false)
+    let again = HeliosInterfacePreferences(defaults: revealDefaults)
+    try require(again.hiddenPages.contains(.longevity),
+      "Hiding Longevity on purpose after the reveal is respected")
+    let freshSuite = "Helios.LongevityFresh.\(UUID().uuidString)"
+    let freshDefaults = UserDefaults(suiteName: freshSuite)!
+    defer { freshDefaults.removePersistentDomain(forName: freshSuite) }
+    let fresh = HeliosInterfacePreferences(defaults: freshDefaults)
+    try require(fresh.hiddenPages.isEmpty && freshDefaults.bool(forKey: HeliosInterfacePreferences.longevityRevealedKey),
+      "A fresh install shows every page and marks the reveal done")
+    let welcomed = HeliosPreferences(defaults: freshDefaults)
+    welcomed.completeOnboarding(goals: [.battery, .cooling])
+    try require(welcomed.interface.visiblePages.contains(.longevity),
+      "Finishing the welcome with goals keeps Longevity in the sidebar")
+    welcomed.interface.apply(HeliosGoalPlan.make(for: [.storage]), goals: [.storage])
+    try require(HeliosInterfacePreferences(defaults: freshDefaults).visiblePages.contains(.longevity),
+      "Apply Goals keeps Longevity visible after a relaunch")
     let goalSuite = "Helios.Goals.\(UUID().uuidString)"
     let goalDefaults = UserDefaults(suiteName: goalSuite)!
     defer { goalDefaults.removePersistentDomain(forName: goalSuite) }
@@ -1217,7 +1257,7 @@ private struct PresentationChecks {
     print("PASS What's New window renders with and without the helper at small/default sizes in light/dark")
 
     // 0.3.0: the guided pages (highlights, four guides, choices), each within the window.
-    let tourRelease = HeliosReleaseVersion(tag: "v0.3.0-beta.1")!
+    let tourRelease = HeliosReleaseVersion(tag: "v0.3.0-beta.2")!
     let tourPages = (HeliosWhatsNew.guides["0.3.0"]?.count ?? 0) + 2
     try require(tourPages == 6, "0.3.0 What's New has highlights, four guides and the choices")
     for index in 0..<tourPages {

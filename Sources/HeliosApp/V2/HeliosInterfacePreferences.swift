@@ -135,6 +135,8 @@ final class HeliosInterfacePreferences: ObservableObject {
   static let goalsKey = "v2.ui.goals"
   static let firstSeenKey = "v2.ui.firstSeen"
   static let diagnosticsReminderKey = "v2.ui.diagnosticsReminderDismissed"
+  /// Set once Beta 1's hidden-Longevity mistake has been undone for this install.
+  static let longevityRevealedKey = "v3.ui.longevityRevealed"
   static let diagnosticsReminderDelay: TimeInterval = 7 * 24 * 60 * 60
 
   init(defaults: UserDefaults = .standard) {
@@ -149,7 +151,16 @@ final class HeliosInterfacePreferences: ObservableObject {
     let hidden = (defaults.stringArray(forKey: Self.hiddenPagesKey) ?? [])
       .flatMap { $0 == "performance" ? [.cpu, .gpu, .memory] : [HeliosPage(rawValue: $0)].compactMap { $0 } }
     // Overview is the home page and can never be hidden.
-    hiddenPages = Set(hidden).subtracting([.overview])
+    var hiddenSet = Set(hidden).subtracting([.overview])
+    // 0.3.0 Beta 1 hid Longevity for everyone who finished the welcome or applied goals.
+    // Show it once more; hiding it again afterwards is the person's own choice.
+    if !defaults.bool(forKey: Self.longevityRevealedKey) {
+      if hiddenSet.remove(.longevity) != nil {
+        defaults.set(HeliosPage.allCases.filter(hiddenSet.contains).map(\.rawValue), forKey: Self.hiddenPagesKey)
+      }
+      defaults.set(true, forKey: Self.longevityRevealedKey)
+    }
+    hiddenPages = hiddenSet
     goals = Set((defaults.stringArray(forKey: Self.goalsKey) ?? []).compactMap(HeliosGoal.init(rawValue:)))
     diagnosticsReminderDismissed = defaults.bool(forKey: Self.diagnosticsReminderKey)
     if let stored = defaults.object(forKey: Self.firstSeenKey) as? Date {
