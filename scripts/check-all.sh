@@ -38,5 +38,9 @@ printf '%s\n' "PASS Next23 full Xcode build before long regression suites"
 ./scripts/check-apple-silicon-release.sh
 ./scripts/check-storage.sh
 ./scripts/check-telemetry.sh
+./scripts/check-chip-profiles.sh
+./scripts/check-diagnose.sh
+./scripts/check-tools.sh
+./scripts/check-longevity.sh
 
 printf '%s\n' "PASS full Helios regression gate and Xcode build"
