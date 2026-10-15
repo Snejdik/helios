@@ -43,7 +43,7 @@ archs="$(lipo -archs "$app/Contents/MacOS/Helios")"
 [[ "$archs" == "arm64" ]] || fail "app binary is '$archs', expected arm64 only"
 codesign --verify --deep --strict "$app" || fail "signature does not verify"
 stage="$(mktemp -d "${TMPDIR:-/tmp}/helios-dmg.XXXXXX")"
-trap 'hdiutil detach -quiet "$stage/mount" 2>/dev/null; rm -rf "$stage"' EXIT
+trap 'hdiutil detach -quiet "$stage/mount" 2>/dev/null || true; rm -rf "$stage"' EXIT
 # The helper carries its own Info.plist inside the binary; it must be the same release.
 otool -P "$helper_binary" | tail -n +3 > "$stage/helper-info.plist"
 helper_version="$(read_key CFBundleShortVersionString "$stage/helper-info.plist")"

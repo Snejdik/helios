@@ -1,6 +1,6 @@
 # Install Helios — guide for first-time testers
 
-You do not need Terminal or Xcode to install Helios. **Helios 0.2.1 Beta 1** is
+You do not need Terminal or Xcode to install Helios. **Helios 0.3.0 Beta 1** is
 available from GitHub Releases as a DMG and a ZIP. It is **not notarized**: the
 project has no paid Apple Developer ID yet, so macOS asks you to confirm the first
 launch (see [step 4](#4-first-launch-and-gatekeeper)). Basic monitoring needs nothing
@@ -16,7 +16,7 @@ version or Mac model has been tested. Most testing is on a MacBook Pro with an M
 ## 2. Download the app
 
 Use the current test build from [GitHub Releases](https://github.com/Snejdik/helios/releases).
-The recommended package is the DMG (`Helios-0.2.1-beta.1.dmg`). GitHub's **Code → Download ZIP**
+The recommended package is the DMG (`Helios-0.3.0-beta.1.dmg`). GitHub's **Code → Download ZIP**
 contains developer source files, not an app you can double-click. If a release
 asset or checksum looks inconsistent, stop and contact
 [helios@snejda.cz](mailto:helios@snejda.cz).
@@ -77,9 +77,8 @@ Helios is a **menu-bar app**: look at the top-right area of your screen for its
 metric items. It has a Dock icon only while one of its windows is open. Click
 the Helios sun to open the summary popover, then **Open Helios** for the main
 window (Overview, components such as CPU, Memory, Thermals, Battery, Energy and
-Network, then Activity, History and Diagnostics). The popover's **Settings…**
-button opens Settings. The original 0.1 interface remains available in
-Settings → Advanced as *Legacy*.
+Network, then Longevity, Activity, History and Checkup). The popover's **Settings…**
+button opens Settings. **⌃⌥⌘Space** opens the command palette from anywhere.
 
 <img src="images/menu-bar-dark.png" alt="Helios menu-bar items: CPU, RAM, fan state over temperature and power, beside the monochrome sun" width="420">
 
@@ -190,15 +189,22 @@ exports you saved elsewhere, macOS logs, backups or reports already submitted.
 It is not a secure-wipe guarantee. If Helios will not open, request help before
 removing the app so the helper can be unregistered through the supported flow.
 
-## Updating from 0.2.0 Beta 1
+## Updating from 0.2.x
 
 1. Quit Helios, replace **Helios.app** in Applications with the new one and open it.
-   Settings, history and your fan-control consent are kept.
+   Settings and history are kept. The original 0.1 (*Legacy*) interface is gone in 0.3.0;
+   if you used it, Helios opens its current interface instead.
 2. A short **What's New** window appears once. It lets you pick °C or °F and shows
    whether the fan helper is connected.
 3. If you use fan control, click **Reinstall Helper** in that window (or **Reinstall** in
    **Settings → Cooling**) and approve it in System Settings if macOS asks. Every new app
-   version changes the helper's signature, so the old helper does not answer it.
+   version changes the helper's signature, and 0.3.0 also changes how the app and helper
+   talk to each other, so the old helper does not answer it.
+4. **Fan control after updating to 0.3.0.** On the one validated Mac (Mac16,1 with macOS
+   build 25G83) nothing changes. On every other Mac, including an M4 MacBook Pro on a newer
+   macOS, fan control is now *experimental*: Settings → Cooling asks you to confirm again,
+   runs a 20-second fan test at the lowest speed, and then limits the fans to 70 % without
+   Boost. Until then macOS manages the fans.
 
 Until the helper is connected again, macOS manages the fans and monitoring is unaffected.
 
@@ -212,7 +218,8 @@ macOS keeps from the old version, and 0.2 uses a newer protocol:
    (or the Thermals page says fan control needs the helper), click **Reinstall** and approve
    it in System Settings if macOS asks. Wait until the status says **Connected**.
 3. Turn on **Use experimental fan control on this Mac** if you want it; it is off by default
-   and stored per Mac model and macOS version.
+   and stored per Mac model and macOS version. On a Mac that is not validated, run the fan test
+   that follows.
 
 Until the helper is reinstalled, macOS manages the fans and nothing else is affected.
 

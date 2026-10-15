@@ -1,7 +1,8 @@
 # Helios roadmap
 
-Helios 0.2.1 **Beta 1** follows the first external beta (0.2.0 Beta 1). Near-term work
-favours testing, compatibility and distribution over large rewrites.
+Helios 0.3.0 **Beta 1** turns Helios into a Mac doctor: it explains *why*, watches how the
+Mac holds up over months, runs on every Apple Silicon Mac and adds a few tools that save
+clicks. The 0.3.0 betas lead to one 0.3.0 release; marketing waits until it is solid.
 
 ## Done
 
@@ -19,17 +20,22 @@ favours testing, compatibility and distribution over large rewrites.
 - [x] Read-only CPU/GPU temperature display maps for M1, M2, M3, M5 and M6 (0.2.1; catalogue-derived, fan control unchanged)
 - [x] Compatibility reports no longer count unsupported sensor formats as errors (0.2.1)
 - [x] One-click uninstall that moves the app to the Trash, and a What's New window after updates (0.2.1)
+- [x] Mac profile for every Apple Silicon chip and 59 models; sensor maps checked on each Mac at run time, with their status shown (0.3.0)
+- [x] Experimental fan control on every Apple Silicon Mac with fans: consent per model and macOS build, a 20-second fan test, 70 % limit and no Boost outside the validated Mac (0.3.0)
+- [x] "Why?" engine: slow, hot or loud, battery drain, cannot sleep, unexpected restart, slow Wi-Fi, disk filling up (0.3.0)
+- [x] Network check (Wi-Fi, router, DNS, internet), Wi-Fi channel crowding and drops, optional data usage per app (0.3.0)
+- [x] Longevity: battery, power adapter and cable, SSD, cooling against the Mac's first weeks, memory; word grades and an exportable weekly report (0.3.0)
+- [x] Keep Awake, command palette, rules, "tell me when it's done", `helios://`, command line and Shortcuts (0.3.0)
+- [x] The original 0.1 interface removed; one interface (0.3.0)
+- [x] Latency history (optional, every five minutes, seven days) used by the network "Why?" (0.3.0)
+- [x] Mouse settings as an experimental, off-by-default module: reverse only the scroll wheel, scroll distance (0.3.0)
 
 ## Next
 
-- [ ] Smoke tests on more Macs (M1, M2, M3, M5; fanless MacBook Air; dual-fan; desktop)
-- [ ] Confirm the 0.2.1 display maps against testers' compatibility reports and correct them
+- [ ] Fan test results and sensor-map confirmations from testers on M1, M2, M3, M5, M6, Pro/Max (two fans) and desktops
+- [ ] Correct the catalogue maps from compatibility reports (base M5 efficiency cores are unknown)
+- [ ] Remaining physical fan tests on the M4 (sleep and lid close while holding, reboot with ownership, macOS reclaiming the fans)
 - [ ] Older supported macOS versions
-- [ ] Trusted thermal maps beyond the M4 family, so fan control can reach more Macs
-- [ ] Remaining physical fan tests (sleep and lid close while holding, reboot with ownership, macOS reclaiming the fans)
-- [ ] Define the public support matrix
-- [ ] Collect beta crash and compatibility feedback
-- [ ] Optional: engage cooling earlier when the temperature climbs fast, always within the speed limit
 
 ## Distribution
 
@@ -39,26 +45,21 @@ favours testing, compatibility and distribution over large rewrites.
 - [ ] Release automation
 - [ ] Secure automatic update installation after Developer ID signing and notarization
 
-## ROADMAP / PLANNED — not implemented
+## Ideas — not planned yet
 
-These are future product directions, not currently available modules, first-beta
-commitments or release blockers. No delivery dates are promised.
+These are directions, not commitments; none has a date.
 
-- **LinearMouse-style mouse controls/customization:** pointer and scrolling preferences.
-- **Keep Awake:** a dedicated utility; the existing sleep-blocker inventory does not keep the Mac awake.
-- **Drag-and-drop utilities/workflows.**
-- **Clipboard / copy-paste history and tools:** existing Copy/export actions are not a clipboard-history module.
-- **Future unified Mac utility modules:** scoped and independently disableable.
+- **Mouse controls:** pointer speed and acceleration per device, beyond the 0.3.0 scroll-wheel settings.
+- **Clipboard history and drag-and-drop helpers.**
+- Widgets and automatic updates need a paid Apple Developer ID and are out of scope while Helios has none.
 
-Other exploratory ideas include a command/search palette, unified exports,
-a meaningful-event timeline and named UI profiles. Each requires separate
-design, implementation and validation. None authorizes broadening the fan-only
-helper or existing privacy/security boundaries.
+None of these may widen the fan-only helper or the existing privacy and security boundaries.
 
 ## Non-goals / constraints
 
 - no Intel/x86_64 target
-- no destructive Cleanup Scout behavior without a separately designed safety model
-- no privileged battery policy path
-- no guessed universal Apple-Silicon fan writes
+- no privileged battery policy path and no charge limiting
+- no file deletion or "cleaner" without a separately designed safety model
+- no arbitrary scripts from rules
+- no fan writes on a Mac the user has not opted in for, and none before its fan test passes
 - no fake high-frequency WidgetKit telemetry

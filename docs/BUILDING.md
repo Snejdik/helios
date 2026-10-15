@@ -128,7 +128,7 @@ its CPU and memory use (`--watch`). `scripts/watch-helios.sh` and
 The version is `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION` in
 `Config/Base.xcconfig`, and the release tag shown in About is `HeliosReleaseTag` in
 `Resources/HeliosApp-Info.plist`. The tag must be a `v`-prefixed SemVer whose core
-matches `MARKETING_VERSION` (for 0.2.1 Beta 1, `v0.2.1-beta.1`). Update checks compare tags,
+matches `MARKETING_VERSION` (for 0.3.0 Beta 1, `v0.3.0-beta.1`). Update checks compare tags,
 not build numbers; `scripts/check-updates.sh` fails if the two disagree. A build whose tag
 has no prerelease part is a stable build and from then on only offers stable releases.
 
@@ -145,7 +145,7 @@ signature does not verify, and it checks the DMG, the ZIP and the checksums it w
 The DMG window shows Helios, an arrow and Applications on a background drawn by
 `scripts/dmg-background.swift`; Finder lays it out, so the first run asks for permission to
 control Finder. Without that permission the DMG is plain but still works.
-It prints the GitHub release title (for example *Helios 0.2.1 Beta 1*; the website
+It prints the GitHub release title (for example *Helios 0.3.0 Beta 1*; the website
 reads the version and channel from it). It never uploads or tags anything.
 
 ## Regression gate
@@ -171,7 +171,7 @@ The suite includes read-only/simulated checks around telemetry, persistence, pre
 
 ## Offline UI fixture renders
 
-The Helios (0.2) interface can be rendered from deterministic fixtures without
+The Helios interface can be rendered from deterministic fixtures without
 launching Helios or touching the helper:
 
 ```sh

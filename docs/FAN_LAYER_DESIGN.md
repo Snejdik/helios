@@ -302,10 +302,39 @@ behaviour (validated tuple only, otherwise read-only).
 with `Ftst`, mode/target/actual per fan and the hottest trusted SoC temperature, the helper's
 log for the same period and a summary in `.build/monitor/fan-layer-<time>.{csv,log,txt}`.
 
+### 0.3.0: every Apple Silicon Mac with fans
+
+The layer is no longer limited to the M4 family. What changed, in one reviewed batch of the
+protected files (owner approval 2026-10-14):
+
+- **Takeover strategy from the probe.** A Mac with `Ftst` uses it exactly as before (`ftst`). A
+  Mac without it (M5 and later, per the public sensor catalogue) is driven through the mode key
+  directly (`direct`); the "global ownership" is then a virtual flag in the writer, so the v2/v3
+  journal, the executors and recovery stay unchanged. The recovery writer works without `Ftst`.
+- **Mode key** `FxMd` or lowercase `Fxmd`, whichever exists and is writable.
+- **Helper temperatures** come from the shared `ChipCatalogue`: the validated M4 map is
+  unchanged, other chips use the cross-checked catalogue map. The app additionally refuses Auto
+  until this Mac has confirmed its performance-core map at run time.
+- **Unvalidated Macs** (anything but Mac16,1 / 25G83): 70 % of the factory maximum
+  (`FanLayerCeiling.experimentalFraction`), no Boost, no full-maximum unlock. The emergency path
+  works within that limit or hands the fans to macOS.
+- **Mandatory entry test** (`FanLayerEntryTest`) per model + build: each fan held at its factory
+  minimum for 20 s with a readback every second, then returned to macOS and verified. Above 85 °C,
+  when macOS refuses or delays the takeover, or when a reading fails, the test stops without a
+  verdict and can be run again. The result is root-owned
+  (`/var/db/com.snejda.Helios.fan-layer-entry-test`); a failure keeps the layer off for that
+  model and build. The layer is enabled only with consent **and** a passed test.
+- **XPC v6** (`fanLayerDetails`, `runFanLayerEntryTest`); the helper must be reinstalled once.
+- **Two or three fans:** the probe checks every fan; a partial takeover rolls back. Simulated in
+  `check-fan-layer` ("fan layer on all Apple Silicon"); not physically tested.
+
+Only the M4 path is physically checked. The validated Mac16,1 / 25G83 tuple and the M4 `ftst`
+write sequence are the same writes as before.
+
 ### Still open
 
 - Physical: sleep or lid close while holding, reboot with ownership, macOS reclaiming the fans,
-  Boost and higher RPM.
-- Trusted thermal maps for M1–M3 and M5 (until then those Macs are Unsupported with a reason).
+  Boost and higher RPM; the entry test on the owner's M4 with the 0.3.0 build.
+- Any physical result from a Mac other than the M4 (testers' fan-test reports).
 - Per-power-state envelope, persisting the envelope, a “Resume after wake” offer and an Activity
   event for “macOS took back control”.

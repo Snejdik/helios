@@ -6,10 +6,10 @@
 
 **Know what your Mac is doing.**
 
-Native menu-bar monitoring for Apple Silicon: system activity, temperatures,
-battery and energy history, with carefully gated fan controls.
+A menu-bar Mac doctor for Apple Silicon: what your Mac is doing, why, and how it
+holds up over the years, with carefully gated fan controls.
 
-**[⬇ Download Helios 0.2.1 Beta 1](https://github.com/Snejdik/helios/releases/tag/v0.2.1-beta.1)**
+**[⬇ Download Helios 0.3.0 Beta 1](https://github.com/Snejdik/helios/releases/tag/v0.3.0-beta.1)**
 
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-111111?logo=apple&logoColor=white)
 ![Apple Silicon / arm64](https://img.shields.io/badge/Apple%20Silicon-arm64-111111)
@@ -26,8 +26,9 @@ battery and energy history, with carefully gated fan controls.
 
 Helios tells you whether your Mac is OK, what is happening and why. Open the
 menu-bar popover for a quick answer, or the main window for charts, processes,
-sensors, battery and energy history. The details are always one step away, never
-in the way.
+sensors, battery, energy and longevity. Ask it why the Mac is slow, hot or draining
+the battery, or why the Wi-Fi crawls, and it shows what it sees and what you can do.
+The details are always one step away, never in the way.
 
 <p align="center">
   <a href="docs/images/popover-overview-dark.png"><img src="docs/images/popover-overview-dark.png" alt="Helios menu-bar popover: Your Mac is doing well, with CPU, temperature, battery and storage status" width="300"></a>
@@ -39,23 +40,26 @@ in the way.
   <a href="docs/images/menu-bar-dark.png"><img src="docs/images/menu-bar-dark.png" alt="Helios menu-bar items: CPU, RAM, fan state over average and hottest temperature, power, and the Helios sun" width="420"></a>
 </p>
 
-> **Helios is in beta: this is an external test build.** It is not notarized, and not every
-> Apple Silicon Mac has been tested. Monitoring adapts to what your Mac exposes.
-> **Fan control is experimental, off until you turn it on, and System (macOS) is
-> always the recommended mode.**
+> **Helios is in beta: this is an external test build.** It is not notarized, and it is
+> tested on one M4 MacBook Pro. Monitoring works on every Apple Silicon Mac and adapts to
+> what yours exposes. **Fan control is experimental on every other Mac, off until you turn
+> it on, and System (macOS) is always the recommended mode.**
 
 ## What you get
 
 | | |
 | --- | --- |
-| **Overview & Why?** | One honest answer for your Mac, four health areas and an explanation behind every status. |
-| **Menu bar** | Live items you choose (CPU, memory, temperature, power, cooling…) and a compact popover. |
+| **Overview & Why?** | One honest answer for your Mac, four health areas, and *Ask Helios*: slow Mac, hot or loud, battery drain, cannot sleep, unexpected restart, slow Wi-Fi, disk filling up. |
+| **Longevity** | Battery wear and charging habits, power adapter and cable, SSD writes and endurance, cooling compared with the Mac's first weeks, memory and swap. Words, not a score; estimates marked as estimates; a weekly report to export. |
+| **Menu bar** | Live items you choose (CPU, memory, temperature, power, cooling…) and a compact popover with Keep Awake. |
 | **CPU, memory, GPU** | Per-core activity, memory pressure and breakdown, swap, GPU load where available. |
-| **Thermals & cooling** | Average and hottest temperature, fan speed, and optional fan control: Boost, Manual or your own Automatic curve. CPU and GPU temperatures on every Apple Silicon generation from M1 to M6. |
+| **Thermals & cooling** | Average and hottest temperature with the status of each sensor map, fan speed, and optional fan control: Boost, Manual or your own Automatic curve. |
 | **Battery & Energy** | Health, cycles and power flow, plus which apps use the most energy, compared with the period before. |
+| **Network** | An on-demand check of Wi-Fi, router, DNS and internet that says where it is slow, Wi-Fi channel crowding and drops, and optional latency history and data usage per app (kept on your Mac). |
+| **Tools** | Keep Awake (for a while, while on power, until an app quits), a command palette (⌃⌥⌘Space), simple rules, "tell me when it's done", `helios://` links, a command line and Shortcuts. Experimental mouse settings: reverse only the scroll wheel, scroll distance per notch. |
 | **Activity & History** | A timeline of health events, power changes and peaks, with history charts. |
-| **Storage & network** | Free space, SSD health where exposed, throughput and Wi-Fi details. |
-| **Hardware** | What this Mac is and what Helios can read on it. |
+| **Checkup** | What Helios found, what would let it see more, and what it can read right now, down to every raw value. |
+| **Storage & Hardware** | Free space, SSD health, throughput, what this Mac is, what is connected and every raw reading. |
 | **Alerts** | Optional notifications with thresholds you can edit. They only inform; they never change fan control. |
 
 Some readings depend on your Mac and macOS. An unavailable reading is shown as
@@ -151,8 +155,8 @@ you set, and macOS stays in charge otherwise.
 
 ## Install the beta
 
-1. Download **Helios-0.2.1-beta.1.dmg** from
-   [GitHub Releases](https://github.com/Snejdik/helios/releases/tag/v0.2.1-beta.1).
+1. Download **Helios-0.3.0-beta.1.dmg** from
+   [GitHub Releases](https://github.com/Snejdik/helios/releases/tag/v0.3.0-beta.1).
 2. Open it and drag **Helios** to Applications. If you got a ZIP, unzip it first.
 3. Open Helios from Applications and look for it in the menu bar.
 
@@ -164,8 +168,9 @@ optional helper approval, troubleshooting and removal (**Settings → Advanced �
 **Updating?** Quit Helios, replace the app in Applications with the new one and open it.
 A short *What's New* window appears once. If you use fan control, click **Reinstall Helper**
 there (or in **Settings → Cooling**) and approve it; a new version changes the helper's
-signature. Until then macOS manages the fans and monitoring works as usual. Experimental fan
-control stays off until you turn it on in Settings → Cooling.
+signature, and 0.3.0 also changes how the app and helper talk to each other. Until then macOS
+manages the fans and monitoring works as usual. Experimental fan control stays off until you
+turn it on in Settings → Cooling.
 
 GitHub's **Code → Download ZIP** is source code, not the app. To build it yourself,
 see the [developer guide](docs/BUILDING.md) or ask [support](mailto:helios@snejda.cz).
@@ -173,21 +178,23 @@ see the [developer guide](docs/BUILDING.md) or ask [support](mailto:helios@snejd
 ## Compatibility and cooling safety
 
 - **Apple Silicon only, macOS 13 or later.**
-- Monitoring works on any supported Mac; unavailable sensors are simply marked.
-- CPU and GPU temperatures are verified on M4 Macs. On M1, M2, M3, M5 and M6 they come
-  from a public sensor catalogue and are shown, but never used for fan control.
-- Fan control is **experimental**. A read-only check classifies your Mac first, and
-  you turn it on yourself, for your exact Mac model and macOS version.
+- Monitoring works on every Apple Silicon Mac; unavailable sensors are simply marked.
+- Temperatures: verified on M4 Macs. On M1, M2, M3, M5, M6 and A18 Pro they come from a
+  public sensor catalogue, and Helios checks each map on your Mac during normal use. Until
+  it is confirmed, a temperature is labelled as such and never raises alerts or drives Auto.
+- Fan control is **validated on one M4 MacBook Pro and experimental everywhere else.** You
+  turn it on yourself, for your exact Mac model and macOS version; on an experimental Mac a
+  20-second fan test runs first, the speed limit is 70 % and there is no Boost.
 - Installing the helper does not by itself make a Mac fan-controllable.
 - Battery charging is always left to macOS.
 
-See the [compatibility contract](docs/APPLE_SILICON_COMPATIBILITY.md) for the exact
-profiles and [security information](https://www.snejda.cz/helios/security) for the
+See the [support matrix](docs/APPLE_SILICON_COMPATIBILITY.md) for every chip and [security information](https://www.snejda.cz/helios/security) for the
 protection boundaries.
 
 ## Privacy
 
-Monitoring history stays on your Mac. Helios may ask GitHub for the latest release
+Monitoring history, longevity records, network checks and data usage per app stay on
+your Mac. Helios may ask GitHub for the latest release
 (Settings → General: never, daily, weekly or monthly); that request contains
 nothing about your Mac.
 
@@ -219,9 +226,8 @@ Helios is independently developed by Jakub Šnejda. If it helps you,
 
 ## Roadmap
 
-Next up: testing on more Macs, signing and notarization, and polishing fan control.
-Ideas such as Keep Awake or mouse customization are not available features and have
-no dates. See the [roadmap](docs/ROADMAP.md).
+Next up: testing on more Macs through compatibility reports and confirming the sensor maps
+for every chip. See the [roadmap](docs/ROADMAP.md).
 
 ## For developers
 

@@ -1,40 +1,71 @@
-# Apple Silicon compatibility contract
+# Apple Silicon compatibility
 
-Helios ships for **Apple Silicon only (`arm64`)** with macOS 13.0 as the deployment floor.
+Helios runs on **Apple Silicon Macs (`arm64`) with macOS 13 or later**. Intel Macs are not supported.
 
-## Read-only telemetry
+In short: **monitoring works on every Apple Silicon Mac. Fan control is tested on one Mac (an M4 MacBook Pro) and experimental everywhere else.**
 
-The unprivileged monitoring layer is capability-based. CPU, memory, GPU, battery, storage, network, device and system providers must either return the data exposed by the current Mac/macOS combination or fail that field/module independently as `Unavailable`. A missing sensor or registry property must never prevent Helios from launching.
+## Support matrix
 
-Fanless Macs are valid telemetry-only systems. Multi-fan inventory is represented dynamically; read-only fan telemetry must not assume a single fan.
+| Chip family | Temperatures | Sensor map | Fan control |
+| --- | --- | --- | --- |
+| **M4, M4 Pro, M4 Max** | Yes | Checked on real hardware (M4) | **Validated** on Mac16,1 with macOS 26 build 25G83. Every other M4 model or macOS build: **experimental** |
+| M1, M1 Pro, M1 Max, M1 Ultra | Yes | From catalogue, confirmed per Mac at run time | Experimental |
+| M2, M2 Pro, M2 Max, M2 Ultra | Yes | From catalogue, confirmed per Mac at run time | Experimental |
+| M3, M3 Pro, M3 Max, M3 Ultra | Yes | From catalogue, confirmed per Mac at run time | Experimental |
+| M5 (and Pro, Max) | Yes; efficiency cores unknown on base M5 | From catalogue, confirmed per Mac at run time | Experimental |
+| M6 | Yes | From catalogue (one source only) | Experimental |
+| A18 Pro (MacBook Neo) | Yes | From catalogue | Experimental if it has a fan |
+| Any Mac without a fan (MacBook Air) | Yes | as above | Not applicable |
+| Unknown or future chips | Shown as unclassified | None | Unsupported until a map exists |
 
-Apple does not document most Apple-Silicon SMC thermal keys. Helios therefore keeps unknown/unmapped keys advisory/unclassified. Only the physically validated trusted map may enter Cooling Rules or privileged fan safety.
+**Experimental** means: Helios has not been tested on that Mac, so fan control is off until you turn it on yourself, and it runs within stricter limits (below). Whether a Mac really works is learned from people who try it and choose to send a compatibility report.
 
-**Display maps (0.2.1).** So that a Mac outside the M4 family still shows CPU and GPU temperatures, Helios also carries exact per-generation key lists for M1, M2, M3, M5 and M6, derived from the MIT-licensed Stats sensor catalogue (THIRD_PARTY_NOTICES.md). They are read-only and display-only: they feed the headline temperature, the P/E-core and GPU summaries, the sensor lists and the informational temperature alerts, and they never reach fan control, Cooling Rules or the privileged helper, which keep using the M4-only trusted map. A key is matched exactly for the detected chip generation (the same key means different things on different chips), M5/M6 "super" cores are shown with the performance cores, and a display-only sensor reading 10 °C or less is ignored because some chips report constant low values from inactive channels. Only the M4 family has been checked on real hardware; the other maps come from the catalogue and are corrected from compatibility reports.
+## Monitoring (every Mac)
+
+Each reading either shows what the Mac and macOS expose or is marked **Unavailable**; a missing sensor never stops Helios from starting and is never shown as zero. Fanless Macs are fully supported for monitoring, and Macs with two or three fans are shown fan by fan.
+
+### Temperature sensor maps
+
+Apple does not document which SMC keys hold which temperatures. Helios carries one key list per chip family, compiled from public sources and cross-checked against each other (a key the sources disagree on is left out). The same key can mean different things on different chips, so keys are matched to the detected chip only.
+
+Each map has a visible status in Thermals and the popovers:
+
+- **Confirmed on this Mac**: Helios watched the sensors follow the load of their own part of the chip (performance cores, efficiency cores, GPU) during normal use. **Calibrate** on the Thermals page speeds this up with a 40-second load.
+- **Validated for this chip**: the map checked on real hardware (M4 family).
+- **From catalogue, may be inaccurate**: not confirmed yet.
+- **Does not match this Mac**: the sensors followed a different part of the chip; Helios does not rely on them.
+
+Temperatures from a map that is not confirmed or validated are shown, but **never raise temperature alerts and never drive automatic fan control**.
 
 ## Fan control
 
-Public compatibility does **not** mean guessing writable SMC behavior on every Mac. Production fan writes remain pinned to the exact validated Mac16,1/25G83 profile. That profile requires one fan (`fan 0`), permits integral targets only from 2317 through 6550 RPM, and fixes Boost at 6550 RPM. Every other Apple Silicon Mac, macOS build and fan topology remains System/read-only until a separate profile is physically validated, **unless the user explicitly turns on the experimental fan layer for that exact model and macOS build** (below).
+Production fan writes remain pinned to the exact validated Mac16,1/25G83 profile. Every other Mac stays read-only unless its owner opts in to the experimental layer for that exact model and macOS build and its fan test passes.
 
-### Experimental cool-only fan layer (opt-in)
+Off by default on every Mac. A read-only check classifies the Mac as **Validated**, **Experimental** or **Unsupported**. It is Unsupported when the Mac has no fans, Helios has no temperature map for the chip, the trusted sensors cannot be read, a fan or key looks different from what Helios expects, or another fan controller seems to be running.
 
-How it works: [HOW_IT_WORKS.md](HOW_IT_WORKS.md). Off by default. A read-only probe classifies each Mac as **Validated**, **Experimental** or **Unsupported** (no fans, Intel, a chip without a verified trusted-temperature map — today only the M4 family has one — unexpected keys, types or attributes, `Ftst` already set, a fan not under macOS, or another fan controller running).
+### What turning it on involves
 
-On an Experimental Mac you accept a risk notice ("experimental, no warranty, no liability") in Settings › Cooling. The helper stores that consent per model **and** macOS build, so a macOS update asks again.
+1. **Install the helper** (Settings › Cooling). It is a small, fan-only program that macOS asks you to approve.
+2. **Consent.** Settings › Cooling shows what this Mac is and asks you to confirm three plain sentences: it is experimental, macOS stays in control and Helios only adds cooling, and temperatures on this Mac may be inaccurate. The helper stores the consent for this **exact Mac model and macOS build**; after a macOS update it asks again.
+3. **Fan test (experimental Macs).** Helios holds each fan at its lowest factory speed for 20 seconds, checks that the Mac obeys, and hands the fans back to macOS. If the Mac does not obey, fan control stays off for that model and macOS build. The test stops without a verdict, and can be run again, if the Mac is hotter than 85 °C or macOS does not hand over the fans at that moment.
+4. **Automatic mode** needs the performance-core sensors confirmed on this Mac first (or the validated M4 map).
 
-With the layer on, Helios never commands less cooling than macOS:
+### Limits
 
-- It takes the fans only when your request is above what macOS is doing, and keeps every target at or above a fixed safety curve, the macOS level at takeover and the learned macOS envelope.
-- Targets are clamped to the live factory range and to your speed limit, 90 % of the factory maximum unless you unlock the full maximum in Settings › Cooling.
-- When more cooling than the limit is needed, Helios hands the fans back to macOS instead of commanding them itself; with the full maximum unlocked, the helper forces maximum at 95 °C.
-- Control returns to macOS on any error, lease expiry, disconnect, sleep, quit and helper restart. Recovery runs at helper start-up on any build.
+| | Validated Mac | Experimental Mac |
+| --- | --- | --- |
+| Speed limit | 90 % of the factory maximum (can be unlocked) | 70 % of the factory maximum, fixed |
+| Boost | Yes | No |
+| Manual and Auto | Yes | Yes, never below what macOS is doing |
 
-Physically checked on a Mac16,1 running macOS 27.0.1 (26A434), with the factory minimum and above, and with every return to macOS verified by readback.
+On every Mac, Helios **never runs the fans slower than macOS would**: it takes the fans only when you ask for more cooling than macOS is giving, and above the speed limit it hands them back to macOS, which may use full speed. Control returns to macOS on any error, when the app stops responding, before sleep, when Helios quits and when the helper restarts; after a crash the helper restores macOS control when it starts. At 95 °C the helper acts on its own and cools as hard as it is allowed to, or returns the fans to macOS.
 
-The privileged helper's independent 95°C emergency guard remains authoritative for every accepted fresh control calculation. Compatibility work must not weaken the helper authentication, leases, ownership/recovery journal, SMC write allowlist or System-restoration behavior.
+Battery charging is never controlled; the helper has no battery code at all.
 
-This boundary is deliberate: launching and observing safely across Apple Silicon is a release requirement; broadening fan writes without hardware validation is not.
+### Physical checks so far
 
-## Validation
+Fan control has been physically tested on one Mac: a 14-inch MacBook Pro with M4 (Mac16,1), on macOS 26 (25G83) and macOS 27.0.1 (26A434), at the factory minimum and above, with every return to macOS verified by reading the fans back. Everything else in the matrix is experimental by design.
 
-The primary physical validation machine is a base-M4 14-inch MacBook Pro. Before calling a public build broadly validated, run beta smoke tests on real M1, M2 and M3 hardware as well. Untested generations should be described as capability-compatible, not physically validated.
+## Helping Helios learn your Mac
+
+Settings › Privacy & Diagnostics › **Send a weekly compatibility report** (off by default) sends which temperature sensors and fans your Mac has and what they read, without names or identifiers. The separate **Include fan-control statistics** option adds how the fan layer behaved, including the fan test result. You can read the exact report before anything is sent. Thermals › All sensors › **Export SMC Dump…** saves an anonymous list of the Mac's sensor keys to a file you can attach to an issue.

@@ -215,10 +215,12 @@ struct UpdateChecks {
       let tag = info?["HeliosReleaseTag"] as? String, let release = HeliosReleaseVersion(tag: tag)
     else { fatalError("Repository version identity is missing or malformed") }
     require(release.base == marketing, "HeliosReleaseTag \(tag) does not match MARKETING_VERSION \(marketing)")
-    require(Int(build).map { $0 > 4 } == true, "Build number must move past Beta 1 (4)")
-    let beta1 = HeliosReleaseVersion(tag: "v0.2.0-beta.1")!
-    require(release > beta1 && beta1.isPrerelease,
-      "Beta 1 (a prerelease build that also sees prereleases) must offer \(tag) as an update")
-    print("PASS repository identity \(tag) / \(marketing) (\(build)) is consistent and newer than Beta 1")
+    require(Int(build).map { $0 > 5 } == true, "Build number must move past 0.2.1 Beta 1 (5)")
+    for previous in ["v0.2.0-beta.1", "v0.2.1-beta.1"] {
+      let earlier = HeliosReleaseVersion(tag: previous)!
+      require(release > earlier && earlier.isPrerelease,
+        "\(previous) (a prerelease build that also sees prereleases) must offer \(tag) as an update")
+    }
+    print("PASS repository identity \(tag) / \(marketing) (\(build)) is consistent and newer than 0.2.0 and 0.2.1 Beta 1")
   }
 }
