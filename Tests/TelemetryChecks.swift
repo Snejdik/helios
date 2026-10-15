@@ -3062,7 +3062,10 @@ private struct TelemetryChecks {
     try require(m1.displayGroup(for: "Tg05") == .gpu, "M1 GPU")
     try require(m2.displayGroup(for: "Tp1h") == .efficiencyCPU, "M2 efficiency core")
     try require(m2.displayGroup(for: "Tg0f") == .gpu, "M2 GPU")
-    try require(m3.displayGroup(for: "Tf04") == .performanceCPU, "M3 performance core")
+    try require(m3.displayGroup(for: "Tp05") == .performanceCPU, "M3 performance core")
+    // Corrected 2026-10-14: Stats' Tf04 "P-core" is a GPU fabric block per iSMC and absent
+    // on a base M3 (Stats #1703); a disputed key is never shown as a core.
+    try require(m3.displayGroup(for: "Tf04") == .unclassified, "disputed M3 Tf04 stays unclassified")
     try require(m3.displayGroup(for: "Te05") == .efficiencyCPU, "M3 efficiency core")
     try require(m3.displayGroup(for: "Tf14") == .gpu, "M3 GPU")
     try require(m5.displayGroup(for: "Tp00") == .performanceCPU, "M5 super core is shown with the performance cores")

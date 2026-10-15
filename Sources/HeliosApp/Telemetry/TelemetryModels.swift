@@ -317,6 +317,15 @@ struct ThermalMetrics: Sendable {
     /// value was captured with the fast safety sample.
     let advisoryReadingsCapturedAt: Date?
 
+    /// How far each display group's key map is trusted on this Mac (`SensorMapVerifier`).
+    /// Empty for fixtures and before the first verification pass: then only classifier-
+    /// trusted readings (`group`) count for health alerts.
+    var mapStatus: [ThermalGroup: SensorMapStatus] = [:]
+    /// One line per group on what the verifier saw or still waits for.
+    var mapDetail: [ThermalGroup: String] = [:]
+    /// "Apple M4 · 4 P + 6 E cores"; nil until the profile is read.
+    var chipSummary: String?
+
     init(
         readings: [ThermalReading],
         failures: [String: TelemetryError],
@@ -342,6 +351,31 @@ struct ThermalMetrics: Sendable {
 
     var maximumSoCCelsius: MetricResult<Double> {
         maximumSoCReading.map(\.celsius)
+    }
+
+    /// Whether a reading's group map is trusted enough to raise health alerts: the exact
+    /// validated classifier, or a catalogue map this Mac has confirmed (PLAN_0_3_0 §8.1).
+    func isTrustedForAlerts(_ reading: ThermalReading) -> Bool {
+        if reading.group != .unclassified { return true }
+        guard reading.displayGroup != .unclassified else { return false }
+        return mapStatus[reading.displayGroup]?.isTrustedForAlerts ?? false
+    }
+
+    /// Hottest reading whose map is trusted for alerts. Catalogue-only temperatures are
+    /// shown but never raise a high-temperature alert until this Mac confirms them.
+    var alertMaximumSoCCelsius: MetricResult<Double> {
+        guard let hottest = readings.filter(isTrustedForAlerts).max(by: { $0.celsius < $1.celsius })
+        else {
+            return .failure(.unavailable("No temperature sensors confirmed for alerts"))
+        }
+        return .success(hottest.celsius)
+    }
+
+    /// Status of the map behind the hottest reading, for labelling the headline temperature.
+    var maximumSoCMapStatus: SensorMapStatus? {
+        guard case .success(let hottest) = maximumSoCReading else { return nil }
+        if hottest.group != .unclassified, mapStatus[hottest.group] == nil { return .validated }
+        return mapStatus[hottest.displayGroup]
     }
 
     /// Mean of the identified P- and E-core sensors. It ignores the GPU and the

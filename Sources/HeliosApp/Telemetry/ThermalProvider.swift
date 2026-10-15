@@ -13,111 +13,38 @@ struct ThermalClassifier {
     self.osBuild = osBuild
   }
 
-  // Exact M4-family thermal-zone mappings derived from the MIT-licensed Stats
-  // sensor catalogue. See THIRD_PARTY_NOTICES.md. Prefixes are never trusted:
-  // a key must be in one of these exact allowlists.
-  private static let m4PerformanceCPUKeys: Set<String> = [
-    "Tp01", "Tp05", "Tp09", "Tp0D", "Tp0V", "Tp0Y", "Tp0b", "Tp0e",
-  ]
-  private static let m4EfficiencyCPUKeys: Set<String> = [
-    "Te05", "Te09", "Te0H", "Te0S",
-  ]
-  private static let m4GPUKeys: Set<String> = [
-    "Tg0G", "Tg0H", "Tg0K", "Tg0L", "Tg0d", "Tg0e", "Tg0j", "Tg0k", "Tg1U", "Tg1k",
-  ]
   // Direct read-only measurements on Mac16,1 / 25G83 established that Te06 and
   // Te0T are changing thermal channels which can affect conservative Max SoC.
   // Their physical component and CPU-cluster identities remain unknown.
   private static let mac161ValidatedHotspotKeys: Set<String> = ["Te06", "Te0T"]
 
-  /// Read-only display maps for the other Apple Silicon generations, derived from the
-  /// MIT-licensed Stats sensor catalogue (see THIRD_PARTY_NOTICES.md). They are exact
-  /// per-generation key lists: the same key means different things on different chips
-  /// (`Tp09` is an efficiency core on M1 but a performance core on M2), and a prefix is
-  /// never trusted. Only the M4 family is physically validated, so these maps are used
-  /// for showing temperatures and never for fan control or the privileged helper.
-  /// M5/M6 "super" cores are folded into the performance group.
-  private struct DisplayMap {
-    let performance: Set<String>
-    let efficiency: Set<String>
-    let gpu: Set<String>
-  }
-
-  private static let displayMaps: [Int: DisplayMap] = [
-    1: DisplayMap(
-      performance: ["Tp01", "Tp05", "Tp0D", "Tp0H", "Tp0L", "Tp0P", "Tp0X", "Tp0b"],
-      efficiency: ["Tp09", "Tp0T"],
-      gpu: ["Tg05", "Tg0D", "Tg0L", "Tg0T"]),
-    2: DisplayMap(
-      performance: ["Tp01", "Tp05", "Tp09", "Tp0D", "Tp0X", "Tp0b", "Tp0f", "Tp0j"],
-      efficiency: ["Tp1h", "Tp1t", "Tp1p", "Tp1l"],
-      gpu: ["Tg0f", "Tg0j"]),
-    3: DisplayMap(
-      performance: [
-        "Tf04", "Tf09", "Tf0A", "Tf0B", "Tf0D", "Tf0E", "Tf44", "Tf49", "Tf4A", "Tf4B", "Tf4D",
-        "Tf4E",
-      ],
-      efficiency: ["Te05", "Te0L", "Te0P", "Te0S"],
-      gpu: ["Tf14", "Tf18", "Tf19", "Tf1A", "Tf24", "Tf28", "Tf29", "Tf2A"]),
-    5: DisplayMap(
-      performance: [
-        "Tp00", "Tp04", "Tp08", "Tp0C", "Tp0G", "Tp0K",
-        "Tp0O", "Tp0R", "Tp0U", "Tp0X", "Tp0a", "Tp0d", "Tp0g", "Tp0j", "Tp0m", "Tp0p", "Tp0u",
-        "Tp0y",
-      ],
-      efficiency: [],
-      gpu: ["Tg0U", "Tg0X", "Tg0d", "Tg0g", "Tg0j", "Tg1Y", "Tg1c", "Tg1g"]),
-    6: DisplayMap(
-      performance: [
-        "Tp0j", "Tp0g", "Tp09", "Tp07",
-        "Tp0m", "Tp0L", "Tp0I", "Tp0d", "Tp0E", "Tp0G", "Tp0b", "Tp05",
-      ],
-      efficiency: ["Te07", "Te08", "Te09", "Te0c", "Te0h", "Te0i"],
-      gpu: [
-        "Tg1e", "Tg0d", "Tg0c", "Tg0b", "Tg1c", "Tg1d", "Tg07", "Tg1f", "Tg09", "Tg0a", "Tg1g",
-        "Tg1h",
-      ]),
-  ]
+  var chip: ChipIdentity? { ChipIdentity(brand: cpuBrand) }
 
   /// "Apple M2 Max" -> 2. Anything that is not an exact `Apple M<number>[ variant]` is nil,
   /// so "Apple M10" can never be mistaken for M1.
   static func generation(ofCPUBrand brand: String) -> Int? {
-    guard brand.hasPrefix("Apple M") else { return nil }
-    let rest = brand.dropFirst("Apple M".count)
-    let digits = rest.prefix(while: { $0.isASCII && $0.isNumber })
-    guard !digits.isEmpty, digits.count <= 2,
-      rest.dropFirst(digits.count).isEmpty || rest.dropFirst(digits.count).first == " "
-    else { return nil }
-    return Int(digits)
+    guard let chip = ChipIdentity(brand: brand), chip.family == .m else { return nil }
+    return chip.generation
   }
 
   /// Identity for showing and summarizing a temperature. Equal to `group(for:)` wherever that
   /// is known (so the M4 family is unchanged); otherwise the read-only catalogue map for this
-  /// chip generation, else unclassified.
+  /// chip (`SensorCatalogue`), else unclassified.
   func displayGroup(for key: String) -> ThermalGroup {
     let trusted = group(for: key)
     if trusted != .unclassified { return trusted }
-    guard let generation = Self.generation(ofCPUBrand: cpuBrand),
-      let map = Self.displayMaps[generation]
-    else { return .unclassified }
-    if map.performance.contains(key) { return .performanceCPU }
-    if map.efficiency.contains(key) { return .efficiencyCPU }
-    if map.gpu.contains(key) { return .gpu }
-    return .unclassified
+    guard let map = SensorCatalogue.map(for: chip) else { return .unclassified }
+    return map.group(for: key)
   }
 
   func group(for key: String) -> ThermalGroup {
-    let isM4Family = cpuBrand == "Apple M4" || cpuBrand.hasPrefix("Apple M4 ")
-    if isM4Family, machineModel == "Mac16,1", osBuild == "25G83",
+    guard let chip, chip.isM4Family else { return .unclassified }
+    if machineModel == "Mac16,1", osBuild == "25G83",
       Self.mac161ValidatedHotspotKeys.contains(key)
     {
       return .validatedHotspot
     }
-    guard isM4Family else { return .unclassified }
-    if Self.m4PerformanceCPUKeys.contains(key) { return .performanceCPU }
-    if Self.m4EfficiencyCPUKeys.contains(key) { return .efficiencyCPU }
-    if Self.m4GPUKeys.contains(key) { return .gpu }
-    return .unclassified
+    return SensorCatalogue.m4.group(for: key)
   }
 
   static func native() throws -> Self {
@@ -127,7 +54,7 @@ struct ThermalClassifier {
       osBuild: (try? sysctlString("kern.osversion")) ?? "")
   }
 
-  private static func sysctlString(_ name: String) throws -> String {
+  static func sysctlString(_ name: String) throws -> String {
     var size = 0
     guard sysctlbyname(name, nil, &size, nil, 0) == 0 else {
       throw TelemetryError.kernel("Read \(name)", errno)

@@ -37,7 +37,7 @@ extension HealthAlertRule {
     switch self {
     case .socHot, .socCritical:
       result = TelemetryFormatting.fresh(snapshot.thermals, maxAge: 6, now: now)
-        .flatMap(\.maximumSoCCelsius)
+        .flatMap(\.alertMaximumSoCCelsius)
     case .batteryHealthLow, .batteryHealthCritical:
       result = TelemetryFormatting.fresh(snapshot.battery, maxAge: 20, now: now)
         .flatMap(\.healthPercent)
@@ -56,6 +56,21 @@ extension HealthAlertRule {
 }
 
 enum HealthEvaluator {
+  /// What was going on when the chip got hot, so the event explains itself: macOS's own
+  /// thermal verdict and the busiest process. Correlation, never stated as the cause.
+  static func heatContext(_ snapshot: TelemetrySnapshot, now: Date) -> String {
+    var parts: [String] = []
+    if case .success(let system) = TelemetryFormatting.fresh(snapshot.system, maxAge: 30, now: now) {
+      parts.append("macOS thermal pressure \(system.thermalState.rawValue)")
+    }
+    if case .success(let processes) = TelemetryFormatting.fresh(snapshot.processes, maxAge: 12, now: now),
+      let top = processes.topByCPU.first, let cpu = top.cpuPercent, cpu >= 50
+    {
+      parts.append("busiest: \(HeliosDiagnosisNames.app(top)) \(TelemetryFormatting.percent(cpu))")
+    }
+    return parts.isEmpty ? "" : " · " + parts.joined(separator: " · ")
+  }
+
   static func evaluate(_ snapshot: TelemetrySnapshot, now: Date = Date(),
     configuration: HealthAlertConfiguration = .defaults,
     previouslyActive: Set<String> = []) -> [HealthIssue] {
@@ -63,7 +78,7 @@ enum HealthEvaluator {
 
     if case .success(let thermals) = TelemetryFormatting.fresh(
       snapshot.thermals, maxAge: 6, now: now),
-      case .success(let maximum) = thermals.maximumSoCCelsius
+      case .success(let maximum) = thermals.alertMaximumSoCCelsius
     {
       if configuration.crossed(.socCritical, value: maximum, previouslyActive: previouslyActive) {
         issues.append(
@@ -75,7 +90,7 @@ enum HealthEvaluator {
         issues.append(
           HealthIssue(
             id: "soc-hot", severity: .attention, title: "High SoC temperature",
-            detail: "Max SoC \(TelemetryFormatting.temperature(maximum, decimals: 1))"))
+            detail: "Max SoC \(TelemetryFormatting.temperature(maximum, decimals: 1))\(heatContext(snapshot, now: now))"))
       }
     }
 

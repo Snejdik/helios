@@ -268,6 +268,7 @@ final class TelemetryMonitor: NSObject {
           return await thermals.sample(rawDetailsVisible: visible, forceRawRefresh: forceRefresh)
         },
         apply: { [weak self] sample in
+          guard let sample = self?.verifyingSensorMap(sample) else { return }
           self?.snapshot.thermals = sample
           self?.onThermalSample?(sample)
           self?.log(sample.result, module: "Thermals")
@@ -423,7 +424,82 @@ final class TelemetryMonitor: NSObject {
     }
   }
 
+  // MARK: Sensor map verification (read-only, PLAN_0_3_0 M1)
+
+  private var sensorMap: SensorMapVerifier?
+  private var clusterLayout: CPUClusterLayout?
+  private var clusterLayoutResolved = false
+  private var sensorMapObservations = 0
+  /// Chip, cores and sensor-map identity of this Mac; nil until the first thermal sample.
+  private(set) var macProfile: MacProfile?
+
+  /// Attaches the map status to a thermal sample and feeds the passive verifier with the
+  /// load measured at the same moment. Purely observational; never a control input.
+  private func verifyingSensorMap(_ sample: MetricSample<ThermalMetrics>) -> MetricSample<ThermalMetrics> {
+    guard case .success(var metrics) = sample.result else { return sample }
+    if sensorMap == nil {
+      let profile = MacProfile.native()
+      macProfile = profile
+      sensorMap = SensorMapVerifier(profile: profile, stored: SensorMapEvidenceStore.load())
+    }
+    guard var verifier = sensorMap else { return sample }
+    if verifier.observe(metrics, load: currentLoad(at: sample.capturedAt)) {
+      SensorMapEvidenceStore.save(verifier.evidence)
+      logger.notice("Sensor map confirmed on this Mac: \(verifier.evidence.confirmed.sorted().joined(separator: ", "), privacy: .public)")
+    }
+    sensorMapObservations += 1
+    // About every ten minutes at the 2 s thermal cadence.
+    if sensorMapObservations % 300 == 0 { SensorMapEvidenceStore.save(verifier.evidence) }
+    metrics.mapStatus = verifier.statuses
+    let excluded = verifier.excludedKeys
+    if !excluded.isEmpty {
+      // Display only: a catalogue key that does not follow its group here stops counting as
+      // that group. Classifier-trusted (validated M4) identities are never rewritten.
+      metrics = ThermalMetrics(
+        readings: metrics.readings.map { reading in
+          guard reading.group == .unclassified, excluded.contains(reading.key) else { return reading }
+          return ThermalReading(key: reading.key, group: .unclassified, celsius: reading.celsius,
+            displayGroup: .unclassified)
+        },
+        failures: metrics.failures, trustedFailures: metrics.trustedFailures,
+        advisoryReadingsCapturedAt: metrics.advisoryReadingsCapturedAt)
+      metrics.mapStatus = verifier.statuses
+    }
+    for channel in verifier.verifiableChannels {
+      metrics.mapDetail[channel.group] = verifier.detail(for: channel)
+    }
+    metrics.chipSummary = verifier.profile.summary
+    sensorMap = verifier
+    return MetricSample(.success(metrics), capturedAt: sample.capturedAt, capturedTicks: sample.capturedTicks)
+  }
+
+  private func currentLoad(at date: Date) -> SensorMapVerifier.Load {
+    var load = SensorMapVerifier.Load()
+    if case .success(let cpu) = TelemetryFormatting.fresh(snapshot.cpu, maxAge: 3, now: date) {
+      if !clusterLayoutResolved {
+        clusterLayoutResolved = true
+        clusterLayout = CPUClusterLayout.native()
+          ?? CPUClusterLayout.fallback(
+            performanceCount: try? cpu.performanceCoreCount.get(),
+            efficiencyCount: try? cpu.efficiencyCoreCount.get(),
+            logicalCount: cpu.perCoreUsagePercent.count)
+      }
+      if let clusters = clusterLayout?.load(perCoreUsagePercent: cpu.perCoreUsagePercent) {
+        load.performance = clusters.performance
+        // A chip without E-cores (M5) has no efficiency load; treat it as quiet.
+        load.efficiency = clusters.efficiency ?? 0
+      }
+    }
+    if case .success(let gpu) = TelemetryFormatting.fresh(snapshot.gpu, maxAge: 3, now: date),
+      case .success(let utilization) = gpu.deviceUtilizationPercent
+    {
+      load.gpu = utilization
+    }
+    return load
+  }
+
   private func stop() {
+    if let sensorMap { SensorMapEvidenceStore.save(sensorMap.evidence) }
     for task in tasks {
       task.cancel()
     }

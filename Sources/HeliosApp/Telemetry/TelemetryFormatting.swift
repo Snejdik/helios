@@ -61,9 +61,14 @@ enum TelemetryFormatting {
         return value < 50 ? "Fan off" : rpm(value)
     }
 
+    /// One fan: its speed. Several: "2 fans · 2400–2600 RPM" (or one speed when they match).
     static func fanSummary(_ inventory: FanInventory) -> String {
         guard let fan = inventory.fans.first else { return "Fanless" }
-        return (try? fan.actualRPM.get()).map(fanRPM) ?? "—"
+        guard inventory.fans.count > 1 else { return (try? fan.actualRPM.get()).map(fanRPM) ?? "—" }
+        let speeds = inventory.fans.compactMap { try? $0.actualRPM.get() }.filter(\.isFinite)
+        guard let low = speeds.min(), let high = speeds.max() else { return "\(inventory.fans.count) fans · —" }
+        if Int(low.rounded()) == Int(high.rounded()) { return "\(inventory.fans.count) fans · \(fanRPM(low))" }
+        return "\(inventory.fans.count) fans · \(Int(low.rounded()))–\(fanRPM(high))"
     }
 
     static func ageSeconds(since date: Date, now: Date = Date()) -> String {
