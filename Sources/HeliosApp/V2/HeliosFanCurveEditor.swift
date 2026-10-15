@@ -117,7 +117,8 @@ struct HeliosFanCurveEditor: View {
       .equatable()
       .frame(height: 210)
 
-    HeliosFanCurveLegend(fullMaximum: model.fullMaximumAllowed, limits: limits)
+    HeliosFanCurveLegend(fullMaximum: model.fullMaximumAllowed, limits: limits,
+                         limitPercent: Int((model.ceilingFraction * 100).rounded()))
 
     VStack(alignment: .leading, spacing: 4) {
       ForEach(Array(curve.points.enumerated()), id: \.offset) { index, point in
@@ -173,6 +174,8 @@ struct HeliosFanCurveEditor: View {
 private struct HeliosFanCurveLegend: View {
   let fullMaximum: Bool
   let limits: (minimum: Double, limit: Double, maximum: Double)?
+  /// The helper's ceiling on this Mac: 90 % on the validated Mac, 70 % elsewhere.
+  let limitPercent: Int
 
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
@@ -191,7 +194,7 @@ private struct HeliosFanCurveLegend: View {
              title: fullMaximum ? "Factory maximum" : "Your limit",
              help: fullMaximum
                ? "100 % is the factory maximum (unlocked in Settings › Cooling)."
-               : "100 % is your speed limit, 90 % of the factory maximum (Settings › Cooling).")
+               : "100 % is your speed limit, \(limitPercent) % of the factory maximum on this Mac (Settings › Cooling).")
       }
       .font(.subheadline)
       Text(caption).font(.subheadline).foregroundStyle(.secondary)

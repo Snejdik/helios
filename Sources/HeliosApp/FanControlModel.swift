@@ -318,17 +318,30 @@ final class FanControlModel: ObservableObject {
     }
 
     /// The user's speed limit: 90 % of the factory maximum unless the full
-    /// range was unlocked in Settings (the helper enforces the same limit).
+    /// range was unlocked in Settings (the helper enforces the same limit). On a Mac
+    /// that is not validated the helper holds 70 % and cannot be unlocked (0.3.0).
     var fullMaximumAllowed: Bool { client.fanLayer?.fullMaximumAllowed ?? false }
+
+    /// The helper's ceiling for this Mac as a fraction of the factory maximum.
+    var ceilingFraction: Double { client.fanLayerDetails?.ceilingFraction ?? FanLayerCeiling.defaultFraction }
 
     /// Factory minimum … the user's limit: the Manual slider and 100 % in Auto.
     var limitBounds: ClosedRange<Double>? {
         guard let bounds = sliderBounds else { return nil }
         let limit = fullMaximumAllowed
             ? bounds.upperBound
-            : max(bounds.lowerBound, (bounds.upperBound * FanLayerCeiling.defaultFraction).rounded(.down))
+            : max(bounds.lowerBound, (bounds.upperBound * ceilingFraction).rounded(.down))
         return bounds.lowerBound...max(bounds.lowerBound, limit)
     }
+
+    /// Temperatures come from the physically validated map (M4 family), not a catalogue.
+    @Published private(set) var thermalMapValidated = true
+    /// The catalogue P-core map was confirmed by this Mac's own telemetry.
+    @Published private(set) var thermalMapConfirmed = false
+    /// Auto steers by temperature, so on a catalogue map it waits for confirmation
+    /// (PLAN_0_3_0 §8.1). Manual "at least" and the helper's own safety do not.
+    var autoMapTrusted: Bool { thermalMapValidated || thermalMapConfirmed }
+    static let autoNeedsMapText = "Auto turns on once Helios has confirmed this Mac's CPU sensors (Thermals › Sensor map). Manual works now."
 
     var sliderBounds: ClosedRange<Double>? {
         guard case .success(let inventory) = inventory.result, !inventory.fans.isEmpty else { return nil }
@@ -345,13 +358,15 @@ final class FanControlModel: ObservableObject {
         return [.allFans] + inventory.fans.map { .fan($0.id) }
     }
 
-    var canSelectBoost: Bool { client.fanControlAvailable && telemetryReady && sliderBounds != nil }
-    var canSelectOverride: Bool { canSelectBoost }
+    /// Boost exists only on the validated tuple (decision 2); the helper says which.
+    var boostAllowed: Bool { client.fanLayerDetails?.boostAllowed ?? false }
+    var canSelectBoost: Bool { canSelectControl && boostAllowed }
+    var canSelectOverride: Bool { canSelectControl }
     /// Auto is also the rules editor. An empty AC or Battery profile is valid
     /// and means "no matching rule -> System", so an empty profile must never
     /// make the Auto tab impossible to reopen and repair.
-    var canSelectAuto: Bool { canSelectBoost }
-    var canSelectControl: Bool { canSelectBoost }
+    var canSelectAuto: Bool { canSelectControl && autoMapTrusted }
+    var canSelectControl: Bool { client.fanControlAvailable && telemetryReady && sliderBounds != nil }
     var automaticRulesArmed: Bool { selection == .auto && canSelectAuto }
     var automaticHardwareConfirmed: Bool {
         selection == .auto && (client.fanState == .override || client.fanState == .boost)
@@ -442,16 +457,41 @@ final class FanControlModel: ObservableObject {
         setMode(.auto)
     }
 
+    /// Every group the chip's map has must read; validated maps use the trusted identity.
+    private static func thermalsUsable(_ thermals: ThermalMetrics) -> (usable: Bool, validated: Bool) {
+        let trustedGroups = Set(thermals.readings.map(\.group))
+        if trustedGroups.contains(where: { $0 != .unclassified }) {
+            // Validated M4 family: exactly the 0.2 rule. A power-gated sensor (the GPU while it
+            // sleeps) is not measuring, not failing; every group still needs a valid reading.
+            // Any other Tp/Te/Tg failure still blocks.
+            let usable = trustedGroups.isSuperset(of: [.performanceCPU, .efficiencyCPU, .gpu])
+                && !thermals.failures.contains(where: { key, error in
+                    (key.hasPrefix("Tp") || key.hasPrefix("Te") || key.hasPrefix("Tg")) && !error.isInactiveSensor
+                })
+            return (usable, true)
+        }
+        // Catalogue map (every other chip): each group it defines must read. Only failures
+        // of the map's own keys count; raw channels say nothing about these groups.
+        let groups = Set(thermals.mapStatus.filter { $0.value != .unknown }.keys)
+            .subtracting([.validatedHotspot, .unclassified])
+        guard !groups.isEmpty else { return (false, false) }
+        let present = Set(thermals.readings.map(\.displayGroup))
+        let mapKeys = Set(thermals.readings.filter { $0.displayGroup != .unclassified }.map(\.key))
+        let usable = present.isSuperset(of: groups)
+            && !thermals.failures.contains(where: { key, error in mapKeys.contains(key) && !error.isInactiveSensor })
+        return (usable, false)
+    }
+
     func accept(_ sample: MetricSample<ThermalMetrics>) {
         let age = HostClock.seconds(from: sample.capturedTicks, to: HostClock.now)
+        let check = (try? sample.result.get()).map(Self.thermalsUsable)
+        if case .success(let thermals) = sample.result {
+            thermalMapValidated = check?.validated ?? true
+            thermalMapConfirmed = thermals.mapStatus[.performanceCPU] == .confirmed
+        }
         guard age >= 0, age <= 3, sample.capturedTicks > lastSample,
               case .success(let thermals) = sample.result,
-              Set(thermals.readings.map(\.group)).isSuperset(of: [.performanceCPU, .efficiencyCPU, .gpu]),
-              // A power-gated sensor (the GPU while it sleeps) is not measuring, not failing; every
-              // group above still needs a valid reading. Any other Tp/Te/Tg failure still blocks.
-              !thermals.failures.contains(where: { key, error in
-                  (key.hasPrefix("Tp") || key.hasPrefix("Te") || key.hasPrefix("Tg")) && !error.isInactiveSensor
-              }),
+              check?.usable == true,
               let temperature = try? thermals.maximumSoCCelsius.get(), temperature.isFinite else {
             telemetryReady = false
             if selection != .system { transitionToSystem(graceful: false, reason: "thermal sample is not trusted") }
@@ -461,6 +501,14 @@ final class FanControlModel: ObservableObject {
         lastSample = sample.capturedTicks
         lastTemperature = temperature
         telemetryReady = true
+        if selection == .auto, !autoMapTrusted {
+            transitionToSystem(graceful: true, reason: "Auto waits for a confirmed sensor map")
+            return
+        }
+        if selection == .boost, !boostAllowed {
+            transitionToSystem(graceful: true, reason: "Boost is not available on this Mac")
+            return
+        }
         guard selection != .system, canSelectControl else { return }
         // Reconfiguration/profile changes may intentionally supersede an
         // in-flight acquisition with an immediate System release. Do not race a

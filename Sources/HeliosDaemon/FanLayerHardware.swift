@@ -54,30 +54,44 @@ private func flt(_ rpm: Double) -> [UInt8] {
 
 /// Restore-only backend for start-up/wake recovery on any Apple silicon model
 /// and OS build (recovery must run after a macOS update). Its complete write
-/// surface is Ftst=0 and FxMd=0 for journaled fans.
+/// surface is Ftst=0 and FxMd/Fxmd=0 for journaled fans.
 /// It cannot acquire, cannot write targets and never needs a passing probe,
 /// because recovery is exactly the case where the probe would refuse.
+/// A Mac without an `Ftst` key (direct strategy) has no global state to clear:
+/// its global release is a no-op and its global ownership always reads 0.
 final class FanLayerRecoveryHardware: FanOwnershipRecoveryHardware {
     private let client: SMCClient
     private let reader: SMCFanReader
     private let channel: FanLayerSMCWriteChannel
+    private let hasGlobalKey: Bool
 
     init() throws {
         client = SMCClient(transport: try SMCIOKitTransport())
         reader = SMCFanReader(client: client)
-        let global = try client.keyInfo("Ftst")
-        guard global.type == "ui8 ", global.size == 1 else {
-            throw TelemetryError.invalidData("Recovery Ftst metadata is unexpected")
+        do {
+            let global = try client.keyInfo("Ftst")
+            guard global.type == "ui8 ", global.size == 1 else {
+                throw TelemetryError.invalidData("Recovery Ftst metadata is unexpected")
+            }
+            hasGlobalKey = true
+        } catch TelemetryError.smc(_, let code) where code == SMCFanOwnershipPreflightReader.keyNotFound {
+            hasGlobalKey = false
         }
         channel = try FanLayerSMCWriteChannel(client: client)
     }
 
     private func modeKey(_ id: Int) throws -> String {
         guard (0..<FanCodec.maximumFanCount).contains(id) else { throw FanOwnershipRecoveryError.invalidFanID(id) }
-        let key = try FanCodec.key(id, "Md")
-        let info = try client.keyInfo(key)
-        guard info.type == "ui8 ", info.size == 1 else { throw TelemetryError.invalidData("Recovery mode key is unexpected") }
-        return key
+        // The validated uppercase key first (unchanged on M4), then the lowercase variant.
+        for suffix in ["Md", "md"] {
+            let key = try FanCodec.key(id, suffix)
+            guard let info = try? client.keyInfo(key) else { continue }
+            guard info.type == "ui8 ", info.size == 1 else {
+                throw TelemetryError.invalidData("Recovery mode key is unexpected")
+            }
+            return key
+        }
+        throw TelemetryError.invalidData("Recovery mode key is unexpected")
     }
 
     private func mode(_ id: Int) throws -> UInt8 {
@@ -93,7 +107,7 @@ final class FanLayerRecoveryHardware: FanOwnershipRecoveryHardware {
         }
         if current == 1 {
             try channel.write(try modeKey(id), payload: [0]) { key, info, payload in
-                key.hasPrefix("F") && key.hasSuffix("Md") && info.type == "ui8 " && payload == [0]
+                FanLayerProbe.isModeKey(key, fanID: id) && info.type == "ui8 " && payload == [0]
             }
         }
     }
@@ -106,12 +120,14 @@ final class FanLayerRecoveryHardware: FanOwnershipRecoveryHardware {
     }
 
     func requestGlobalRelease() throws {
+        guard hasGlobalKey else { return }
         try channel.write("Ftst", payload: [0]) { key, info, payload in
             key == "Ftst" && info.type == "ui8 " && payload == [0]
         }
     }
 
     func readGlobalOwnership() throws -> UInt8 {
+        guard hasGlobalKey else { return 0 }
         let value = try client.value("Ftst")
         guard value.info.type == "ui8 ", value.bytes.count == 1, value.bytes[0] <= 1 else {
             throw TelemetryError.invalidData("Invalid Ftst readback during recovery")
@@ -128,8 +144,14 @@ protocol FanLayerControlHardware: FanOwnershipAcquisitionHardware, FanOwnershipR
 }
 
 /// Profile-bound writer for the layer. Complete write surface:
-/// Ftst = 0/1, FxMd = 0/1 and FxTg = integral RPM inside that fan's live
-/// factory range, for the fans of the probed profile only.
+/// Ftst = 0/1 (ftst strategy only), the probed mode key (FxMd or Fxmd) = 0/1 and
+/// FxTg = integral RPM inside that fan's live factory range, for the fans of the
+/// probed profile only.
+///
+/// Direct strategy (no Ftst on this Mac): "global ownership" is a flag in this
+/// object, set by `requestGlobalAcquisition` and cleared by `requestGlobalRelease`,
+/// so the shared journal/executors keep their exact ordering and readback rules
+/// while no global key is ever written.
 final class FanLayerSMCHardware: FanLayerControlHardware {
     private let profile: FanLayerProfile
     private let client: SMCClient
@@ -137,6 +159,8 @@ final class FanLayerSMCHardware: FanLayerControlHardware {
     private let reader: SMCFanReader
     private let channel: FanLayerSMCWriteChannel
     private let limits: [Int: FanLayerFanLimits]
+    private let modeKeys: [Int: String]
+    private var virtualGlobal: UInt8 = 0
 
     init(profile: FanLayerProfile) throws {
         guard profile.tier != .unsupported, !profile.fans.isEmpty else {
@@ -147,6 +171,7 @@ final class FanLayerSMCHardware: FanLayerControlHardware {
         client = SMCClient(transport: transport)
         reader = SMCFanReader(client: client)
         limits = Dictionary(uniqueKeysWithValues: profile.fans.map { ($0.id, $0.limits) })
+        modeKeys = Dictionary(uniqueKeysWithValues: profile.fans.map { ($0.id, $0.modeKey) })
         channel = try FanLayerSMCWriteChannel(client: client)
         try validateGlobalAcquisitionBaseline()
     }
@@ -161,7 +186,7 @@ final class FanLayerSMCHardware: FanLayerControlHardware {
     func validateGlobalAcquisitionBaseline() throws {
         let evidence = try SMCFanOwnershipPreflightReader(client: client).read(
             modelIdentifier: profile.identity.modelIdentifier, osBuild: profile.identity.osBuild).evidence
-        let access = try FanLayerKeyAccess.read(keys: FanLayerProbe.accessKeys(fanCount: evidence.fanCount),
+        let access = try FanLayerKeyAccess.read(keys: FanLayerProbe.accessKeys(evidence: evidence),
                                                 transport: transport)
         let live = try FanLayerProbe.evaluate(evidence: evidence, cpuBrand: profile.cpuBrand, access: access,
                                               trustedThermalsAvailable: true)
@@ -183,12 +208,17 @@ final class FanLayerSMCHardware: FanLayerControlHardware {
     }
 
     func requestGlobalAcquisition() throws {
+        guard profile.strategy == .ftst else {
+            virtualGlobal = 1
+            return
+        }
         try channel.write("Ftst", payload: [1]) { key, info, payload in
             key == "Ftst" && info.type == "ui8 " && payload == [1]
         }
     }
 
     func readGlobalOwnership() throws -> UInt8 {
+        guard profile.strategy == .ftst else { return virtualGlobal }
         let value = try client.value("Ftst")
         guard value.info.type == "ui8 ", value.bytes.count == 1, value.bytes[0] <= 1 else {
             throw TelemetryError.invalidData("Invalid Ftst readback")
@@ -196,9 +226,14 @@ final class FanLayerSMCHardware: FanLayerControlHardware {
         return value.bytes[0]
     }
 
+    private func modeKey(_ id: Int) throws -> String {
+        guard let key = modeKeys[id] else { throw FanOwnershipRecoveryError.invalidFanID(id) }
+        return key
+    }
+
     func readFanMode(_ id: Int) throws -> UInt8 {
         _ = try requireFan(id)
-        guard try reader.modeKey(id) == "F\(id)Md" else { throw TelemetryError.unavailable("Fan mode key changed") }
+        guard try reader.modeKey(id) == modeKey(id) else { throw TelemetryError.unavailable("Fan mode key changed") }
         let mode = try reader.mode(id)
         guard [UInt8(0), 1, 3].contains(mode) else { throw TelemetryError.invalidData("Unexpected fan mode") }
         return mode
@@ -211,9 +246,10 @@ final class FanLayerSMCHardware: FanLayerControlHardware {
         }
         let mode = try readFanMode(id)
         if mode == 1 { return }
+        let key = try modeKey(id)
         do {
-            try channel.write("F\(id)Md", payload: [1]) { key, info, payload in
-                key == "F\(id)Md" && info.type == "ui8 " && payload == [1]
+            try channel.write(key, payload: [1]) { written, info, payload in
+                written == key && info.type == "ui8 " && payload == [1]
             }
         } catch TelemetryError.smc(_, let code) where code == 0x82 {
             // Retryable arbitration: the shared executor owns pacing and retries.
@@ -245,8 +281,9 @@ final class FanLayerSMCHardware: FanLayerControlHardware {
     func restoreFanToSystem(_ id: Int) throws {
         _ = try requireFan(id)
         if try readFanMode(id) == 1 {
-            try channel.write("F\(id)Md", payload: [0]) { key, info, payload in
-                key == "F\(id)Md" && info.type == "ui8 " && payload == [0]
+            let key = try modeKey(id)
+            try channel.write(key, payload: [0]) { written, info, payload in
+                written == key && info.type == "ui8 " && payload == [0]
             }
         }
     }
@@ -259,6 +296,10 @@ final class FanLayerSMCHardware: FanLayerControlHardware {
     }
 
     func requestGlobalRelease() throws {
+        guard profile.strategy == .ftst else {
+            virtualGlobal = 0
+            return
+        }
         try channel.write("Ftst", payload: [0]) { key, info, payload in
             key == "Ftst" && info.type == "ui8 " && payload == [0]
         }

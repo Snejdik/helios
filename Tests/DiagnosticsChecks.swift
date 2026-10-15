@@ -1469,6 +1469,52 @@ private func fanLayerChecks() throws {
   try expectInvalid("an unknown property") { $0["note"] = "free text" }
   try expectInvalid("an unknown bucket") { $0["peak_temperature_c"] = "95" }
   try expectInvalid("a missing property") { $0.removeValue(forKey: "peak_fan_share") }
+  // 0.3.0 optional strategy / entry test, with the server's consistency rules.
+  func expectValid(_ name: String, _ change: (inout [String: Any]) -> Void) throws {
+    guard var root = try JSONSerialization.jsonObject(with: payload.data) as? [String: Any],
+      var section = root["fan_layer"] as? [String: Any]
+    else { throw CheckFailure(description: "fan_layer missing from the frozen payload") }
+    change(&section)
+    root["fan_layer"] = section
+    try DiagnosticsPayloadValidator.validate(
+      try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys]), expectedType: .manualHealth)
+    _ = name
+  }
+  try expectValid("direct strategy, passed test") { $0["strategy"] = "direct"; $0["entry_test"] = "passed" }
+  try expectInvalid("an unknown strategy") { $0["strategy"] = "smc" }
+  try expectInvalid("control on after a failed test") { $0["entry_test"] = "failed" }
+  try expectInvalid("an experimental Mac that skipped the test") { $0["entry_test"] = "not_needed" }
+
+  // 0.3.0 chip profile in the system section: parsed fields only, closed enums.
+  let chip = DiagnosticsChip(chip: ChipIdentity(brand: "Apple M3 Max"), performanceCores: 12, efficiencyCores: 4,
+                             mapStatus: [.performanceCPU: .confirmed, .efficiencyCPU: .catalogue, .gpu: .disputed])
+  try require(chip?.variant == "max" && chip?.sensorMap?.gpu == "disputed", "chip profile fields")
+  try require(DiagnosticsChip(chip: nil, performanceCores: 4, efficiencyCores: 4, mapStatus: [:]) == nil,
+    "an unknown chip sends no chip object")
+  func withChip(_ object: Any) throws -> Data {
+    guard var root = try JSONSerialization.jsonObject(with: payload.data) as? [String: Any],
+      var system = root["system"] as? [String: Any]
+    else { throw CheckFailure(description: "system missing") }
+    system["chip"] = object
+    root["system"] = system
+    return try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
+  }
+  let encodedChip = try JSONSerialization.jsonObject(with: JSONEncoder().encode(chip))
+  try DiagnosticsPayloadValidator.validate(try withChip(encodedChip), expectedType: .manualHealth)
+  try DiagnosticsPayloadValidator.validate(try withChip(["family": "A", "generation": 18, "variant": "pro"]),
+                                           expectedType: .manualHealth)
+  for bad: [String: Any] in [
+    ["family": "X", "generation": 4, "variant": "base"],
+    ["family": "M", "generation": 0, "variant": "base"],
+    ["family": "M", "generation": 4, "variant": "hyper"],
+    ["family": "M", "generation": 4, "variant": "base", "brand": "Apple M4"],
+    ["family": "M", "generation": 4, "variant": "base", "sensor_map": ["performance": "maybe", "efficiency": "unknown", "gpu": "unknown"]],
+  ] {
+    do {
+      try DiagnosticsPayloadValidator.validate(try withChip(bad), expectedType: .manualHealth)
+      throw CheckFailure(description: "Chip validation accepted \(bad)")
+    } catch is DiagnosticsPayloadError {}
+  }
 
   // The compatibility report has no fan_layer section.
   var compat: [String: Any] = try JSONSerialization.jsonObject(with: payload.data) as? [String: Any] ?? [:]

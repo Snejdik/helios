@@ -197,8 +197,11 @@ struct DiagnosticsSystem: Codable, Sendable, Equatable {
   let memoryBucketGiB: DiagnosticsMemoryBucket
   let fanCount: Int?
   let batteryPresent: Bool?
+  /// 0.3.0: parsed chip, core counts and sensor-map state (no brand string).
+  var chip: DiagnosticsChip? = nil
 
   enum CodingKeys: String, CodingKey {
+    case chip
     case macOSVersion = "macos_version"
     case macOSBuild = "macos_build"
     case machineModel = "machine_model"
@@ -207,6 +210,49 @@ struct DiagnosticsSystem: Codable, Sendable, Equatable {
     case memoryBucketGiB = "memory_bucket_gib"
     case fanCount = "fan_count"
     case batteryPresent = "battery_present"
+  }
+}
+
+struct DiagnosticsSensorMap: Codable, Sendable, Equatable {
+  let performance: String
+  let efficiency: String
+  let gpu: String
+}
+
+struct DiagnosticsChip: Codable, Sendable, Equatable {
+  static let variants = ["base", "pro", "max", "ultra"]
+  static let mapStates = SensorMapStatus.allCases.map(\.rawValue)
+
+  let family: String
+  let generation: Int
+  let variant: String
+  var performanceCores: Int?
+  var efficiencyCores: Int?
+  var sensorMap: DiagnosticsSensorMap?
+
+  enum CodingKeys: String, CodingKey {
+    case family, generation, variant
+    case performanceCores = "performance_cores"
+    case efficiencyCores = "efficiency_cores"
+    case sensorMap = "sensor_map"
+  }
+
+  init?(chip: ChipIdentity?, performanceCores: Int?, efficiencyCores: Int?,
+        mapStatus: [ThermalGroup: SensorMapStatus]) {
+    guard let chip else { return nil }
+    family = chip.family.rawValue
+    generation = chip.generation
+    variant = chip.variant == .base ? "base" : chip.variant.rawValue.lowercased()
+    self.performanceCores = performanceCores.flatMap { (1...64).contains($0) ? $0 : nil }
+    self.efficiencyCores = efficiencyCores.flatMap { (0...64).contains($0) ? $0 : nil }
+    if mapStatus.isEmpty {
+      sensorMap = nil
+    } else {
+      sensorMap = DiagnosticsSensorMap(
+        performance: (mapStatus[.performanceCPU] ?? .unknown).rawValue,
+        efficiency: (mapStatus[.efficiencyCPU] ?? .unknown).rawValue,
+        gpu: (mapStatus[.gpu] ?? .unknown).rawValue)
+    }
   }
 }
 
@@ -591,8 +637,9 @@ enum DiagnosticsPayloadValidator {
     try closed(
       value,
       required: ["macos_version", "macos_build", "architecture", "memory_bucket_gib"],
-      optional: ["machine_model", "apple_silicon_family", "fan_count", "battery_present"],
+      optional: ["machine_model", "apple_silicon_family", "fan_count", "battery_present", "chip"],
       at: "$.system")
+    if let chip = value["chip"] { try validateChip(chip) }
     guard boundedString(value["macos_version"], 1...32, pattern: #"^[0-9.]+$"#),
       boundedString(value["macos_build"], 1...32, pattern: #"^[A-Za-z0-9]+$"#),
       value["architecture"] as? String == "arm64",
@@ -614,6 +661,31 @@ enum DiagnosticsPayloadValidator {
       }
     }
     if let present = value["battery_present"] { try requireBoolean(present, "$.system.battery_present") }
+  }
+
+  /// Same rules as the server (`validateChip` in Web/snejda diagnostics.ts).
+  private static func validateChip(_ raw: Any) throws {
+    let path = "$.system.chip"
+    guard let value = raw as? [String: Any] else { throw DiagnosticsPayloadError.invalid(path) }
+    try closed(value, required: ["family", "generation", "variant"],
+      optional: ["performance_cores", "efficiency_cores", "sensor_map"], at: path)
+    guard ["M", "A"].contains(value["family"] as? String ?? ""),
+      let generation = integer(value["generation"] as Any), (1...99).contains(generation),
+      DiagnosticsChip.variants.contains(value["variant"] as? String ?? "")
+    else { throw DiagnosticsPayloadError.invalid(path) }
+    if let cores = value["performance_cores"] {
+      guard let cores = integer(cores), (1...64).contains(cores) else { throw DiagnosticsPayloadError.invalid(path) }
+    }
+    if let cores = value["efficiency_cores"] {
+      guard let cores = integer(cores), (0...64).contains(cores) else { throw DiagnosticsPayloadError.invalid(path) }
+    }
+    if let map = value["sensor_map"] {
+      guard let map = map as? [String: Any] else { throw DiagnosticsPayloadError.invalid(path) }
+      try closed(map, required: ["performance", "efficiency", "gpu"], at: "\(path).sensor_map")
+      guard map.values.allSatisfy({ DiagnosticsChip.mapStates.contains($0 as? String ?? "") }) else {
+        throw DiagnosticsPayloadError.invalid("\(path).sensor_map")
+      }
+    }
   }
 
   private static func validateCapabilities(_ value: [String: Any]) throws {

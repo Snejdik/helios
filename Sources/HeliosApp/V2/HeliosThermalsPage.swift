@@ -1,10 +1,13 @@
+import AppKit
 import OSLog
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct HeliosThermalsPage: View {
   let context: HeliosContext
   @ObservedObject var model: OverviewViewModel
   @State private var showSensors = false
+  @State private var exportingDump = false
 
   var body: some View {
     let presentation = model.presentation
@@ -18,6 +21,7 @@ struct HeliosThermalsPage: View {
       HeliosThermalBlock(
         context: context, model: model, presentation: presentation,
         markers: context.feed.markers(for: .temperature, range: range))
+      HeliosWhySection(lens: .hotOrNoisy, context: context, model: model)
 
       HeliosSection("What is keeping your Mac busy") {
         VStack(alignment: .leading, spacing: 8) {
@@ -38,8 +42,20 @@ struct HeliosThermalsPage: View {
       }
 
       DisclosureGroup("All sensors", isExpanded: $showSensors) {
-        HeliosSensorInventory(presentation: presentation)
-          .padding(.top, 8)
+        VStack(alignment: .leading, spacing: 10) {
+          HeliosSensorInventory(presentation: presentation)
+          HStack(spacing: 10) {
+            Button(exportingDump ? "Reading SMC…" : "Export SMC Dump…") {
+              exportingDump = true
+              HeliosSMCDumpExport.run { exportingDump = false }
+            }
+            .disabled(exportingDump)
+            Text("Saves an anonymous list of this Mac's sensor keys and numeric values to a file, to help add support for your Mac. Nothing is sent.")
+              .font(.subheadline).foregroundStyle(.secondary)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+        }
+        .padding(.top, 8)
       }
     }
   }
@@ -54,11 +70,24 @@ struct HeliosThermalsPage: View {
     if available.isEmpty {
       HeliosFactRow(label: "Sensors", value: thermalsGap(p), showsDivider: false)
     } else {
+      let metrics = try? p.thermals.get()
       ForEach(Array(available.enumerated()), id: \.element.0) { index, item in
         HeliosFactRow(
           label: item.0.rawValue,
           value: "\(TelemetryFormatting.temperature(item.1.maximum)) max · \(TelemetryFormatting.temperature(item.1.average)) avg",
+          detail: metrics.flatMap { mapLine($0, group: item.0) },
           showsDivider: index < available.count - 1)
+          .help(metrics?.mapDetail[item.0] ?? "")
+      }
+      if let chip = metrics?.chipSummary {
+        Divider()
+        HeliosFactRow(
+          label: "Sensor map", value: chip,
+          detail: "Helios confirms each group when its sensors warm with that kind of load during normal use. Unconfirmed temperatures are shown but never raise alerts.",
+          showsDivider: false)
+        if let metrics, metrics.mapStatus[.performanceCPU].map({ $0 != .confirmed }) ?? false {
+          HeliosCalibrationRow(model: model)
+        }
       }
     }
     if case .success(let system) = p.system {
@@ -66,6 +95,13 @@ struct HeliosThermalsPage: View {
       HeliosFactRow(label: "macOS thermal pressure", value: system.thermalState.rawValue,
         showsDivider: false)
     }
+  }
+
+  /// The map status under each group, so a catalogue temperature never looks confirmed.
+  private func mapLine(_ metrics: ThermalMetrics, group: ThermalGroup) -> String? {
+    guard let status = metrics.mapStatus[group] else { return nil }
+    if status == .confirmed || status == .validated { return status.title }
+    return [status.title, metrics.mapDetail[group]].compactMap { $0 }.joined(separator: ". ")
   }
 
   private func thermalsGap(_ p: OverviewPresentation) -> String {
@@ -92,7 +128,7 @@ struct HeliosThermalBlock: View {
           value: HeliosText.value(presentation.thermals.flatMap(\.maximumSoCCelsius)) {
             TelemetryFormatting.temperature($0)
           },
-          caption: "Hottest chip sensor")
+          caption: temperatureCaption)
         Divider().frame(height: 44)
         reading(
           title: "CPU average", symbol: "cpu",
@@ -126,6 +162,14 @@ struct HeliosThermalBlock: View {
       Text(caption).font(.subheadline).foregroundStyle(.secondary)
     }
     .accessibilityElement(children: .combine)
+  }
+
+  /// A catalogue-only headline temperature says so in words, not only in a tooltip.
+  private var temperatureCaption: String {
+    guard case .success(let metrics) = presentation.thermals,
+      let status = metrics.maximumSoCMapStatus, !status.isTrustedForAlerts
+    else { return "Hottest chip sensor" }
+    return status.title
   }
 
   private var fanValue: String {
@@ -221,10 +265,24 @@ struct HeliosFanUnavailableNotice: View {
           .fixedSize(horizontal: false, vertical: true)
         Button("Open Cooling Settings…", action: setUp)
       }
+    } else if !client.fanControlAvailable, let layer = client.fanLayer, layer.available, layer.consented,
+      layer.tier == .experimental, client.fanLayerDetails?.entryTest != FanLayerDetails.entryTestPassed
+    {
+      let failed = client.fanLayerDetails?.entryTest == FanLayerDetails.entryTestFailed
+      VStack(alignment: .leading, spacing: 8) {
+        Text(failed ? "The fan test did not pass on this Mac." : "One step left: the 20-second fan test.")
+          .font(.subheadline.weight(.medium))
+        Text(failed
+          ? "Fan control stays off on this Mac and macOS version. macOS keeps managing the fans; temperatures and fan speed are still shown."
+          : "Helios holds the fans at their lowest speed for 20 seconds, checks that the Mac obeys, and hands them back to macOS. Until then macOS manages the fans.")
+          .font(.subheadline).foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+        if !failed { Button("Run the Fan Test in Settings…", action: setUp) }
+      }
     } else if !client.fanControlAvailable {
       VStack(alignment: .leading, spacing: 4) {
-        Text("Fan control is not available on this Mac yet.").font(.subheadline.weight(.medium))
-        Text("The helper is installed and connected, but Helios only writes to fans on a Mac and macOS build it has verified on real hardware. \(host.map { "This Mac is \($0)." } ?? "") macOS keeps managing your fans safely, and temperatures and fan speed are still shown.")
+        Text("Helios cannot control the fans on this Mac.").font(.subheadline.weight(.medium))
+        Text("\(client.fanLayer.map { $0.detail.isEmpty ? "" : $0.detail + " " } ?? "")\(host.map { "This Mac is \($0). " } ?? "")macOS keeps managing your fans safely, and temperatures and fan speed are still shown.")
           .font(.subheadline).foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
       }
@@ -309,6 +367,10 @@ struct HeliosFanModeBar: View {
       } else if !model.canSelectControl {
         HeliosFanUnavailableNotice(client: client, host: host, setUp: setUp)
       } else if let notice = HeliosFanHandoverNotice.text(model) {
+        // Manual keeps its slider while the fans are handed over.
+        if model.selection == .override, let bounds = model.limitBounds {
+          HeliosManualSpeedControl(model: model, bounds: bounds, compact: true)
+        }
         HeliosFanHandoverNotice(text: notice, working: model.handingOver)
       } else if model.selection == .override, let bounds = model.limitBounds {
         HeliosManualSpeedControl(model: model, bounds: bounds, compact: true)
@@ -470,8 +532,14 @@ private struct HeliosCoolingControl: View {
 
       if model.selection == .override, let bounds = model.limitBounds {
         HeliosManualSpeedControl(model: model, bounds: bounds)
-      } else if model.selection == .auto, !model.autoDetail.isEmpty {
-        Text(model.autoDetail).font(.subheadline).foregroundStyle(.secondary)
+      } else if model.selection == .auto {
+        // One line of fixed height: the status changes every few seconds during a takeover,
+        // and a line that wraps or disappears would move the curve editor under the pointer.
+        Text(model.autoDetail.isEmpty ? " " : model.autoDetail)
+          .font(.subheadline).foregroundStyle(.secondary)
+          .lineLimit(1).truncationMode(.tail)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .help(model.autoDetail)
       }
 
       if model.selection == .auto, model.canSelectControl {
@@ -499,7 +567,7 @@ private struct HeliosCoolingControl: View {
 
       DisclosureGroup("Safety", isExpanded: $showSafety) {
         VStack(alignment: .leading, spacing: 8) {
-          Text("System is recommended. Boost, Manual and Automatic only add cooling on top of macOS, within your speed limit (90 % of the factory maximum unless unlocked in Settings › Cooling). The helper reads trusted temperatures itself, never goes below what macOS would do, and returns control to macOS when more cooling is needed, if telemetry stops, on sleep, on quit and on any error. Taking the fans from macOS takes several seconds, during which the fans may briefly run at their minimum; while macOS is already spinning them, Helios therefore only takes over for a clearly higher speed.")
+          Text("System is recommended. Boost (on a validated Mac), Manual and Automatic only add cooling on top of macOS, within your speed limit (90 % of the factory maximum on a validated Mac unless unlocked in Settings › Cooling, 70 % elsewhere). The helper reads trusted temperatures itself, never goes below what macOS would do, and returns control to macOS when more cooling is needed, if telemetry stops, on sleep, on quit and on any error. Taking the fans from macOS takes several seconds, during which the fans may briefly run at their minimum; while macOS is already spinning them, Helios therefore only takes over for a clearly higher speed.")
             .fixedSize(horizontal: false, vertical: true)
           HeliosGroup {
             HeliosFactRow(label: "Helper connection", value: client.state.rawValue)
@@ -507,7 +575,9 @@ private struct HeliosCoolingControl: View {
             HeliosFactRow(label: "Fan layer",
               value: client.fanLayer.map { $0.consented ? "\($0.tier.label) · on" : ($0.available ? "\($0.tier.label) · off" : "Not supported") } ?? "—")
             HeliosFactRow(label: "Speed limit",
-              value: model.fullMaximumAllowed ? "Factory maximum" : "90 % of the factory maximum", showsDivider: false)
+              value: model.fullMaximumAllowed
+                ? "Factory maximum"
+                : "\(Int((model.ceilingFraction * 100).rounded())) % of the factory maximum", showsDivider: false)
           }
         }
         .font(.subheadline)
@@ -586,22 +656,28 @@ struct HeliosFanLayerConsentBox: View {
           Text("Install and connect the helper above to check this Mac.")
             .font(.subheadline).foregroundStyle(.secondary)
         } else if let layer = client.fanLayer {
-          if !layer.machine.isEmpty {
-            HStack {
-              Text("This Mac")
-              Spacer()
-              Text(layer.machine).foregroundStyle(.secondary)
-            }
+          HStack(alignment: .firstTextBaseline) {
+            Text("This Mac")
+            Spacer()
+            Text([layer.machine, status(layer)].filter { !$0.isEmpty }.joined(separator: " · "))
+              .foregroundStyle(.secondary)
           }
+          Text(tierExplanation(layer))
+            .font(.subheadline).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
           if layer.available {
             Toggle(
               "Use experimental fan control on this Mac",
               isOn: Binding(get: { layer.consented }, set: { $0 ? (confirming = true) : set(false) }))
               .disabled(working)
-            Text("Helios never cools less than macOS. It only adds cooling when you choose Boost, Manual or Auto, and hands the fans back to macOS on any error, before sleep and when it quits. This applies only to this Mac and macOS version; after a macOS update Helios asks again.")
+            Text("Helios never cools less than macOS. It only adds cooling when you choose Manual or Auto (and Boost on a validated Mac), and hands the fans back to macOS on any error, before sleep and when it quits. This applies only to this Mac and macOS version; after a macOS update Helios asks again.")
               .font(.subheadline).foregroundStyle(.secondary)
               .fixedSize(horizontal: false, vertical: true)
-            if layer.consented {
+            if layer.consented, let details = client.fanLayerDetails, layer.tier == .experimental {
+              Divider()
+              entryTest(details)
+            }
+            if layer.consented, layer.tier == .validated {
               Divider()
               Toggle(
                 "Allow the full factory maximum",
@@ -610,6 +686,10 @@ struct HeliosFanLayerConsentBox: View {
               Text(layer.fullMaximumAllowed
                 ? "Helios may run the fans up to the factory maximum. The fans are louder and wear faster at full speed."
                 : "Helios keeps the fans at or below 90 % of the factory maximum. When more cooling is needed, it hands the fans back to macOS, which may use full speed.")
+                .font(.subheadline).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            } else if layer.consented {
+              Text("On this Mac Helios keeps the fans at or below 70 % of the factory maximum, without Boost. When more cooling is needed, it hands the fans back to macOS, which may use full speed.")
                 .font(.subheadline).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             }
@@ -628,9 +708,71 @@ struct HeliosFanLayerConsentBox: View {
     }
     .alert("Turn on experimental fan control?", isPresented: $confirming) {
       Button("Cancel", role: .cancel) {}
-      Button("Turn On") { set(true) }
+      Button("I Understand, Turn On") { set(true) }
     } message: {
-      Text("Helios has not been tested on this Mac and macOS version. It only adds cooling on top of macOS and returns control to macOS on any error, but fan control by third-party software is not documented by Apple. This feature is experimental and you use it at your own risk: there is no warranty and no liability for any damage to your Mac.")
+      // PLAN_0_3_0 §8.1: three plain sentences, then the no-warranty line.
+      Text("This is experimental. macOS stays in control and Helios only adds cooling. Temperatures and sensors on this Mac may be inaccurate.\n\nNext, Helios runs a 20-second test at the fans' lowest speed. Fan control by third-party software is not documented by Apple; you use it at your own risk, without warranty or liability.")
+    }
+  }
+
+  /// One word on where fan control stands, so the switch below never has to be decoded.
+  private func status(_ layer: FanLayerStatus) -> String {
+    guard layer.available else { return "Not supported" }
+    guard layer.consented else { return "\(layer.tier.label), off" }
+    if layer.tier == .experimental, let details = client.fanLayerDetails {
+      if details.entryTest == FanLayerDetails.entryTestFailed { return "Experimental, test failed" }
+      if details.entryTest != FanLayerDetails.entryTestPassed { return "Experimental, fan test needed" }
+    }
+    return "\(layer.tier.label), on"
+  }
+
+  private func tierExplanation(_ layer: FanLayerStatus) -> String {
+    switch layer.tier {
+    case .validated:
+      "Helios's fan control was tested on this Mac model and macOS version."
+    case .experimental:
+      "Helios's fan control was not tested on this Mac model or macOS version. You can turn it on as an experiment; it stays within stricter limits."
+    case .unsupported:
+      "Helios shows temperatures and fan speed on this Mac but does not control the fans."
+    }
+  }
+
+  @ViewBuilder
+  private func entryTest(_ details: FanLayerDetails) -> some View {
+    VStack(alignment: .leading, spacing: 6) {
+      HStack {
+        Text("Fan test")
+        Spacer()
+        Text(details.entryTest == FanLayerDetails.entryTestPassed ? "Passed"
+          : details.entryTest == FanLayerDetails.entryTestFailed ? "Failed" : "Not run")
+          .foregroundStyle(.secondary)
+      }
+      switch details.entryTest {
+      case FanLayerDetails.entryTestPassed:
+        Text("Every fan held its lowest speed for 20 seconds and returned to macOS. Fan control is on.")
+          .font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+      case FanLayerDetails.entryTestFailed:
+        Text("\(details.entryTestDetail) Fan control stays off on this Mac and macOS version. Temperatures and fan speed are still shown.")
+          .font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+      default:
+        Text("Before the first use, Helios holds each fan at its lowest speed for 20 seconds, checks that the Mac obeys, and hands the fans back to macOS. The fan may become audible.")
+          .font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        Button(working ? "Testing… (about 40 s)" : "Run Fan Test") { runEntryTest() }
+          .disabled(working)
+      }
+    }
+  }
+
+  private func runEntryTest() {
+    working = true
+    message = nil
+    let sent = client.runFanLayerEntryTest { passed, detail in
+      working = false
+      message = passed ? "Passed. The helper restarts and turns fan control on." : detail
+    }
+    if !sent {
+      working = false
+      message = "The helper is not connected."
     }
   }
 
@@ -740,5 +882,98 @@ private struct HeliosSensorInventory: View {
     case .failure(let error):
       Text("Sensor inventory: \(HeliosText.failure(error))").foregroundStyle(.secondary)
     }
+  }
+}
+
+/// Reads the anonymous SMC dump off the main thread, then asks where to save it.
+@MainActor
+enum HeliosSMCDumpExport {
+  static func run(completion: @escaping @MainActor () -> Void) {
+    let profile = MacProfile.native()
+    Task { @MainActor in
+      let result = await Task.detached(priority: .utility) { () -> Result<String, TelemetryError> in
+        captureMetric { try SMCDump.make(transport: try SMCIOKitTransport(), profile: profile) }
+      }.value
+      completion()
+      switch result {
+      case .success(let text):
+        HeliosFileExport.save(
+          suggestedName: SMCDump.suggestedFileName(profile), type: .tabSeparatedText,
+          data: { text.data(using: .utf8) })
+      case .failure(let error):
+        let alert = NSAlert()
+        alert.messageText = "The SMC dump could not be read"
+        alert.informativeText = error.localizedDescription
+        alert.runModal()
+      }
+    }
+  }
+}
+
+/// "Calibrate" for the P-core map: a bounded, user-started CPU load the passive verifier
+/// can learn from. Stops early on thermal pressure or a hot sensor; never touches fans.
+@MainActor
+final class HeliosCalibrationController: ObservableObject {
+  static let shared = HeliosCalibrationController()
+  @Published private(set) var secondsLeft: Int?
+  @Published private(set) var note: String?
+  private let load = SensorMapCalibration()
+  private var task: Task<Void, Never>?
+
+  func start(model: OverviewViewModel) {
+    guard task == nil else { return }
+    let cores = MacProfile.native().performanceCoreCount ?? 4
+    note = nil
+    load.start(threadCount: cores)
+    let total = Int(SensorMapCalibration.duration.components.seconds)
+    secondsLeft = total
+    task = Task { @MainActor [weak self, weak model] in
+      var aborted = false
+      for remaining in stride(from: total, to: 0, by: -1) {
+        self?.secondsLeft = remaining
+        try? await Task.sleep(for: .seconds(1))
+        if Task.isCancelled { break }
+        let snapshot = model?.snapshot
+        let state = snapshot.flatMap { try? $0.system.result.get().thermalState }
+        let hottest = snapshot.flatMap { try? $0.thermals.result.get().maximumSoCCelsius.get() }
+        if SensorMapCalibration.shouldAbort(thermalState: state, hottestCelsius: hottest) {
+          aborted = true
+          break
+        }
+      }
+      self?.finish(aborted ? "Stopped early because the Mac got warm." : "Done. Helios keeps learning during normal use.")
+    }
+  }
+
+  func cancel() {
+    task?.cancel()
+    finish("Cancelled.")
+  }
+
+  private func finish(_ text: String) {
+    load.stop()
+    task = nil
+    secondsLeft = nil
+    note = text
+  }
+}
+
+private struct HeliosCalibrationRow: View {
+  @ObservedObject var model: OverviewViewModel
+  @ObservedObject private var controller = HeliosCalibrationController.shared
+
+  var body: some View {
+    HStack(alignment: .firstTextBaseline, spacing: 10) {
+      if let left = controller.secondsLeft {
+        Button("Stop") { controller.cancel() }
+        Text("Calibrating… \(left) s").monospacedDigit().foregroundStyle(.secondary)
+      } else {
+        Button("Calibrate (40 s)") { controller.start(model: model) }
+        Text(controller.note ?? "Runs the P-cores at full load for 40 seconds so Helios can confirm their sensors sooner. The fan may speed up; it stops early if the Mac gets warm.")
+          .font(.subheadline).foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+    }
+    .padding(.vertical, 6)
   }
 }

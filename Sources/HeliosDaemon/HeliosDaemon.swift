@@ -33,9 +33,11 @@ enum HeliosDaemon {
             // Experimental/validated fan layer, turned on by the user for this
             // exact model + OS build. Writer stays lazy until the first request.
             logger.notice("Fan layer enabled (\(layer.tier.label, privacy: .public)); writer remains lazy until first control request.")
+            // Decision 2: Boost only on the validated tuple; elsewhere Manual/Auto
+            // ("at least") under the 70 % ceiling. The emergency path still works.
             fans = FanControlCoordinator(
                 validationMessage: nil,
-                allowedModes: [.boost, .override],
+                allowedModes: (layer.profile?.boostAllowed ?? false) ? [.boost, .override] : [.override],
                 readyDetail: layer.readyDetail,
                 makeEngine: { try layer.makeEngine() },
                 wakeSafetyCheck: { try layer.wakeSafetyCheck() },
@@ -61,7 +63,7 @@ enum HeliosDaemon {
                     } catch {
                         fanGateMessage = layer.tier == .unsupported
                             ? "Fan takeover is unavailable because the current Mac/OS/SMC baseline does not match the validated production profile."
-                            : "Fan control on this Mac is available as an experimental feature. Turn it on in Settings › Cooling."
+                            : layer.reason
                         logger.error("Production fan-control safety gate blocked takeover: \(error.localizedDescription, privacy: .public)")
                     }
                 } catch {

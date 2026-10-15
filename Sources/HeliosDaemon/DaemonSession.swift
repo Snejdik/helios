@@ -90,6 +90,43 @@ final class DaemonSession: NSObject, HeliosDaemonXPC, @unchecked Sendable {
         }
     }
 
+    func fanLayerDetails(session: UUID, reply: @escaping @Sendable (String, Int, Double, Bool, String) -> Void) {
+        queue.async { [self] in
+            guard !closed, lease.ready, session == id else {
+                reply("", FanLayerEntryTestState.notRun.rawValue, FanLayerCeiling.experimentalFraction, false, "")
+                return
+            }
+            // Boost follows what the coordinator actually allows (the validated production
+            // path has no layer profile but does offer Boost).
+            guard let layer, let profile = layer.profile else {
+                reply("", FanLayerEntryTestState.notRun.rawValue, FanLayerCeiling.defaultFraction, fans.allowsBoost, "")
+                return
+            }
+            reply(profile.strategy.rawValue, layer.entryTest.rawValue, profile.ceilingFraction,
+                  fans.allowsBoost, layer.entryTestSummary)
+        }
+    }
+
+    func runFanLayerEntryTest(session: UUID, reply: @escaping @Sendable (Bool, String) -> Void) {
+        queue.async { [self] in
+            guard !closed, lease.ready, session == id, let layer else {
+                reply(false, "Handshake required"); return
+            }
+            // The test blocks for up to a minute on AppleSMC; never on the session queue.
+            DispatchQueue.global(qos: .userInitiated).async { [self] in
+                let outcome = layer.runEntryTest()
+                switch outcome {
+                case .passed:
+                    logger.notice("Fan entry test passed; the helper restarts to turn the layer on.")
+                    reply(true, layer.entryTestSummary)
+                    requestRestart()
+                case .failed(let reason), .inconclusive(let reason):
+                    reply(false, reason)
+                }
+            }
+        }
+    }
+
     func setFanLayerFullMaximum(session: UUID, allowed: Bool, reply: @escaping @Sendable (Bool, String) -> Void) {
         queue.async { [self] in
             guard !closed, lease.ready, session == id, let layer else {

@@ -16,6 +16,20 @@ struct FanLayerStatus: Equatable, Sendable {
     var available: Bool { tier != .unsupported }
 }
 
+/// XPC v6 details of the layer on this Mac (0.3.0 M2).
+struct FanLayerDetails: Equatable, Sendable {
+    /// "ftst" or "direct"; empty when the helper could not probe.
+    let strategy: String
+    let entryTest: Int
+    /// Speed ceiling as a fraction of the factory maximum (0.9 validated, 0.7 otherwise).
+    let ceilingFraction: Double
+    let boostAllowed: Bool
+    let entryTestDetail: String
+
+    /// Raw values of the helper's FanLayerEntryTestState.
+    static let entryTestNotRun = 0, entryTestPassed = 1, entryTestFailed = 2
+}
+
 enum DaemonConnectionState: String {
     case disconnected = "Disconnected"
     case connecting = "Connecting"
@@ -42,6 +56,7 @@ final class DaemonClient: ObservableObject {
     @Published private(set) var fanControlFaultRevision: UInt64 = 0
     @Published private(set) var fanDetail = "Connect the signed helper to enable fan control."
     @Published private(set) var fanLayer: FanLayerStatus?
+    @Published private(set) var fanLayerDetails: FanLayerDetails?
     private var controlSequence: UInt64 = 0
     private var controlRequest: UUID?
     private var controlRevision = UUID()
@@ -164,6 +179,7 @@ final class DaemonClient: ObservableObject {
         completedHeartbeats = 0
         fanControlAvailable = false
         fanLayer = nil
+        fanLayerDetails = nil
         if fanState != .system { fanState = .recoveryRequired }
         fanDetail = "Helper disconnected; automatic restoration is not yet confirmed."
         controlTimeout?.cancel(); controlTimeout = nil; controlRequest = nil
@@ -223,6 +239,31 @@ final class DaemonClient: ObservableObject {
                                                fullMaximumAllowed: full)
             }
         }
+        remote(current: current)?.fanLayerDetails(session: session) { [weak self] strategy, test, ceiling, boost, testDetail in
+            Task { @MainActor in
+                guard let self, self.generation == current else { return }
+                let fraction = ceiling.isFinite && ceiling > 0 && ceiling <= 1 ? ceiling : FanLayerCeiling.experimentalFraction
+                self.fanLayerDetails = FanLayerDetails(strategy: String(strategy.prefix(16)), entryTest: test,
+                                                       ceilingFraction: fraction, boostAllowed: boost,
+                                                       entryTestDetail: String(testDetail.prefix(300)))
+            }
+        }
+    }
+
+    /// Runs the helper's 20-second entry test. A pass restarts the helper; the client
+    /// reconnects on its own and refreshes the layer.
+    @discardableResult
+    func runFanLayerEntryTest(completion: @escaping @MainActor @Sendable (Bool, String) -> Void) -> Bool {
+        guard let session, state == .connected else { return false }
+        let current = generation
+        remote(current: current)?.runFanLayerEntryTest(session: session) { [weak self] passed, detail in
+            Task { @MainActor in
+                completion(passed, detail)
+                guard let self, self.generation == current else { return }
+                self.refreshFanLayer()
+            }
+        }
+        return true
     }
 
     /// Unlocks or locks the full factory maximum in the helper, then refreshes

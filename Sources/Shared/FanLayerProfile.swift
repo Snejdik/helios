@@ -44,9 +44,29 @@ struct FanLayerMachineIdentity: Equatable, Sendable {
     var summary: String { "\(modelIdentifier) · \(osBuild)" }
 }
 
+/// How the helper takes a fan from macOS, decided by the read-only probe, never by the
+/// chip name (PLAN_0_3_0 M2, AUDIT_CIPY §2.3).
+enum FanLayerTakeoverStrategy: String, Sendable {
+    /// `Ftst = 1`, then the fan's mode key (the physically validated M4 path).
+    case ftst
+    /// No `Ftst` key on this Mac (M5 and newer): the fan's mode key is written directly.
+    /// Global ownership is virtual, so the journal and recovery stay the same.
+    case direct
+}
+
+/// How far the helper trusts its temperature map for this chip.
+enum FanLayerThermalTrust: String, Sendable {
+    /// Physically validated keys (M4 family).
+    case validated
+    /// Cross-checked catalogue keys (`SensorCatalogue`), unverified by Helios. Good enough
+    /// for a cool-only layer (a wrong key can only add cooling or miss a chance to; macOS
+    /// keeps its own protection), never for more than the experimental limits.
+    case catalogue
+}
+
 /// Exact trusted SoC temperature keys per chip family. Prefixes are never
-/// trusted. These sets mirror the app's `ThermalClassifier` allowlists (checked
-/// by the fan-layer tests) so the daemon judges the same sensors as the app.
+/// trusted. The M4 sets mirror the app's validated `SensorCatalogue.m4` (checked
+/// by the chip-profile and fan-layer tests) so the daemon judges the same sensors as the app.
 enum FanLayerTrustedThermals {
     static let m4PerformanceCPU: Set<String> = [
         "Tp01", "Tp05", "Tp09", "Tp0D", "Tp0V", "Tp0Y", "Tp0b", "Tp0e",
@@ -56,14 +76,24 @@ enum FanLayerTrustedThermals {
         "Tg0G", "Tg0H", "Tg0K", "Tg0L", "Tg0d", "Tg0e", "Tg0j", "Tg0k", "Tg1U", "Tg1k",
     ]
 
+    /// Exact parse: "Apple M4", "Apple M4 Pro/Max". An unknown suffix ("Apple M4 Hyper")
+    /// is not the M4 family.
     static func isM4Family(_ cpuBrand: String) -> Bool {
-        cpuBrand == "Apple M4" || cpuBrand.hasPrefix("Apple M4 ")
+        ChipIdentity(brand: cpuBrand)?.isM4Family == true
     }
 
-    /// Key groups for this chip, or nil when Helios has no trusted map yet.
+    static func trust(for cpuBrand: String) -> FanLayerThermalTrust? {
+        if isM4Family(cpuBrand) { return .validated }
+        return SensorCatalogue.map(for: ChipIdentity(brand: cpuBrand)) == nil ? nil : .catalogue
+    }
+
+    /// Key groups for this chip (each non-empty), or nil when Helios has no map for it.
     static func groups(for cpuBrand: String) -> [Set<String>]? {
-        guard isM4Family(cpuBrand) else { return nil }
-        return [m4PerformanceCPU, m4EfficiencyCPU, m4GPU]
+        if isM4Family(cpuBrand) { return [m4PerformanceCPU, m4EfficiencyCPU, m4GPU] }
+        guard let map = SensorCatalogue.map(for: ChipIdentity(brand: cpuBrand)), !map.groups.isEmpty else {
+            return nil
+        }
+        return map.groups
     }
 }
 
@@ -110,6 +140,18 @@ struct FanLayerProfile: Sendable {
     let tier: FanLayerTier
     let fans: [FanLayerFanSurface]
     let reasons: [String]
+    var strategy: FanLayerTakeoverStrategy = .ftst
+    var thermalTrust: FanLayerThermalTrust = .validated
+
+    /// Decision 2 (PLAN_0_3_0 §8): only the physically validated tuple keeps Boost and the
+    /// unlockable full maximum. Every other Mac is limited to 70 % and Manual "at least".
+    var boostAllowed: Bool { tier == .validated }
+    var fullMaximumUnlockable: Bool { tier == .validated }
+    var ceilingFraction: Double {
+        tier == .validated ? FanLayerCeiling.defaultFraction : FanLayerCeiling.experimentalFraction
+    }
+    /// An unvalidated Mac must pass the 20-second entry test for its model + build first.
+    var needsEntryTest: Bool { tier == .experimental }
 
     var summary: String {
         switch tier {
@@ -129,12 +171,26 @@ enum FanLayerProbe {
         ["Ftst"] + (0..<max(0, min(fanCount, FanCodec.maximumFanCount))).flatMap { ["F\($0)Md", "F\($0)Tg"] }
     }
 
+    /// Keys whose attributes the probe needs on this Mac: `Ftst` only when it exists,
+    /// and each fan's actual mode key (`FxMd` or the lowercase `Fxmd`).
+    static func accessKeys(evidence: FanOwnershipPreflightEvidence) -> [String] {
+        let fans = evidence.fans.prefix(FanCodec.maximumFanCount).flatMap { fan -> [String] in
+            let mode = isModeKey(fan.modeKey, fanID: fan.id) ? fan.modeKey : "F\(fan.id)Md"
+            return [mode, "F\(fan.id)Tg"]
+        }
+        return (evidence.globalKeyPresent ? ["Ftst"] : []) + fans
+    }
+
+    static func isModeKey(_ key: String, fanID: Int) -> Bool {
+        key == "F\(fanID)Md" || key == "F\(fanID)md"
+    }
+
     static func evaluate(evidence: FanOwnershipPreflightEvidence, cpuBrand: String,
                          access: FanLayerKeyAccess?, trustedThermalsAvailable: Bool) throws -> FanLayerProfile {
         let identity = try FanLayerMachineIdentity(modelIdentifier: evidence.modelIdentifier,
                                                    osBuild: evidence.osBuild)
         var reasons: [String] = []
-        if !cpuBrand.hasPrefix("Apple M") {
+        if ChipIdentity(brand: cpuBrand) == nil {
             reasons.append("Fan control is only available on Apple silicon Macs.")
         }
         if evidence.fanCount == 0 {
@@ -148,23 +204,30 @@ enum FanLayerProbe {
         } else if !trustedThermalsAvailable {
             reasons.append("Trusted temperature sensors could not be read.")
         }
-        if evidence.globalKeyType != "ui8 " || evidence.globalKeySize != 1 {
-            reasons.append("The fan arbitration key has an unexpected format.")
-        }
-        if evidence.globalValue != 0 {
-            reasons.append("Another fan controller appears to be active (Ftst is set).")
+        // Strategy from the probe: an existing Ftst must be the clean, writable ui8 the
+        // validated path uses; a Mac without it is driven through the mode key directly.
+        let strategy: FanLayerTakeoverStrategy = evidence.globalKeyPresent ? .ftst : .direct
+        if strategy == .ftst {
+            if evidence.globalKeyType != "ui8 " || evidence.globalKeySize != 1 {
+                reasons.append("The fan arbitration key has an unexpected format.")
+            }
+            if evidence.globalValue != 0 {
+                reasons.append("Another fan controller appears to be active (Ftst is set).")
+            }
         }
         if let access {
-            if !access.writable("Ftst") { reasons.append("The fan arbitration key is not writable.") }
+            if strategy == .ftst, !access.writable("Ftst") {
+                reasons.append("The fan arbitration key is not writable.")
+            }
         } else {
             reasons.append("Fan key attributes could not be read.")
         }
 
         var fans: [FanLayerFanSurface] = []
         for fan in evidence.fans {
-            let expectedMode = "F\(fan.id)Md"
+            let expectedMode = fan.modeKey
             var fanOK = true
-            if fan.modeKey != expectedMode {
+            if !isModeKey(fan.modeKey, fanID: fan.id) {
                 reasons.append("Fan \(fan.id + 1) uses an unsupported mode key (\(fan.modeKey)).")
                 fanOK = false
             }
@@ -199,13 +262,14 @@ enum FanLayerProbe {
         let tier: FanLayerTier
         if !reasons.isEmpty {
             tier = .unsupported
-        } else if isValidatedTuple(evidence) {
+        } else if isValidatedTuple(evidence), strategy == .ftst {
             tier = .validated
         } else {
             tier = .experimental
         }
         return FanLayerProfile(identity: identity, cpuBrand: cpuBrand, tier: tier,
-                               fans: reasons.isEmpty ? fans : [], reasons: reasons)
+                               fans: reasons.isEmpty ? fans : [], reasons: reasons, strategy: strategy,
+                               thermalTrust: FanLayerTrustedThermals.trust(for: cpuBrand) ?? .catalogue)
     }
 
     /// The only physically validated tuple (same numbers as the frozen
@@ -221,6 +285,7 @@ enum FanLayerProbe {
     /// wake). Any drift in fan count, keys or limits fails closed.
     static func sameSurface(_ live: FanLayerProfile, as expected: FanLayerProfile) -> Bool {
         guard live.tier != .unsupported, live.identity == expected.identity,
+              live.strategy == expected.strategy,
               live.fans.count == expected.fans.count else { return false }
         return zip(live.fans, expected.fans).allSatisfy { a, b in
             a.id == b.id && a.modeKey == b.modeKey

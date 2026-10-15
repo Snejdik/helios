@@ -34,6 +34,14 @@ protocol HeliosDaemonXPC {
     /// Unlocks (or locks again) the full factory maximum. Off by default: the
     /// helper limits every fan to 90 % of its factory maximum.
     func setFanLayerFullMaximum(session: UUID, allowed: Bool, reply: @escaping @Sendable (Bool, String) -> Void)
+    /// v6: takeover strategy ("ftst"/"direct", "" when unknown), entry test state
+    /// (FanLayerEntryTestState raw value), the speed ceiling as a fraction of the factory
+    /// maximum, whether Boost is allowed, and the last entry test detail.
+    func fanLayerDetails(session: UUID, reply: @escaping @Sendable (String, Int, Double, Bool, String) -> Void)
+    /// v6: runs the 20-second entry test (factory minimum, readback, back to macOS) on a
+    /// consented, unvalidated Mac. Replies when done; a pass restarts the helper so the
+    /// layer turns on. Takes no caller-defined values.
+    func runFanLayerEntryTest(session: UUID, reply: @escaping @Sendable (Bool, String) -> Void)
 }
 
 @objc(HeliosAppXPC)

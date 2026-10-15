@@ -78,8 +78,12 @@ final class FanLayerRuntime: @unchecked Sendable {
     let observer = FanLayerSystemObserver()
     private let consentStore: any FanLayerConsentStore
     private let limitStore: any FanLayerLimitStore
+    private let entryTestStore: any FanLayerEntryTestStore
     private let limitLock = NSLock()
     private var fullMaximum: Bool
+    private var entryTestState: FanLayerEntryTestState
+    private var entryTestDetail = ""
+    private var entryTestRunning = false
     private let samplerQueue = DispatchQueue(label: "com.snejda.Helios.fan-layer-sampler", qos: .utility)
     private var samplerTimer: DispatchSourceTimer?
     private var samplerThermals: (any FanLayerThermalSource)?
@@ -91,25 +95,32 @@ final class FanLayerRuntime: @unchecked Sendable {
 
     init(identity: FanLayerMachineIdentity?, profile: FanLayerProfile?, probeFailure: String?,
          consentStore: any FanLayerConsentStore,
-         limitStore: any FanLayerLimitStore = FanLayerDiskLimitStore()) {
+         limitStore: any FanLayerLimitStore = FanLayerDiskLimitStore(),
+         entryTestStore: any FanLayerEntryTestStore = FanLayerDiskEntryTestStore()) {
         self.identity = identity
         self.profile = profile
         self.probeFailure = probeFailure
         self.consentStore = consentStore
         self.limitStore = limitStore
+        self.entryTestStore = entryTestStore
         consented = identity.map { consentStore.isConsented($0) } ?? false
         // Unreadable means the safe default: the 90 % limit applies.
         fullMaximum = (try? limitStore.fullMaximumAllowed()) ?? false
+        entryTestState = identity.map { entryTestStore.state(for: $0) } ?? .notRun
     }
 
-    /// The user's unlock of the full factory maximum (`FanLayerCeiling`).
+    /// The user's unlock of the full factory maximum (`FanLayerCeiling`). Only the
+    /// validated tuple can unlock it; elsewhere the 70 % limit always applies.
     var fullMaximumAllowed: Bool {
         limitLock.lock(); defer { limitLock.unlock() }
-        return fullMaximum
+        return fullMaximum && (profile?.fullMaximumUnlockable ?? false)
     }
 
     /// Persists first, then applies to the next calculation; no restart needed.
     func setFullMaximumAllowed(_ allowed: Bool) throws {
+        if allowed, !(profile?.fullMaximumUnlockable ?? false) {
+            throw TelemetryError.unavailable("On a Mac that is not validated the fan limit stays at 70 % of the factory maximum.")
+        }
         try limitStore.setFullMaximumAllowed(allowed)
         limitLock.lock(); fullMaximum = allowed; limitLock.unlock()
     }
@@ -121,14 +132,14 @@ final class FanLayerRuntime: @unchecked Sendable {
             let transport = try SMCIOKitTransport()
             let client = SMCClient(transport: transport)
             let evidence = try SMCFanOwnershipPreflightReader(client: client).read().evidence
-            let access = try? FanLayerKeyAccess.read(keys: FanLayerProbe.accessKeys(fanCount: evidence.fanCount),
+            let access = try? FanLayerKeyAccess.read(keys: FanLayerProbe.accessKeys(evidence: evidence),
                                                      transport: transport)
             let cpuBrand = (try? HeliosMachineIdentity.sysctlString("machdep.cpu.brand_string")) ?? ""
             let thermals = (try? SMCFanLayerThermals(client: client, cpuBrand: cpuBrand))
                 .flatMap { try? $0.maximumSoCCelsius() } != nil
             let profile = try FanLayerProbe.evaluate(evidence: evidence, cpuBrand: cpuBrand, access: access,
                                                      trustedThermalsAvailable: thermals)
-            logger.notice("Fan layer probe: \(profile.tier.label, privacy: .public) on \(profile.identity.summary, privacy: .public); reasons: \(profile.reasons.joined(separator: " "), privacy: .public)")
+            logger.notice("Fan layer probe: \(profile.tier.label, privacy: .public) (\(profile.strategy.rawValue, privacy: .public), \(profile.thermalTrust.rawValue, privacy: .public) thermals) on \(profile.identity.summary, privacy: .public); reasons: \(profile.reasons.joined(separator: " "), privacy: .public)")
             return FanLayerRuntime(identity: identity, profile: profile, probeFailure: nil, consentStore: consentStore)
         } catch {
             logger.error("Fan layer probe failed: \(error.localizedDescription, privacy: .public)")
@@ -139,7 +150,23 @@ final class FanLayerRuntime: @unchecked Sendable {
     }
 
     var tier: FanLayerTier { profile?.tier ?? .unsupported }
-    var enabled: Bool { tier != .unsupported && consented }
+
+    var entryTest: FanLayerEntryTestState {
+        limitLock.lock(); defer { limitLock.unlock() }
+        return entryTestState
+    }
+
+    var entryTestSummary: String {
+        limitLock.lock(); defer { limitLock.unlock() }
+        return entryTestDetail
+    }
+
+    /// Consent alone is not enough on an unvalidated Mac: the entry test must have passed
+    /// for this exact model + build.
+    var enabled: Bool {
+        guard tier != .unsupported, consented, let profile else { return false }
+        return !profile.needsEntryTest || entryTest == .passed
+    }
 
     var reason: String {
         if let probeFailure { return probeFailure }
@@ -147,14 +174,80 @@ final class FanLayerRuntime: @unchecked Sendable {
         switch profile.tier {
         case .unsupported: return profile.reasons.joined(separator: " ")
         case .experimental, .validated:
-            return consented
-                ? "\(profile.tier.label) fan layer is on for \(profile.identity.summary)."
-                : "\(profile.tier.label) fan layer is available but off until you turn it on in Settings."
+            guard consented else {
+                return "\(profile.tier.label) fan layer is available but off until you turn it on in Settings."
+            }
+            if profile.needsEntryTest {
+                switch entryTest {
+                case .failed:
+                    return "The 20-second fan test failed on \(profile.identity.summary), so fan control stays off on this Mac and macOS build."
+                case .notRun:
+                    return "Run the 20-second fan test in Settings › Cooling to finish turning on fan control."
+                case .passed:
+                    break
+                }
+            }
+            return "\(profile.tier.label) fan layer is on for \(profile.identity.summary)."
         }
     }
 
     var readyDetail: String {
-        "\(tier.label) fan layer: Helios only adds cooling over macOS, stays within your speed limit, and returns control to macOS on any error or when more cooling is needed."
+        let limit = Int(((profile?.ceilingFraction ?? FanLayerCeiling.defaultFraction) * 100).rounded())
+        return "\(tier.label) fan layer: Helios only adds cooling over macOS, stays within your speed limit (\(limit) % unless unlocked on a validated Mac), and returns control to macOS on any error or when more cooling is needed."
+    }
+
+    /// The mandatory first test on an unvalidated model + build. Runs only while the
+    /// layer is consented but not yet enabled, so no coordinator writer exists.
+    func runEntryTest() -> FanLayerEntryTestOutcome {
+        guard consented, let identity, let profile, profile.needsEntryTest else {
+            return .inconclusive("The fan test is only needed on a Mac that is not validated, after you turn fan control on.")
+        }
+        limitLock.lock()
+        guard !entryTestRunning, entryTestState != .passed else {
+            let state = entryTestState
+            limitLock.unlock()
+            return state == .passed ? .passed : .inconclusive("The fan test is already running.")
+        }
+        guard entryTestState != .failed else {
+            limitLock.unlock()
+            return .failed("The fan test already failed on this Mac and macOS build.")
+        }
+        entryTestRunning = true
+        limitLock.unlock()
+        defer { limitLock.lock(); entryTestRunning = false; limitLock.unlock() }
+
+        let outcome: FanLayerEntryTestOutcome
+        do {
+            let journal = try FanLayerDiskJournal(identity: identity)
+            let stateMachine = try FanOwnershipRecoveryStateMachine(journal: journal)
+            let hardware = try FanLayerSMCHardware(profile: profile)
+            let thermals = try SMCFanLayerThermals(client: SMCClient(transport: try SMCIOKitTransport()),
+                                                   cpuBrand: profile.cpuBrand)
+            outcome = FanLayerEntryTest(profile: profile, stateMachine: stateMachine, hardware: hardware,
+                                        thermals: thermals).run()
+        } catch {
+            return .inconclusive("The fan test could not start: \(error.localizedDescription)")
+        }
+        let stored: FanLayerEntryTestState?
+        switch outcome {
+        case .passed: stored = .passed
+        case .failed: stored = .failed
+        case .inconclusive: stored = nil
+        }
+        if let stored {
+            do { try entryTestStore.record(stored, for: identity) } catch {
+                Self.logger.error("Could not store the fan test result: \(error.localizedDescription, privacy: .public)")
+            }
+            limitLock.lock(); entryTestState = stored; limitLock.unlock()
+        }
+        limitLock.lock()
+        switch outcome {
+        case .passed: entryTestDetail = "Passed: every fan held its factory minimum for 20 seconds and returned to macOS."
+        case .failed(let reason): entryTestDetail = reason
+        case .inconclusive(let reason): entryTestDetail = reason
+        }
+        limitLock.unlock()
+        return outcome
     }
 
     func makeEngine() throws -> FanLayerEngine {
@@ -183,7 +276,7 @@ final class FanLayerRuntime: @unchecked Sendable {
             do {
                 let transport = try SMCIOKitTransport()
                 let evidence = try SMCFanOwnershipPreflightReader(client: SMCClient(transport: transport)).read().evidence
-                let access = try FanLayerKeyAccess.read(keys: FanLayerProbe.accessKeys(fanCount: evidence.fanCount),
+                let access = try FanLayerKeyAccess.read(keys: FanLayerProbe.accessKeys(evidence: evidence),
                                                         transport: transport)
                 let live = try FanLayerProbe.evaluate(evidence: evidence, cpuBrand: profile.cpuBrand, access: access,
                                                       trustedThermalsAvailable: true)
@@ -238,9 +331,14 @@ final class FanLayerRuntime: @unchecked Sendable {
                 samplerThermals = try SMCFanLayerThermals(client: client, cpuBrand: profile.cpuBrand)
             }
             guard let reader = samplerReader, let thermals = samplerThermals else { return }
-            let global = try reader.client.value("Ftst")
             let now = HostClock.now
-            guard global.bytes.first == 0 else {
+            // Ftst on the validated path; on a direct-strategy Mac any fan in manual mode.
+            let owned: Bool
+            switch profile.strategy {
+            case .ftst: owned = try reader.client.value("Ftst").bytes.first != 0
+            case .direct: owned = try profile.fans.contains { try reader.mode($0.id) == 1 }
+            }
+            guard !owned else {
                 samplerLastOwned = now // Helios or someone else owns the fans.
                 return
             }

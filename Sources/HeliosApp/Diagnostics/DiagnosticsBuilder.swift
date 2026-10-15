@@ -266,6 +266,12 @@ final class DiagnosticsSessionTracker {
       ?? .unknown
     let family = systemMetrics.flatMap { try? $0.chipName.get() }
       .map(DiagnosticsFieldRules.appleSiliconFamily)
+    let cpu = try? latestSnapshot.cpu.result.get()
+    let chip = DiagnosticsChip(
+      chip: systemMetrics.flatMap { try? $0.chipName.get() }.flatMap(ChipIdentity.init(brand:)),
+      performanceCores: cpu.flatMap { try? $0.performanceCoreCount.get() },
+      efficiencyCores: cpu.flatMap { try? $0.efficiencyCoreCount.get() },
+      mapStatus: (try? latestSnapshot.thermals.result.get())?.mapStatus ?? [:])
 
     let version = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
     let build = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String
@@ -282,7 +288,7 @@ final class DiagnosticsSessionTracker {
         macOSVersion: osVersion, macOSBuild: osBuild, machineModel: model,
         architecture: DiagnosticsFieldRules.architecture,
         appleSiliconFamily: family, memoryBucketGiB: memory, fanCount: fanCount,
-        batteryPresent: batteryPresent),
+        batteryPresent: batteryPresent, chip: chip),
       capabilities: capabilityValues,
       providers: providerValues,
       helper: DiagnosticsHelper(

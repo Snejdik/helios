@@ -111,10 +111,22 @@ final class FanDiagnosticsRecorder {
     case .experimental: .experimental
     case .validated: .validated
     }
+    let details = client.fanLayerDetails
+    let entryTest: String? = tier == .validated ? "not_needed" : details.map { details in
+      switch details.entryTest {
+      case FanLayerDetails.entryTestPassed: "passed"
+      case FanLayerDetails.entryTestFailed: "failed"
+      default: "not_run"
+      }
+    }
+    // On an unvalidated Mac consent alone does not turn control on: the entry test must pass.
+    let testOK = tier == .validated || entryTest == "passed"
     let settings = FanDiagnosticsSettings(
-      tier: tier, controlEnabled: layer.consented && layer.available,
+      tier: tier, controlEnabled: layer.consented && layer.available && testOK,
       speedLimitUnlocked: layer.fullMaximumAllowed, autoUsesCurve: model.curves.usesCurve,
-      restoreAuto: model.restoresAutoOnStart)
+      restoreAuto: model.restoresAutoOnStart,
+      strategy: details.flatMap { ["ftst", "direct"].contains($0.strategy) ? $0.strategy : nil },
+      entryTest: tier == .unsupported ? nil : entryTest)
     return FanDiagnosticsSummary.report(data: data, settings: settings)
   }
 

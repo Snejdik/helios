@@ -111,6 +111,8 @@ final class FanLayerEngine: FanControlDriving {
             state = .recoveryRequired
             throw TelemetryError.unavailable("Fan ownership journal requires recovery before another takeover")
         }
+        // Decision 2: an unvalidated Mac has no Boost. The daemon's own emergency path
+        // still arrives here as Boost and is held to the 70 % ceiling or handed back.
         let boost = mode == .boost
         do {
             try permit()
@@ -134,7 +136,8 @@ final class FanLayerEngine: FanControlDriving {
     }
 
     private func ceiling(for fan: FanLayerFanSurface, fullMaximum: Bool) -> Double {
-        FanLayerCeiling.rpm(for: fan.limits, fullMaximum: fullMaximum)
+        // Validated tuple: unchanged (90 % or the unlocked maximum). Elsewhere: 70 %.
+        FanLayerCeiling.rpm(for: fan.limits, fullMaximum: fullMaximum, tier: profile.tier)
     }
 
     /// Boost asks for the user's limit; any other request is clamped to it.

@@ -116,9 +116,14 @@ struct DiagnosticsFanLayer: Codable, Sendable, Equatable {
   let refusalsInLowPowerMode: DiagnosticsFailureCount
   let peakTemperatureC: DiagnosticsPeakTemperature
   let peakFanShare: DiagnosticsFanShare
+  /// 0.3.0: "ftst" / "direct", and the entry test ("not_run", "passed", "failed",
+  /// "not_needed" on the validated tier).
+  var strategy: String? = nil
+  var entryTest: String? = nil
 
   enum CodingKeys: String, CodingKey {
-    case tier, takeovers, handbacks
+    case tier, takeovers, handbacks, strategy
+    case entryTest = "entry_test"
     case controlEnabled = "control_enabled"
     case speedLimit = "speed_limit"
     case autoUsesCurve = "auto_uses_curve"
@@ -143,7 +148,21 @@ enum DiagnosticsFanLayerValidator {
 
   static func validate(_ value: [String: Any]) throws {
     let path = "$.fan_layer"
-    guard Set(value.keys) == Set(keys) else { throw DiagnosticsPayloadError.invalid(path) }
+    let optional: Set<String> = ["strategy", "entry_test"]
+    guard Set(keys).isSubset(of: Set(value.keys)),
+      Set(value.keys).subtracting(keys).isSubset(of: optional)
+    else { throw DiagnosticsPayloadError.invalid(path) }
+    if let strategy = value["strategy"] {
+      guard ["ftst", "direct"].contains(strategy as? String ?? "") else {
+        throw DiagnosticsPayloadError.invalid("\(path).strategy")
+      }
+    }
+    if let entryTest = value["entry_test"] {
+      guard let test = entryTest as? String, ["not_run", "passed", "failed", "not_needed"].contains(test),
+        !(test == "failed" && value["control_enabled"] as? Bool == true),
+        (test == "not_needed") == (value["tier"] as? String == DiagnosticsFanTier.validated.rawValue)
+      else { throw DiagnosticsPayloadError.invalid("\(path).entry_test") }
+    }
     guard let tier = enumValue(value["tier"], DiagnosticsFanTier.self),
       let controlEnabled = value["control_enabled"] as? Bool,
       enumValue(value["speed_limit"], DiagnosticsSpeedLimit.self) != nil,
@@ -252,6 +271,8 @@ struct FanDiagnosticsSettings: Sendable, Equatable {
   var speedLimitUnlocked: Bool
   var autoUsesCurve: Bool
   var restoreAuto: Bool
+  var strategy: String? = nil
+  var entryTest: String? = nil
 }
 
 enum FanDiagnosticsSummary {
@@ -292,6 +313,7 @@ enum FanDiagnosticsSummary {
       refusalsOnBattery: DiagnosticsFailureCount(count: refusals.filter { $0.onBattery == true }.count),
       refusalsInLowPowerMode: DiagnosticsFailureCount(count: refusals.filter(\.lowPowerMode).count),
       peakTemperatureC: DiagnosticsPeakTemperature(celsius: data.peakTemperatureCelsius),
-      peakFanShare: DiagnosticsFanShare(percent: data.peakFanSharePercent))
+      peakFanShare: DiagnosticsFanShare(percent: data.peakFanSharePercent),
+      strategy: settings.strategy, entryTest: settings.entryTest)
   }
 }

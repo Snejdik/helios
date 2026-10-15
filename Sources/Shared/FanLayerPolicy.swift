@@ -182,6 +182,9 @@ struct FanLayerFanLimits: Equatable, Sendable {
 /// which may use the full range as Apple designed it.
 enum FanLayerCeiling {
     static let defaultFraction = 0.90
+    /// Decision 2 (PLAN_0_3_0 §8): unvalidated Macs stay at or below 70 % of the factory
+    /// maximum and cannot unlock more until user reports justify it.
+    static let experimentalFraction = 0.70
     /// Taking the fans needs this much headroom below a handback, so Helios
     /// does not take and return them repeatedly around the boundary.
     static let engageMarginCelsius = 3.0
@@ -193,6 +196,14 @@ enum FanLayerCeiling {
         let high = floor(limits.maximumRPM)
         guard !fullMaximum else { return high }
         return min(high, max(ceil(limits.minimumRPM), floor(limits.maximumRPM * defaultFraction)))
+    }
+
+    /// The tier-aware ceiling: the validated tuple behaves exactly like `rpm(for:fullMaximum:)`;
+    /// any other Mac is held at 70 % whatever the unlock says.
+    static func rpm(for limits: FanLayerFanLimits, fullMaximum: Bool, tier: FanLayerTier) -> Double {
+        guard tier != .validated else { return rpm(for: limits, fullMaximum: fullMaximum) }
+        let high = floor(limits.maximumRPM)
+        return min(high, max(ceil(limits.minimumRPM), floor(limits.maximumRPM * experimentalFraction)))
     }
 }
 

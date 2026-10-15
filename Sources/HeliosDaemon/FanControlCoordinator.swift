@@ -107,6 +107,9 @@ final class FanControlCoordinator: @unchecked Sendable {
         }
     }
 
+    /// Whether this safety profile offers Boost at all (immutable after init).
+    var allowsBoost: Bool { validationMessage == nil && allowedModes.contains(.boost) }
+
     func bind(_ id: UUID) { queue.async { [self] in if owner == nil { owner = id } } }
 
     func status(reply: @escaping @Sendable (Bool, HeliosFanState, String) -> Void) {

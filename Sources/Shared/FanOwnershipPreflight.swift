@@ -26,6 +26,9 @@ struct FanOwnershipPreflightEvidence: Sendable {
     let globalKeySize: UInt32
     let globalValue: UInt8
     let fans: [FanOwnershipPreflightFan]
+    /// False when this Mac has no `Ftst` key at all (M5 and newer per the Stats source;
+    /// read as SMC "key not found"). The type/size/value fields are then empty/zero.
+    var globalKeyPresent = true
 }
 
 struct FanOwnershipMachineProfile: Sendable {
@@ -96,6 +99,9 @@ enum FanOwnershipPreflightEvaluator {
         }
 
         var reasons: [String] = []
+        if !evidence.globalKeyPresent {
+            reasons.append("This Mac has no Ftst key, which the validated production profile requires.")
+        }
         if evidence.osBuild != profile.osBuild {
             reasons.append("Expected validated OS build \(profile.osBuild) but observed \(evidence.osBuild).")
         }
@@ -165,6 +171,8 @@ enum HeliosMachineIdentity {
 /// Read-only live evidence for the exact ownership surface we intend to validate next.
 /// This type has no write command and cannot acquire fan ownership.
 final class SMCFanOwnershipPreflightReader {
+    /// AppleSMC result for a key this Mac does not have.
+    static let keyNotFound: UInt8 = 0x84
     private let client: SMCClient
     private let fanReader: SMCFanReader
 
@@ -184,8 +192,15 @@ final class SMCFanOwnershipPreflightReader {
         if let modelIdentifier { model = modelIdentifier } else { model = try HeliosMachineIdentity.modelIdentifier }
         let build: String
         if let osBuild { build = osBuild } else { build = try HeliosMachineIdentity.osBuild }
-        let global = try client.value(profile.globalKey)
-        guard global.bytes.count == 1 else { throw TelemetryError.invalidData("Ftst requires one byte") }
+        // A missing arbitration key is evidence (direct-mode Macs), not a read failure.
+        // Only SMC "key not found" (0x84) means absent; any other error still throws.
+        let global: (info: SMCKeyInfo, bytes: [UInt8])?
+        do {
+            global = try client.value(profile.globalKey)
+        } catch TelemetryError.smc(_, let code) where code == Self.keyNotFound {
+            global = nil
+        }
+        if let global, global.bytes.count != 1 { throw TelemetryError.invalidData("Ftst requires one byte") }
         let fanCount = try FanCodec.count(client.value("FNum"))
 
         var fans: [FanOwnershipPreflightFan] = []
@@ -215,10 +230,11 @@ final class SMCFanOwnershipPreflightReader {
             modelIdentifier: model,
             osBuild: build,
             fanCount: fanCount,
-            globalKeyType: global.info.type,
-            globalKeySize: global.info.size,
-            globalValue: global.bytes[0],
-            fans: fans
+            globalKeyType: global?.info.type ?? "",
+            globalKeySize: global?.info.size ?? 0,
+            globalValue: global?.bytes[0] ?? 0,
+            fans: fans,
+            globalKeyPresent: global != nil
         )
         return FanOwnershipPreflightEvaluator.evaluate(evidence, profile: profile)
     }

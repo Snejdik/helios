@@ -28,6 +28,9 @@ private final class TestClock: @unchecked Sendable {
 /// back to "macOS" (mode 3, target from the system level).
 private final class SimLayerHardware: FanLayerControlHardware, @unchecked Sendable {
     let lock = NSLock()
+    /// Direct strategy: no Ftst key; global ownership is the writer's own flag and
+    /// never appears as a write.
+    var direct = false
     var ftst: UInt8 = 0
     var modes: [Int: UInt8] = [0: 3, 1: 3]
     var targets: [Int: Double] = [0: 0, 1: 0]
@@ -62,6 +65,7 @@ private final class SimLayerHardware: FanLayerControlHardware, @unchecked Sendab
         }
     }
     func requestGlobalAcquisition() throws {
+        if direct { lock.withLock { log.append("virtual global=1"); ftst = 1 }; return }
         try lock.withLock { log.append("write Ftst=1"); try check("Ftst=1"); ftst = 1 }
     }
     func readGlobalOwnership() throws -> UInt8 { lock.withLock { ftst } }
@@ -88,8 +92,18 @@ private final class SimLayerHardware: FanLayerControlHardware, @unchecked Sendab
             actuals[id] = rpm
         }
     }
+    /// macOS takes the fans back on this verify call (entry-test reclaim simulation).
+    var reclaimAtVerify: Int?
+    private var verifyCalls = 0
     func verifyFanOwned(_ id: Int, targetRPM: Double) throws -> Bool {
-        lock.withLock { ftst == 1 && modes[id] == 1 && abs((targets[id] ?? -1) - targetRPM) <= 1 }
+        lock.withLock {
+            verifyCalls += 1
+            if let at = reclaimAtVerify, verifyCalls >= at {
+                ftst = direct ? ftst : 0
+                for key in modes.keys { modes[key] = 3; targets[key] = systemLevel[key] ?? 0 }
+            }
+            return ftst == 1 && modes[id] == 1 && abs((targets[id] ?? -1) - targetRPM) <= 1
+        }
     }
     func restoreFanToSystem(_ id: Int) throws {
         try lock.withLock {
@@ -105,6 +119,7 @@ private final class SimLayerHardware: FanLayerControlHardware, @unchecked Sendab
         lock.withLock { ftst == 0 && (modes[id] == 0 || modes[id] == 3) }
     }
     func requestGlobalRelease() throws {
+        if direct { lock.withLock { log.append("virtual global=0"); ftst = 0 }; return }
         try lock.withLock {
             log.append("write Ftst=0")
             try check("Ftst=0")
@@ -198,13 +213,19 @@ private struct Rig {
     let machine: FanOwnershipRecoveryStateMachine
     let engine: FanLayerEngine
 
-    init(fullMaximum: Bool = false) throws {
+    /// The engine checks below were written for the full layer (90 % limit, unlockable,
+    /// Boost); since 0.3.0 that is the validated tier. `.experimental` runs the same
+    /// engine with the 70 % ceiling of decision 2.
+    init(fullMaximum: Bool = false, tier: FanLayerTier = .validated) throws {
         journal = MemoryLayerJournal(identity: identity("Mac16,6"))
         machine = try FanOwnershipRecoveryStateMachine(journal: journal)
         let clock = clock
         let flag = FlagBox(fullMaximum)
         self.fullMaximum = flag
-        engine = try FanLayerEngine(profile: try twoFanProfile(), stateMachine: machine, hardware: hardware,
+        let probed = try twoFanProfile()
+        let profile = FanLayerProfile(identity: probed.identity, cpuBrand: probed.cpuBrand, tier: tier,
+                                      fans: probed.fans, reasons: [])
+        engine = try FanLayerEngine(profile: profile, stateMachine: machine, hardware: hardware,
                                     thermals: thermals, observer: observer, now: { clock.now },
                                     pause: { clock.advance(0.1) }, fullMaximum: { flag.value })
     }
@@ -231,7 +252,9 @@ private enum FanLayerChecks {
             try engineChecks()
             try engineFailureMatrix()
             try await coordinatorChecks()
+            try allMacsChecks()
             print("PASS fan layer: cool-only policy, safety floor, smoothing, envelope, reclaim limit, tiers/probe, v3 journal, cross-build recovery, engine failure matrix, coordinator lockout/boost cap")
+            print("PASS fan layer on all Apple Silicon (0.3.0 M2): ftst/direct strategy, lowercase mode key, catalogue thermals, 70 % ceiling without Boost, entry test, 1–3 fans, direct-strategy crash recovery")
         } catch {
             print("FAIL: \(error)")
             exit(1)
@@ -570,7 +593,9 @@ private enum FanLayerChecks {
         try unsupported("fanless", evidence: evidence(fans: []))
         try unsupported("Ftst already set", evidence: evidence(ftst: 1))
         try unsupported("fan in manual", evidence: evidence(fans: [fan(mode: 1)]))
-        try unsupported("lowercase mode key", evidence: evidence(fans: [fan(key: "F0md")]))
+        // A lowercase mode key is supported since 0.3.0, but only when it is writable.
+        try unsupported("lowercase mode key without write access", evidence: evidence(fans: [fan(key: "F0md")]))
+        try unsupported("unknown mode key", evidence: evidence(fans: [fan(key: "F0MD")]))
         try unsupported("fpe2 target", evidence: evidence(fans: [fan(type: "fpe2")]))
         try unsupported("implausible limits", evidence: evidence(fans: [fan(min: 0, max: 6_550)]))
         try unsupported("tiny range", evidence: evidence(fans: [fan(min: 2_000, max: 2_200)]))
@@ -579,7 +604,8 @@ private enum FanLayerChecks {
         try unsupported("no key attributes", access: nil)
         try unsupported("read-only Ftst", access: FanLayerKeyAccess(attributes: ["Ftst": 0x80, "F0Md": 0xd0, "F0Tg": 0xd4]))
         try unsupported("read-only target", access: FanLayerKeyAccess(attributes: ["Ftst": 0xd0, "F0Md": 0xd0, "F0Tg": 0x84]))
-        try unsupported("no thermal map (M3)", cpu: "Apple M3 Pro")
+        try unsupported("no thermal map (unknown M7)", cpu: "Apple M7")
+        try unsupported("unparseable chip", cpu: "Apple M4 Hyper")
         try unsupported("thermals unreadable", thermals: false)
         try rejects("invalid identity") {
             _ = try FanLayerProbe.evaluate(evidence: evidence(model: ""), cpuBrand: m4, access: oneAccess,
@@ -609,7 +635,7 @@ private enum FanLayerChecks {
         for key in FanLayerTrustedThermals.m4GPU {
             try require(classifier.group(for: key) == .gpu, "GPU key \(key) matches the app")
         }
-        try require(FanLayerTrustedThermals.groups(for: "Apple M5") == nil, "unknown chips have no map")
+        try require(FanLayerTrustedThermals.groups(for: "Apple M7") == nil, "unknown chips have no map")
     }
 
     // MARK: Journal
@@ -1106,5 +1132,272 @@ private enum FanLayerChecks {
                 inert.release(owner: owner, graceful: false) { _, _ in continuation.resume() }
             }
         }
+    }
+}
+
+
+// MARK: - 0.3.0 M2: fan layer on all Apple Silicon
+
+private final class MemoryEntryTests: FanLayerEntryTestStore {
+    var states: [String: FanLayerEntryTestState] = [:]
+    func state(for identity: FanLayerMachineIdentity) -> FanLayerEntryTestState { states[identity.summary] ?? .notRun }
+    func record(_ state: FanLayerEntryTestState, for identity: FanLayerMachineIdentity) throws {
+        states[identity.summary] = state
+    }
+}
+
+private func surfaceFan(_ id: Int, key: String? = nil, min: Double = 1_200, max: Double = 6_000) -> FanOwnershipPreflightFan {
+    FanOwnershipPreflightFan(id: id, modeKey: key ?? "F\(id)Md", mode: 3, actualRPM: 0, targetRPM: 0,
+                             minimumRPM: min, maximumRPM: max, targetType: "flt ")
+}
+
+private func directEvidence(model: String = "Mac17,2", fans: [FanOwnershipPreflightFan]) -> FanOwnershipPreflightEvidence {
+    FanOwnershipPreflightEvidence(modelIdentifier: model, osBuild: "26A434", fanCount: fans.count,
+                                  globalKeyType: "", globalKeySize: 0, globalValue: 0, fans: fans,
+                                  globalKeyPresent: false)
+}
+
+extension FanLayerChecks {
+    static func allMacsChecks() throws {
+        // Strategy comes from the probe, not the chip name.
+        let directAccess = FanLayerKeyAccess(attributes: ["F0Md": 0xd0, "F0Tg": 0xd4])
+        let m5 = try FanLayerProbe.evaluate(evidence: directEvidence(fans: [surfaceFan(0)]), cpuBrand: "Apple M5",
+                                            access: directAccess, trustedThermalsAvailable: true)
+        try require(m5.tier == .experimental && m5.strategy == .direct, "M5 without Ftst is experimental/direct: \(m5.reasons)")
+        try require(m5.thermalTrust == .catalogue && !m5.boostAllowed && m5.ceilingFraction == 0.70 && m5.needsEntryTest,
+                    "unvalidated limits: no Boost, 70 %, entry test")
+        try require(FanLayerProbe.accessKeys(evidence: directEvidence(fans: [surfaceFan(0)])) == ["F0Md", "F0Tg"],
+                    "no Ftst attribute is required without the key")
+        // A Mac that has Ftst keeps the validated ftst sequence, whatever its chip.
+        let ftstAccess = FanLayerKeyAccess(attributes: ["Ftst": 0xd0, "F0Md": 0xd0, "F0Tg": 0xd4])
+        let m1 = try FanLayerProbe.evaluate(evidence: evidence(model: "MacBookPro17,1", fans: [surfaceFan(0)]),
+                                            cpuBrand: "Apple M1", access: ftstAccess, trustedThermalsAvailable: true)
+        try require(m1.tier == .experimental && m1.strategy == .ftst, "M1 with Ftst uses ftst: \(m1.reasons)")
+        // Lowercase mode key, writable.
+        let lower = try FanLayerProbe.evaluate(evidence: directEvidence(fans: [surfaceFan(0, key: "F0md")]),
+                                               cpuBrand: "Apple M5 Pro",
+                                               access: FanLayerKeyAccess(attributes: ["F0md": 0xd0, "F0Tg": 0xd4]),
+                                               trustedThermalsAvailable: true)
+        try require(lower.tier == .experimental && lower.fans.first?.modeKey == "F0md", "lowercase md accepted: \(lower.reasons)")
+        // A present but read-only or set Ftst still refuses (never fall back to direct).
+        let setFtst = try FanLayerProbe.evaluate(evidence: evidence(ftst: 1), cpuBrand: "Apple M4", access: ftstAccess,
+                                                 trustedThermalsAvailable: true)
+        try require(setFtst.tier == .unsupported, "an active Ftst is a foreign controller, not a direct Mac")
+        // The validated tuple is unchanged; the same M4 on another build is experimental.
+        let validated = try FanLayerProbe.evaluate(evidence: evidence(build: "25G83"), cpuBrand: "Apple M4",
+                                                   access: ftstAccess, trustedThermalsAvailable: true)
+        try require(validated.tier == .validated && validated.strategy == .ftst && validated.boostAllowed
+                        && validated.ceilingFraction == 0.90 && !validated.needsEntryTest, "validated tuple unchanged")
+        let thisMac = try FanLayerProbe.evaluate(evidence: evidence(), cpuBrand: "Apple M4", access: ftstAccess,
+                                                 trustedThermalsAvailable: true)
+        try require(thisMac.tier == .experimental && !thisMac.boostAllowed && thisMac.needsEntryTest,
+                    "Mac16,1 on 26A434 follows decision 2")
+        // Surface drift includes the strategy.
+        let switched = FanLayerProfile(identity: m5.identity, cpuBrand: m5.cpuBrand, tier: m5.tier, fans: m5.fans,
+                                       reasons: [], strategy: .ftst)
+        try require(!FanLayerProbe.sameSurface(m5, as: switched), "a strategy change is surface drift")
+
+        // Ceilings.
+        let m4Fan = FanLayerFanLimits(id: 0, minimumRPM: 2_317, maximumRPM: 6_550)
+        try require(FanLayerCeiling.rpm(for: m4Fan, fullMaximum: false, tier: .validated) == 5_895, "validated 90 %")
+        try require(FanLayerCeiling.rpm(for: m4Fan, fullMaximum: true, tier: .validated) == 6_550, "validated unlock")
+        try require(FanLayerCeiling.rpm(for: m4Fan, fullMaximum: true, tier: .experimental) == 4_585,
+                    "experimental 70 % ignores the unlock")
+        try require(FanLayerCeiling.rpm(for: FanLayerFanLimits(id: 0, minimumRPM: 2_000, maximumRPM: 2_600),
+                                        fullMaximum: false, tier: .experimental) == 2_000, "never below the minimum")
+
+        // Thermal trust per chip.
+        try require(FanLayerTrustedThermals.trust(for: "Apple M4 Max") == .validated, "M4 validated")
+        try require(FanLayerTrustedThermals.trust(for: "Apple M3") == .catalogue, "M3 catalogue")
+        try require(FanLayerTrustedThermals.trust(for: "Apple M7") == nil, "M7 none")
+        try require(FanLayerTrustedThermals.groups(for: "Apple M5")?.count == 2, "M5: P and GPU, no empty E group")
+        try require(!FanLayerTrustedThermals.isM4Family("Apple M4 Hyper"), "prefix drift closed")
+
+        // Engine under the experimental ceiling: Boost asks for 70 %, never more.
+        do {
+            let rig = try Rig(fullMaximum: true, tier: .experimental)
+            try rig.apply(.boost, 0)
+            try require(rig.engine.state == .boost, "experimental boost request (emergency path) still engages")
+            try require((rig.hardware.targets[0] ?? 0) <= 4_585 && (rig.hardware.targets[1] ?? 0) <= 4_200,
+                        "held at 70 % of each fan's maximum: \(rig.hardware.targets)")
+            try rig.engine.restore()
+            try require(rig.journal.record.isClean, "restored")
+        }
+
+        // Direct strategy end to end: no Ftst write ever, journal and release identical.
+        do {
+            let rig = try Rig(fullMaximum: true)
+            rig.hardware.direct = true
+            try rig.apply(.override, 3_000)
+            try require(rig.engine.state == .override && rig.journal.record.phase == .owned, "direct takeover owned")
+            try require(!rig.hardware.writes.contains { $0.contains("Ftst") }, "direct never writes Ftst")
+            try require(rig.hardware.writes.first == "write F0Md=1", "mode key first: \(rig.hardware.writes)")
+            try rig.engine.restore()
+            try require(rig.journal.record.isClean && rig.hardware.modes.values.allSatisfy { $0 == 3 },
+                        "direct release returns both fans")
+            try require(!rig.hardware.writes.contains { $0.contains("Ftst") }, "release never writes Ftst")
+        }
+
+        // Direct strategy crash recovery: the helper dies while holding; the new process has
+        // no virtual flag, the recovery writer has no Ftst, the fans still return.
+        do {
+            let rig = try Rig(fullMaximum: true)
+            rig.hardware.direct = true
+            try rig.apply(.override, 3_000)
+            rig.hardware.ftst = 0 // the virtual flag died with the process
+            let result = try FanLayerRecoveryBootstrap.recover(
+                journal: rig.journal, current: identity("Mac16,6"), makeHardware: { rig.hardware },
+                now: { rig.clock.now }, pause: { rig.clock.advance(0.1) })
+            try require(result == .recover(crossBuild: false), "journal recovered")
+            try require(rig.journal.record.isClean && rig.hardware.modes.values.allSatisfy { $0 == 3 },
+                        "fans back to macOS after a direct-strategy crash")
+        }
+
+        // Three fans (Mac Pro shape): acquire all, partial failure rolls every touched fan back.
+        do {
+            let rig = try threeFanRig()
+            try rig.engine.apply(mode: .override, rpm: 3_000,
+                                 context: FanControlContext(appCelsius: .nan, response: .balanced), permit: {})
+            try require(rig.hardware.modes.values.allSatisfy { $0 == 1 }, "three fans manual")
+            try rig.engine.restore()
+            try require(rig.journal.record.isClean && rig.hardware.modes.values.allSatisfy { $0 == 3 }, "three fans released")
+
+            let failing = try threeFanRig()
+            failing.hardware.failOn = "F2Tg"
+            do {
+                try failing.engine.apply(mode: .override, rpm: 3_000,
+                                         context: FanControlContext(appCelsius: .nan, response: .balanced), permit: {})
+                throw Failure.check("third fan failure must throw")
+            } catch Failure.check(let message) { throw Failure.check(message) } catch {}
+            try require(failing.journal.record.needsRecovery, "partial takeover is journaled")
+            try failing.engine.restore()
+            try require(failing.journal.record.isClean && failing.hardware.modes.values.allSatisfy { $0 == 3 }
+                            && failing.hardware.ftst == 0, "partial takeover rolled back on every fan")
+        }
+
+        try entryTestChecks()
+        try runtimeGatingChecks()
+    }
+
+    private static func threeFanRig() throws -> (hardware: SimLayerHardware, journal: MemoryLayerJournal,
+                                                 engine: FanLayerEngine) {
+        let hardware = SimLayerHardware()
+        hardware.modes = [0: 3, 1: 3, 2: 3]
+        hardware.targets = [0: 0, 1: 0, 2: 0]
+        hardware.actuals = [0: 0, 1: 0, 2: 0]
+        hardware.systemLevel = [0: 0, 1: 0, 2: 0]
+        hardware.limits = [0: (1_200, 6_000), 1: (1_200, 6_000), 2: (1_200, 6_000)]
+        let fans = [surfaceFan(0), surfaceFan(1), surfaceFan(2)]
+        let access = FanLayerKeyAccess(attributes: ["Ftst": 0xd0, "F0Md": 0xd0, "F0Tg": 0xd4, "F1Md": 0xd0,
+                                                    "F1Tg": 0xd4, "F2Md": 0xd0, "F2Tg": 0xd4])
+        let probed = try FanLayerProbe.evaluate(evidence: evidence(model: "Mac14,8", fans: fans), cpuBrand: "Apple M2 Ultra",
+                                                access: access, trustedThermalsAvailable: true)
+        try require(probed.tier == .experimental && probed.fans.count == 3, "three-fan Mac Pro probe: \(probed.reasons)")
+        let journal = MemoryLayerJournal(identity: identity("Mac14,8"))
+        let machine = try FanOwnershipRecoveryStateMachine(journal: journal)
+        let clock = TestClock()
+        let engine = try FanLayerEngine(profile: probed, stateMachine: machine, hardware: hardware,
+                                        thermals: SimThermals(), observer: FanLayerSystemObserver(),
+                                        now: { clock.now }, pause: { clock.advance(0.1) })
+        return (hardware, journal, engine)
+    }
+
+    private static func entryRig(direct: Bool = false) throws -> (FanLayerEntryTest, SimLayerHardware, SimThermals,
+                                                                  MemoryLayerJournal) {
+        let hardware = SimLayerHardware()
+        hardware.direct = direct
+        let thermals = SimThermals()
+        let journal = MemoryLayerJournal(identity: identity("Mac16,6"))
+        let machine = try FanOwnershipRecoveryStateMachine(journal: journal)
+        let clock = TestClock()
+        let probed = try twoFanProfile()
+        let test = FanLayerEntryTest(profile: probed, stateMachine: machine, hardware: hardware, thermals: thermals,
+                                     now: { clock.now }, pause: { clock.advance(0.1) })
+        return (test, hardware, thermals, journal)
+    }
+
+    static func entryTestChecks() throws {
+        // Pass: both fans held at their factory minimum, then returned and verified.
+        do {
+            let (test, hardware, _, journal) = try entryRig()
+            try require(test.run() == .passed, "entry test passes on a cooperative Mac")
+            try require(hardware.writes.contains("write F0Tg=2317") && hardware.writes.contains("write F1Tg=1200"),
+                        "factory minimum only: \(hardware.writes)")
+            try require(!hardware.writes.contains { $0.hasPrefix("write F0Tg=") && $0 != "write F0Tg=2317" },
+                        "never more than the minimum")
+            try require(journal.record.isClean && hardware.ftst == 0 && hardware.modes.values.allSatisfy { $0 == 3 },
+                        "fans back to macOS after the test")
+        }
+        // Direct strategy passes too, without any Ftst write.
+        do {
+            let (test, hardware, _, _) = try entryRig(direct: true)
+            try require(test.run() == .passed && !hardware.writes.contains { $0.contains("Ftst") }, "direct entry test")
+        }
+        // macOS takes the fans back mid-test: failed, and still released cleanly.
+        do {
+            let (test, hardware, _, journal) = try entryRig()
+            hardware.reclaimAtVerify = 30
+            guard case .failed = test.run() else { throw Failure.check("reclaim must fail the test") }
+            try require(journal.record.isClean && hardware.modes.values.allSatisfy { $0 == 3 }, "released after reclaim")
+        }
+        // Refused takeover: inconclusive (macOS may refuse for a while), nothing left behind,
+        // and a later run may pass.
+        do {
+            let (test, hardware, _, journal) = try entryRig()
+            hardware.failOn = "F0Md=1"
+            guard case .inconclusive = test.run() else { throw Failure.check("a refused takeover is inconclusive") }
+            try require(journal.record.isClean && hardware.ftst == 0, "refused test leaves macOS in control")
+            hardware.failOn = nil
+            try require(test.run() == .passed, "the test can be repeated after a refusal")
+        }
+        // Too warm: inconclusive and no write at all.
+        do {
+            let (test, hardware, thermals, _) = try entryRig()
+            thermals.celsius = 90
+            guard case .inconclusive = test.run() else { throw Failure.check("hot Mac is inconclusive") }
+            try require(hardware.writes.isEmpty, "no write when too warm")
+        }
+        // Stale thermals: inconclusive, no write.
+        do {
+            let (test, hardware, thermals, _) = try entryRig()
+            thermals.celsius = nil
+            guard case .inconclusive = test.run() else { throw Failure.check("stale thermals are inconclusive") }
+            try require(hardware.writes.isEmpty, "no write without temperatures")
+        }
+    }
+
+    static func runtimeGatingChecks() throws {
+        let ftstAccess = FanLayerKeyAccess(attributes: ["Ftst": 0xd0, "F0Md": 0xd0, "F0Tg": 0xd4])
+        let experimental = try FanLayerProbe.evaluate(evidence: evidence(), cpuBrand: "Apple M4", access: ftstAccess,
+                                                      trustedThermalsAvailable: true)
+        let consent = MemoryConsent()
+        consent.stored = identity()
+        let tests = MemoryEntryTests()
+        let pending = FanLayerRuntime(identity: identity(), profile: experimental, probeFailure: nil,
+                                      consentStore: consent, entryTestStore: tests)
+        try require(pending.consented && !pending.enabled, "consent alone does not enable an unvalidated Mac")
+        try require(pending.reason.contains("20-second fan test"), "reason asks for the test: \(pending.reason)")
+        try rejects("no full-maximum unlock on an unvalidated Mac") { try pending.setFullMaximumAllowed(true) }
+        try require(!pending.fullMaximumAllowed, "unlock reads false")
+
+        tests.states[identity().summary] = .passed
+        let passed = FanLayerRuntime(identity: identity(), profile: experimental, probeFailure: nil,
+                                     consentStore: consent, entryTestStore: tests)
+        try require(passed.enabled, "a passed test enables the layer")
+        tests.states[identity().summary] = .failed
+        let failed = FanLayerRuntime(identity: identity(), profile: experimental, probeFailure: nil,
+                                     consentStore: consent, entryTestStore: tests)
+        try require(!failed.enabled && failed.reason.contains("failed"), "a failed test keeps it off")
+        try require(failed.runEntryTest() == .failed("The fan test already failed on this Mac and macOS build."),
+                    "no second try on a failed model + build")
+
+        let validatedProfile = try FanLayerProbe.evaluate(evidence: evidence(build: "25G83"), cpuBrand: "Apple M4",
+                                                          access: ftstAccess, trustedThermalsAvailable: true)
+        consent.stored = identity("Mac16,1", "25G83")
+        let validated = FanLayerRuntime(identity: identity("Mac16,1", "25G83"), profile: validatedProfile,
+                                        probeFailure: nil, consentStore: consent, entryTestStore: MemoryEntryTests())
+        try require(validated.enabled, "the validated tuple needs no entry test")
+        // A new build of the same Mac needs a new test.
+        try require(tests.state(for: identity("Mac16,1", "26B1")) == .notRun, "per model + build")
     }
 }
