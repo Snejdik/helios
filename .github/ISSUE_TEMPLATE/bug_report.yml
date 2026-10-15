@@ -13,7 +13,7 @@ body:
     id: mac-model
     attributes:
       label: Mac model
-      description: Example: 14-inch MacBook Pro M4 / Mac16,1
+      description: "Example: 14-inch MacBook Pro M4 / Mac16,1"
       placeholder: Mac model and model identifier if known
     validations:
       required: true

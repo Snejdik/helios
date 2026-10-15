@@ -1,0 +1,130 @@
+name: Compatibility report from my Mac
+description: "Tell us how Helios behaves on your Mac (chip, sensor map, fan test). No bug needed."
+title: "[Compat] "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for trying Helios on your Mac. Helios is tested mostly on one M4 MacBook Pro, so a report from a different chip, a Mac with two fans or a desktop Mac helps more than you might think.
+
+        Please do not include personal information: no serial numbers, usernames, local paths, IP addresses or account names. Something broke? Use the Bug report form instead.
+
+  - type: input
+    id: mac-model
+    attributes:
+      label: Mac model and identifier
+      description: "Example: 14-inch MacBook Pro M4 / Mac16,1"
+      placeholder: Mac model and model identifier if known
+    validations:
+      required: true
+
+  - type: dropdown
+    id: chip
+    attributes:
+      label: Chip
+      options:
+        - M1
+        - M1 Pro
+        - M1 Max
+        - M1 Ultra
+        - M2
+        - M2 Pro
+        - M2 Max
+        - M2 Ultra
+        - M3
+        - M3 Pro
+        - M3 Max
+        - M3 Ultra
+        - M4
+        - M4 Pro
+        - M4 Max
+        - M5
+        - M5 Pro
+        - M5 Max
+        - M6
+        - A18 Pro
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version and build
+      placeholder: "26.6.2 (25G83)"
+    validations:
+      required: true
+
+  - type: input
+    id: helios-version
+    attributes:
+      label: Helios version
+      placeholder: 0.3.0 Beta 2
+    validations:
+      required: true
+
+  - type: dropdown
+    id: sensor-map
+    attributes:
+      label: Temperature sensor map status in Thermals
+      description: The status shown next to the sensor groups on the Thermals page.
+      options:
+        - Confirmed on this Mac
+        - Validated for this chip
+        - From catalogue, may be inaccurate
+        - Does not match this Mac
+        - I don't know
+    validations:
+      required: true
+
+  - type: input
+    id: fans-battery
+    attributes:
+      label: Fans and battery
+      description: How many fans does this Mac have, and does it have a battery?
+      placeholder: "2 fans, battery / no fans, battery / 1 fan, no battery (desktop)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: fan-control
+    attributes:
+      label: Fan control
+      description: "Fan control is off by default and experimental on every Mac except the validated one. Turning it on is entirely optional."
+      options:
+        - I did not turn it on
+        - I turned it on and the fan test passed
+        - I turned it on and the fan test failed
+        - This Mac has no fans
+    validations:
+      required: true
+
+  - type: textarea
+    id: observations
+    attributes:
+      label: What looks wrong, and what works well?
+      description: "Missing or odd readings, a sensor that follows the wrong part of the chip, anything that surprised you. Good news is useful too."
+    validations:
+      required: true
+
+  - type: markdown
+    attributes:
+      value: |
+        **Optional: sensor key dump.** In Helios, open Thermals, expand All sensors and press **Export SMC Dump…**. It saves an anonymous list of this Mac's sensor keys and numeric values to a file. Nothing is sent anywhere. Attach the file to this issue by dragging it into the box below if you want to help add support for your Mac.
+
+  - type: textarea
+    id: smc-dump
+    attributes:
+      label: SMC dump (optional)
+      description: Drag the exported file here, or leave this empty.
+
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Confirmation
+      options:
+        - label: I removed personal information from everything I attached.
+          required: true
+        - label: I understand that fan control is experimental on every Mac except the one validated Mac (Mac16,1, macOS build 25G83).
+          required: true
