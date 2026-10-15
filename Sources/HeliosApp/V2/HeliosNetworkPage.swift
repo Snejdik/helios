@@ -13,6 +13,9 @@ struct HeliosNetworkPage: View {
           title: "Network monitoring is off.", module: .network, preferences: context.preferences)
       } else {
         header(presentation.network)
+        HeliosWhySection(lens: .slowNetwork, context: context, model: model)
+        HeliosDataUsageSection()
+        HeliosLatencySection()
         HeliosChartPanel(
           metric: .network, model: model, preferences: context.preferences, scope: .network)
         HeliosChartPanel(

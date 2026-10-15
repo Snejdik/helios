@@ -1,0 +1,37 @@
+#!/bin/bash
+# Helios command line. Reads the status file the app writes when
+# Settings › Automation › "Write a status file for the command line" is on, and sends
+# the same safe helios:// commands the app accepts. Never needs administrator rights.
+#
+#   helios status [--json]     current summary
+#   helios open <page>         overview, cpu, thermals, battery, network, storage, …
+#   helios why <question>      slowMac, hotOrNoisy, batteryDrain, cannotSleep, unexpectedRestart, fillingDisk, slowNetwork
+#   helios keep-awake [min]    keep the Mac awake (default 60 minutes)
+#   helios keep-awake stop
+#   helios network-check
+#   helios fans system         return the fans to macOS
+set -euo pipefail
+status_file="$HOME/Library/Application Support/Helios/status.json"
+
+case "${1:-status}" in
+  status)
+    if [ ! -f "$status_file" ]; then
+      echo "No status yet. Turn on Settings › Automation › “Write a status file for the command line” in Helios." >&2
+      exit 1
+    fi
+    if [ "${2:-}" = "--json" ]; then cat "$status_file"; exit 0; fi
+    /usr/bin/plutil -p "$status_file"
+    ;;
+  open)  [ -n "${2:-}" ] || { echo "Usage: helios open <page>" >&2; exit 2; }
+         open "helios://open/$2" && echo "Asked Helios to open the $2 page." ;;
+  why)   [ -n "${2:-}" ] || { echo "Usage: helios why <question>" >&2; exit 2; }
+         open "helios://why/$2" && echo "Asked Helios: $2. The answer is on the Overview." ;;
+  keep-awake)
+    if [ "${2:-}" = "stop" ]; then open "helios://keep-awake/stop" && echo "Asked Helios to stop Keep Awake."
+    else open "helios://keep-awake?minutes=${2:-60}" && echo "Asked Helios to keep the Mac awake for ${2:-60} minutes."; fi ;;
+  network-check) open "helios://network-check" && echo "Asked Helios to check the network; the result is on the Network page." ;;
+  fans) [ "${2:-}" = "system" ] || { echo "Only “helios fans system” exists: a command line never takes the fans." >&2; exit 2; }
+        open "helios://fans/system" && echo "Asked Helios to return the fans to macOS." ;;
+  -h|--help|help) sed -n '2,13p' "$0" ;;
+  *) echo "Unknown command: $1 (try helios help)" >&2; exit 2 ;;
+esac

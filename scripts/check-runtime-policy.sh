@@ -4,12 +4,26 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p .build
 
-if grep -RInE '\b(Process|NSTask)[[:space:]]*\(|\b(posix_spawn|popen)[[:space:]]*\(' Sources --include='*.swift' > .build/runtime-policy-violations.txt 2>/dev/null; then
+# One documented exception (owner decision 6, PLAN_0_3_0 §8, 2026-10-14): the on-demand
+# network check, and the opt-in data-usage module (off by default, every ten minutes), may run
+# /usr/bin/nettop with fixed arguments for per-app traffic, which has no other unprivileged
+# public source. Exactly one Process() in exactly that file, with a
+# fixed executable; anything else anywhere still fails.
+nettop_file='Sources/HeliosApp/Telemetry/HeliosNetworkProbe.swift'
+if grep -RInE '\b(Process|NSTask)[[:space:]]*\(|\b(posix_spawn|popen)[[:space:]]*\(' Sources --include='*.swift' \
+  | grep -v "^$nettop_file:" > .build/runtime-policy-violations.txt 2>/dev/null; then
   cat .build/runtime-policy-violations.txt
   echo "FAIL runtime source contains a forbidden subprocess/spawn API"
   exit 1
 fi
 rm -f .build/runtime-policy-violations.txt
+if [ "$(grep -cE '\b(Process|NSTask)[[:space:]]*\(|\b(posix_spawn|popen)[[:space:]]*\(' "$nettop_file")" -ne 1 ] \
+  || ! grep -Fq 'static let nettopPath = "/usr/bin/nettop"' "$nettop_file" \
+  || ! grep -Fq 'process.executableURL = URL(fileURLWithPath: nettopPath)' "$nettop_file" \
+  || [ "$(grep -c 'executableURL' "$nettop_file")" -ne 1 ]; then
+  echo "FAIL the nettop exception must stay one fixed /usr/bin/nettop launch"
+  exit 1
+fi
 
 # Swift 6.2/macOS 26 deprecates String(cString:). Keep runtime C-string
 # decoding explicit and bounded so warnings-as-errors cannot regress later.
@@ -42,4 +56,4 @@ if grep -qE 'com\.apple\.security\.device\.(audio-input|microphone)' Config/Heli
   exit 1
 fi
 
-echo "PASS runtime sources contain no forbidden subprocess/deprecated C-string path; Bluetooth privacy usage is declared and audio inventory avoids microphone scope"
+echo "PASS runtime sources contain no forbidden subprocess (only the fixed on-demand nettop) or deprecated C-string path; Bluetooth privacy usage is declared and audio inventory avoids microphone scope"
