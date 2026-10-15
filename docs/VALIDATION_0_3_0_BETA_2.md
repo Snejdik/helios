@@ -1,8 +1,16 @@
-# Helios 0.3.0 Beta 1 — validation
+# Helios 0.3.0 Beta 2 — validation
 
-Identity: tag `v0.3.0-beta.1`, bundle version 0.3.0, build 6. Date 2026-10-15.
-This page records what was verified for 0.3.0 Beta 1 and what was not. It extends the
+Identity: tag `v0.3.0-beta.2`, bundle version 0.3.0, build 7. Date 2026-10-15.
+This page records what was verified for 0.3.0 Beta 2 and what was not. It extends the
 [0.2.1 Beta 1 validation](VALIDATION_0_2_1_BETA_1.md).
+
+Beta 1 (build 6) was withdrawn after its release because the welcome flow and *Apply Goals* hid the
+Longevity page. Beta 2 adds Longevity to every goal plan, shows it once more to anyone it was hidden
+for (`v3.ui.longevityRevealed`), and tests both: every one of the 128 goal combinations, with and
+without a fan or battery, keeps Longevity and Overview; the one-time reveal keeps other hidden
+pages, is not repeated after the person hides Longevity again, and a fresh install shows every page.
+The automated gates below were run again on the Beta 2 build. The runs on a real Mac and the owner
+tests were done on Beta 1; Beta 2 differs only by this fix and the version number.
 
 ## Automated gates
 
@@ -17,7 +25,7 @@ This page records what was verified for 0.3.0 Beta 1 and what was not. It extend
 | `scripts/check-tools.sh` | pass | Keep Awake safety stops, rules (edge, rate limit, schema), `helios://` links, status summary, mouse wheel transform |
 | `scripts/check-longevity.sh` | pass | Day records, battery and SSD projections, adapter and cable, cooling trend, memory, report escaping, reminders |
 | Debug build (warnings as errors) | pass | — |
-| Release build (warnings as errors) | pass; bundle reports 0.3.0 (6), `v0.3.0-beta.1`, arm64, signature verifies | — |
+| Release build (warnings as errors) | pass; bundle reports 0.3.0 (7), `v0.3.0-beta.2`, arm64, signature verifies | — |
 | `scripts/package-release.sh --build` | pass; DMG (styled, with an Applications link), ZIP and checksums verified, helper version matches | — |
 
 The web backend needs the `system.chip` and `fan_layer.strategy` / `entry_test` fields

@@ -1,8 +1,12 @@
-# Helios 0.3.0 Beta 1 — release notes
+# Helios 0.3.0 Beta 2 — release notes
 
-Bundle version 0.3.0, build 6, tag `v0.3.0-beta.1`. The first beta of the 0.3.0 release, which
-follows [0.2.1 Beta 1](RELEASE_NOTES_0_2_1_BETA_1.md). Helios now explains *why*, watches how the
-Mac holds up over months, runs on every Apple Silicon Mac and adds a few tools that save clicks.
+Bundle version 0.3.0, build 7, tag `v0.3.0-beta.2`. The first public beta of the 0.3.0 release,
+which follows [0.2.1 Beta 1](RELEASE_NOTES_0_2_1_BETA_1.md). Helios now explains *why*, watches how
+the Mac holds up over months, runs on every Apple Silicon Mac and adds a few tools that save clicks.
+
+**Beta 1 was withdrawn within hours of its release.** It hid the new Longevity page from everyone
+who finished the welcome or pressed *Apply Goals*. Beta 2 fixes that: Longevity is part of every
+goal choice, and anyone Beta 1 hid it for sees it again once. Nothing else changed.
 
 The build is **not notarized**. macOS asks you to confirm the first launch; see the
 [installation guide](INSTALLATION.md). **Updating from 0.2.x: reinstall the fan helper once**

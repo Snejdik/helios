@@ -1,6 +1,6 @@
 # Install Helios — guide for first-time testers
 
-You do not need Terminal or Xcode to install Helios. **Helios 0.3.0 Beta 1** is
+You do not need Terminal or Xcode to install Helios. **Helios 0.3.0 Beta 2** is
 available from GitHub Releases as a DMG and a ZIP. It is **not notarized**: the
 project has no paid Apple Developer ID yet, so macOS asks you to confirm the first
 launch (see [step 4](#4-first-launch-and-gatekeeper)). Basic monitoring needs nothing
@@ -16,7 +16,7 @@ version or Mac model has been tested. Most testing is on a MacBook Pro with an M
 ## 2. Download the app
 
 Use the current test build from [GitHub Releases](https://github.com/Snejdik/helios/releases).
-The recommended package is the DMG (`Helios-0.3.0-beta.1.dmg`). GitHub's **Code → Download ZIP**
+The recommended package is the DMG (`Helios-0.3.0-beta.2.dmg`). GitHub's **Code → Download ZIP**
 contains developer source files, not an app you can double-click. If a release
 asset or checksum looks inconsistent, stop and contact
 [helios@snejda.cz](mailto:helios@snejda.cz).

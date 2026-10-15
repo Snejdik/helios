@@ -1,6 +1,6 @@
 # Helios roadmap
 
-Helios 0.3.0 **Beta 1** turns Helios into a Mac doctor: it explains *why*, watches how the
+Helios 0.3.0 **Beta 2** turns Helios into a Mac doctor: it explains *why*, watches how the
 Mac holds up over months, runs on every Apple Silicon Mac and adds a few tools that save
 clicks. The 0.3.0 betas lead to one 0.3.0 release; marketing waits until it is solid.
 
