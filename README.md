@@ -9,7 +9,7 @@
 A menu-bar Mac doctor for Apple Silicon: what your Mac is doing, why, and how it
 holds up over the years, with carefully gated fan controls.
 
-**[⬇ Download Helios 0.3.0 Beta 1](https://github.com/Snejdik/helios/releases/tag/v0.3.0-beta.1)**
+**[⬇ Download Helios 0.3.0 Beta 2](https://github.com/Snejdik/helios/releases/tag/v0.3.0-beta.2)**
 
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-111111?logo=apple&logoColor=white)
 ![Apple Silicon / arm64](https://img.shields.io/badge/Apple%20Silicon-arm64-111111)
@@ -31,7 +31,7 @@ the battery, or why the Wi-Fi crawls, and it shows what it sees and what you can
 The details are always one step away, never in the way.
 
 <p align="center">
-  <a href="docs/images/popover-overview-dark.png"><img src="docs/images/popover-overview-dark.png" alt="Helios menu-bar popover: Your Mac is doing well, with CPU, temperature, battery and storage status" width="300"></a>
+  <a href="docs/images/popover-overview-dark.png"><img src="docs/images/popover-overview-dark.png" alt="Helios menu-bar popover: Your Mac is doing well, with four health areas, a CPU chart, the busiest apps, cooling, network and Keep Awake" width="300"></a>
   &nbsp;
   <a href="docs/images/popover-cooling-dark.png"><img src="docs/images/popover-cooling-dark.png" alt="Cooling popover with temperature, fan and System, Boost, Manual and Auto modes" width="300"></a>
 </p>
@@ -67,7 +67,31 @@ unavailable, never as zero.
 
 ## A look inside
 
-<a href="docs/images/overview-dark.png"><img src="docs/images/overview-dark.png" alt="Helios Overview with live CPU chart, what is using the Mac right now and recent events" width="760"></a>
+<a href="docs/images/overview-dark.png"><img src="docs/images/overview-dark.png" alt="Helios Overview with the four health areas, a live CPU chart, Ask Helios, Keep Awake, Tell me when it's done and the Longevity row" width="760"></a>
+
+<details>
+<summary><strong>Ask Helios and Longevity</strong></summary>
+
+Pick a question and Helios answers with what it sees, why it thinks so and what you can do.
+
+<a href="docs/images/overview-ask-dark.png"><img src="docs/images/overview-ask-dark.png" alt="Ask Helios answering why the Mac is slow: macOS closed apps for memory, and Low Power Mode is on" width="760"></a>
+
+Longevity grades the battery, power adapter, SSD, cooling and memory in words, with the facts behind each grade.
+
+<a href="docs/images/longevity-dark.png"><img src="docs/images/longevity-dark.png" alt="Longevity page: grades for battery, power adapter, SSD, cooling and memory, and the battery health trend" width="760"></a>
+
+<a href="docs/images/longevity-details-dark.png"><img src="docs/images/longevity-details-dark.png" alt="Longevity details: power adapter and cable, SSD endurance, memory pressure and swap, and the two optional reminders" width="760"></a>
+
+</details>
+
+<details>
+<summary><strong>Network and Checkup</strong></summary>
+
+<a href="docs/images/network-dark.png"><img src="docs/images/network-dark.png" alt="Network page with Why is the internet slow, optional data usage per app, latency over time and download and upload charts" width="760"></a>
+
+<a href="docs/images/checkup-dark.png"><img src="docs/images/checkup-dark.png" alt="Checkup page: what Helios found, what it can read, helper and fan control status, all readings and support" width="760"></a>
+
+</details>
 
 <details>
 <summary><strong>Thermals and your own fan curve</strong></summary>
@@ -132,7 +156,9 @@ macOS.
 
 <a href="docs/images/settings-graphs-colors-dark.png"><img src="docs/images/settings-graphs-colors-dark.png" alt="Graph style, default ranges and colors" width="660"></a>
 
-<a href="docs/images/settings-about-dark.png"><img src="docs/images/settings-about-dark.png" alt="About Helios 0.2.0 Beta 1" width="660"></a>
+<a href="docs/images/settings-automation-dark.png"><img src="docs/images/settings-automation-dark.png" alt="Automation settings: rules, the command palette and the command line" width="660"></a>
+
+<a href="docs/images/settings-advanced-dark.png"><img src="docs/images/settings-advanced-dark.png" alt="Advanced settings: reset, the experimental mouse settings and uninstall" width="660"></a>
 
 </details>
 
@@ -155,8 +181,8 @@ you set, and macOS stays in charge otherwise.
 
 ## Install the beta
 
-1. Download **Helios-0.3.0-beta.1.dmg** from
-   [GitHub Releases](https://github.com/Snejdik/helios/releases/tag/v0.3.0-beta.1).
+1. Download **Helios-0.3.0-beta.2.dmg** from
+   [GitHub Releases](https://github.com/Snejdik/helios/releases/tag/v0.3.0-beta.2).
 2. Open it and drag **Helios** to Applications. If you got a ZIP, unzip it first.
 3. Open Helios from Applications and look for it in the menu bar.
 
